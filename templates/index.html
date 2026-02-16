@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Trading MVP Dashboard</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            padding: 20px;
+        }
+
+        h1 {
+            font-size: 42px;
+            margin-bottom: 20px;
+        }
+
+        .summary-box {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .mode-buttons {
+            margin-bottom: 20px;
+        }
+
+        button {
+            padding: 8px 14px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+
+        .active-mode {
+            font-weight: bold;
+            background-color: #333;
+            color: white;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        th {
+            background: #222;
+            color: white;
+            padding: 12px;
+            text-align: left;
+        }
+
+        td {
+            padding: 10px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        tr:hover {
+            background: #f9f9f9;
+            cursor: pointer;
+        }
+
+        .breakdown {
+            display: none;
+            background: #fafafa;
+            font-size: 14px;
+        }
+
+        .score-bar-container {
+            background: #ddd;
+            border-radius: 6px;
+            height: 12px;
+            width: 150px;
+            margin-top: 5px;
+        }
+
+        .score-bar {
+            height: 12px;
+            border-radius: 6px;
+        }
+
+        .positive {
+            color: green;
+            font-weight: bold;
+        }
+
+        .negative {
+            color: red;
+            font-weight: bold;
+        }
+
+        .neutral {
+            color: gray;
+        }
+
+        .footer-note {
+            margin-top: 15px;
+            font-style: italic;
+            color: #555;
+        }
+    </style>
+
+    <script>
+        function toggleRow(id) {
+            const row = document.getElementById(id);
+            if (!row) return;
+
+            if (row.style.display === "table-row") {
+                row.style.display = "none";
+            } else {
+                row.style.display = "table-row";
+            }
+        }
+
+        // Auto refresh every 60 seconds
+        setInterval(() => {
+            window.location.reload();
+        }, 60000);
+    </script>
+
+</head>
+
+<body>
+
+<h1>AI Trading MVP Dashboard</h1>
+
+<div class="summary-box">
+    <strong>Scan Summary:</strong><br>
+    Total Scanned: {{ summary.total_scanned }}<br>
+    Passed Filters: {{ summary.total_passed }}<br>
+    Average Score: {{ summary.avg_score }}
+</div>
+
+<div class="mode-buttons">
+    <a href="/?mode=standard">
+        <button class="{% if mode == 'standard' %}active-mode{% endif %}">
+            Standard Mode
+        </button>
+    </a>
+
+    <a href="/?mode=strict">
+        <button class="{% if mode == 'strict' %}active-mode{% endif %}">
+            Strict Mode
+        </button>
+    </a>
+</div>
+
+<table>
+    <thead>
+        <tr>
+            <th>Symbol</th>
+            <th>Price</th>
+            <th>Score</th>
+            <th>Recommendation</th>
+        </tr>
+    </thead>
+
+    <tbody>
+
+        {% for stock in results %}
+
+        <tr onclick="toggleRow('row{{ loop.index }}')" style="cursor:pointer;">
+            <td>{{ stock.symbol }}</td>
+            <td>${{ stock.price }}</td>
+
+            <td>
+                <strong>{{ stock.score }}</strong>
+
+                <div class="score-bar-container">
+                    <div class="score-bar"
+                        style="
+                            width: {{ stock.score }}%;
+                            background:
+                            {% if stock.score >= 80 %}
+                                #00c853
+                            {% elif stock.score >= 55 %}
+                                #64dd17
+                            {% elif stock.score >= 35 %}
+                                #ffab00
+                            {% else %}
+                                #d50000
+                            {% endif %}
+                        ">
+                    </div>
+                </div>
+            </td>
+
+            <td>{{ stock.recommendation }}</td>
+        </tr>
+
+        <tr id="row{{ loop.index }}" class="breakdown" style="display:none;">
+            <td colspan="4">
+
+                <strong>Checklist Breakdown:</strong><br><br>
+
+                <strong>Relative Volume:</strong>
+                {{ stock.breakdown.relative_volume.value }}
+                →
+                <span class="{% if stock.breakdown.relative_volume.score > 0 %}positive{% else %}neutral{% endif %}">
+                    {{ stock.breakdown.relative_volume.score }} pts
+                    ({{ stock.breakdown.relative_volume.label }})
+                </span>
+                <br><br>
+
+                <strong>Shares Outstanding:</strong>
+                {{ "{:,}".format(stock.breakdown.shares_outstanding.value) }}
+                →
+                <span class="{% if stock.breakdown.shares_outstanding.score > 0 %}positive{% else %}neutral{% endif %}">
+                    {{ stock.breakdown.shares_outstanding.score }} pts
+                    ({{ stock.breakdown.shares_outstanding.label }})
+                </span>
+                <br><br>
+
+                <strong>Cash Strength:</strong>
+                <span class="{% if stock.breakdown.cash_strength.score > 0 %}positive{% else %}neutral{% endif %}">
+                    {{ stock.breakdown.cash_strength.score }} pts
+                    ({{ stock.breakdown.cash_strength.label }})
+                </span>
+                <br><br>
+
+                <strong>Performance Today:</strong>
+                {{ stock.breakdown.performance.value }}%
+                →
+                <span class="{% if stock.breakdown.performance.score > 0 %}positive{% else %}neutral{% endif %}">
+                    {{ stock.breakdown.performance.score }} pts
+                    ({{ stock.breakdown.performance.label }})
+                </span>
+                <br><br>
+
+                <strong>News Catalyst:</strong>
+                <span class="{% if stock.breakdown.news.score < 0 %}negative{% else %}positive{% endif %}">
+                    {{ stock.breakdown.news.score }} pts
+                    ({{ stock.breakdown.news.label }})
+                </span>
+                <br><br>
+
+                <strong>Technical Analysis:</strong><br>
+                Sideways Chop: {{ stock.breakdown.technical.sideways }}<br>
+                Yesterday Green: {{ stock.breakdown.technical.yesterday_green }}<br>
+                Recent 1–3 Day Decline: {{ stock.breakdown.technical.recent_decline }}<br><br>
+
+                <strong>Technical Score:</strong>
+                <span class="{% if stock.breakdown.technical.score > 0 %}positive{% elif stock.breakdown.technical.score < 0 %}negative{% else %}neutral{% endif %}">
+                    {{ stock.breakdown.technical.score }} pts
+                </span>
+
+            </td>
+        </tr>
+
+        {% endfor %}
+
+    </tbody>
+</table>
+
+<p class="footer-note">Click any row to expand checklist</p>
+
+</body>
+</html>

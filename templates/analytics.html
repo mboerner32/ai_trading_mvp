@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Trading Analytics</title>
+</head>
+<body>
+
+<h1>Trade Simulator & Performance</h1>
+
+<h2>Score Buckets</h2>
+<table border="1">
+<tr>
+    <th>Bucket</th>
+    <th>Trades</th>
+    <th>Avg Return</th>
+    <th>Win Rate</th>
+</tr>
+
+{% for bucket, data in score_buckets.items() %}
+<tr>
+    <td>{{ bucket }}</td>
+    <td>{{ data.trades }}</td>
+    <td>{{ data.avg_return }}%</td>
+    <td>{{ data.win_rate }}%</td>
+</tr>
+{% endfor %}
+</table>
+
+<br>
+
+<h2>Holding Performance</h2>
+
+{% if holding_perf %}
+<p>Avg 1-Day Return: {{ holding_perf.avg_day1 }}%</p>
+<p>Avg 3-Day Return: {{ holding_perf.avg_day3 }}%</p>
+{% else %}
+<p>No completed trades yet.</p>
+{% endif %}
+
+<br>
+
+<h2>Equity Curve</h2>
+
+{% if equity_curve %}
+<p>Final Capital: ${{ equity_curve[-1] }}</p>
+{% else %}
+<p>No equity data yet.</p>
+{% endif %}
+
+<br>
+<a href="/">← Back to Dashboard</a>
+
+</body>
+</html>
