@@ -35,3 +35,4 @@ urllib3==2.6.3
 uvicorn==0.40.0
 websockets==16.0
 yfinance==1.1.0
+itsdangerous==2.2.0
