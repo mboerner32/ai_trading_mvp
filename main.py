@@ -36,6 +36,12 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 
+# ---------------- ROOT ----------------
+@app.get("/")
+def root():
+    return RedirectResponse("/login")
+
+
 # ---------------- LOGIN ----------------
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
