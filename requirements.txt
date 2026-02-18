@@ -1,9 +1,8 @@
 fastapi
 uvicorn
-Jinja2
+jinja2
 yfinance
 pandas
-passlib[bcrypt]
-bcrypt
-itsdangerous
+passlib[argon2]
 python-multipart
+itsdangerous

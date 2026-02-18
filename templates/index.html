@@ -11,7 +11,6 @@
             color: #1f2937;
         }
 
-        /* Top Navigation */
         .navbar {
             background: white;
             padding: 18px 40px;
@@ -21,10 +20,7 @@
             box-shadow: 0 2px 8px rgba(0,0,0,0.05);
         }
 
-        .navbar h2 {
-            margin: 0;
-            font-weight: 600;
-        }
+        .navbar h2 { margin: 0; font-weight: 600; }
 
         .nav-links a {
             margin-left: 20px;
@@ -33,14 +29,14 @@
             color: #4f46e5;
         }
 
-        /* Container */
+        .logout { color: #dc2626; }
+
         .container {
             padding: 40px;
             max-width: 1200px;
             margin: auto;
         }
 
-        /* KPI Cards */
         .kpi-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -59,7 +55,6 @@
             margin: 0;
             font-size: 14px;
             color: #6b7280;
-            font-weight: 500;
         }
 
         .card p {
@@ -68,7 +63,6 @@
             margin-top: 8px;
         }
 
-        /* Mode Toggle */
         .mode-toggle a {
             padding: 10px 16px;
             border-radius: 6px;
@@ -84,7 +78,6 @@
             color: white;
         }
 
-        /* Table */
         table {
             width: 100%;
             border-collapse: collapse;
@@ -108,31 +101,74 @@
             border-bottom: 1px solid #f1f1f1;
         }
 
-        .buy { color: #16a34a; font-weight: 600; }
+        .expandable {
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+
+        .expandable:hover {
+            background: #eef2ff;
+        }
+
+        .details {
+            display: none;
+            background: #f9fafb;
+        }
+
+        .details-content {
+            padding: 20px;
+        }
+
+        .checklist-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 10px 30px;
+            font-size: 14px;
+        }
+
+        .good { color: #16a34a; font-weight: 600; }
+        .bad { color: #dc2626; font-weight: 600; }
         .hold { color: #f59e0b; font-weight: 600; }
-        .avoid { color: #dc2626; font-weight: 600; }
+
+        .section-title {
+            font-weight: 600;
+            margin-bottom: 15px;
+        }
     </style>
 </head>
 
 <body>
 
 <div class="navbar">
-    <h2>📈 Reno Robs Trading</h2>
+    <div style="display:flex; align-items:center; gap:12px;">
+        <img src="/static/logo.png" alt="Logo" style="height:44px; width:auto; border-radius:6px;">
+        <h2 style="margin:0;">Reno Robs Trading</h2>
+    </div>
+
     <div class="nav-links">
-        <a href="/">Dashboard</a>
+        <span style="margin-right:20px; color:#6b7280;">
+            Logged in as {{ user }}
+        </span>
+        <a href="/dashboard">Dashboard</a>
         <a href="/analytics">Analytics</a>
+        <a href="/logout" class="logout">Logout</a>
     </div>
 </div>
 
 <div class="container">
 
-    <!-- Mode Toggle -->
     <div class="mode-toggle" style="margin-bottom:20px;">
-        <a href="/?mode=standard" class="{{ 'active' if mode == 'standard' else '' }}">Standard Mode</a>
-        <a href="/?mode=strict" class="{{ 'active' if mode == 'strict' else '' }}">Strict Mode</a>
+        <a href="/dashboard?mode=standard"
+           class="{{ 'active' if mode == 'standard' else '' }}">
+           Standard Mode
+        </a>
+
+        <a href="/dashboard?mode=strict"
+           class="{{ 'active' if mode == 'strict' else '' }}">
+           Strict Mode
+        </a>
     </div>
 
-    <!-- KPI Summary -->
     <div class="kpi-grid">
         <div class="card">
             <h3>Total Stocks Scanned</h3>
@@ -141,5 +177,128 @@
 
         <div class="card">
             <h3>Qualified Stocks</h3>
-            <p>{{ summary.passed }}</p>
+            <p>{{ summary.qualified }}</p>
         </div>
+
+        <div class="card">
+            <h3>Mode</h3>
+            <p>{{ mode | capitalize }}</p>
+        </div>
+    </div>
+
+    <h3 style="margin-bottom:15px;">Scan Results</h3>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Symbol</th>
+                <th>Score</th>
+                <th>Recommendation</th>
+            </tr>
+        </thead>
+
+        <tbody>
+        {% for stock in results %}
+
+            <!-- Main Click Row -->
+            <tr class="expandable" onclick="toggleRow('{{ stock.symbol }}')">
+                <td><strong>{{ stock.symbol }}</strong></td>
+                <td>{{ stock.score }}</td>
+                <td class="
+                    {% if stock.recommendation == 'TRADE' %}good
+                    {% elif stock.recommendation == 'WATCH' %}hold
+                    {% else %}bad
+                    {% endif %}
+                ">
+                    {{ stock.recommendation }}
+                </td>
+            </tr>
+
+            <!-- Expand Row -->
+            <tr id="details-{{ stock.symbol }}" class="details">
+                <td colspan="3">
+                    <div class="details-content">
+                        <div class="section-title">Checklist Breakdown</div>
+
+                        <div class="checklist-grid">
+
+                            <div>
+                                <strong>Relative Volume:</strong>
+                                {{ stock.checklist.relative_volume }}
+                            </div>
+
+                            <div>
+                                <strong>Small Float:</strong>
+                                {% if stock.checklist.small_float %}
+                                    <span class="good">✅ {{ "{:,.0f}".format(stock.checklist.shares_outstanding) }}</span>
+                                {% else %}
+                                    <span class="bad">❌ {{ "{:,.0f}".format(stock.checklist.shares_outstanding) if stock.checklist.shares_outstanding else "N/A" }}</span>
+                                {% endif %}
+                            </div>
+
+                            <div>
+                                <strong>High Cash:</strong>
+                                {% if stock.checklist.high_cash %}
+                                    <span class="good">✅ ${{ stock.checklist.cash_per_share }}/sh</span>
+                                {% else %}
+                                    <span class="bad">❌ {{ "$" + stock.checklist.cash_per_share|string + "/sh" if stock.checklist.cash_per_share else "N/A" }}</span>
+                                {% endif %}
+                            </div>
+
+                            <div>
+                                <strong>5 Day Return:</strong>
+                                {{ stock.checklist.five_day_return_pct }}%
+                            </div>
+
+                            <div>
+                                <strong>Sideways Chop:</strong>
+                                {% if stock.checklist.sideways_chop %}
+                                    <span class="good">✅</span>
+                                {% else %}
+                                    <span class="bad">❌</span>
+                                {% endif %}
+                            </div>
+
+                            <div>
+                                <strong>Yesterday Green:</strong>
+                                {% if stock.checklist.yesterday_green %}
+                                    <span class="good">✅</span>
+                                {% else %}
+                                    <span class="bad">❌</span>
+                                {% endif %}
+                            </div>
+
+                            <div>
+                                <strong>Recent Decline:</strong>
+                                {% if stock.checklist.recent_decline %}
+                                    <span class="bad">❌ Significant</span>
+                                {% else %}
+                                    <span class="good">✅ Stable</span>
+                                {% endif %}
+                            </div>
+
+                        </div>
+                    </div>
+                </td>
+            </tr>
+
+        {% endfor %}
+        </tbody>
+    </table>
+
+</div>
+
+<script>
+function toggleRow(symbol) {
+    const row = document.getElementById("details-" + symbol);
+    if (!row) return;
+
+    row.style.display =
+        row.style.display === "none" || row.style.display === ""
+        ? "table-row"
+        : "none";
+}
+</script>
+
+</body>
+</html>
