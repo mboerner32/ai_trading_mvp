@@ -61,12 +61,18 @@ def create_user(username: str, password: str):
     hashed = pwd_context.hash(password)
 
     cursor.execute("""
-        INSERT INTO users (username, hashed_password)
+        INSERT OR IGNORE INTO users (username, hashed_password)
         VALUES (?, ?)
     """, (username, hashed))
 
     conn.commit()
     conn.close()
+
+
+def seed_users():
+    """Ensure default users exist — safe to call on every startup."""
+    create_user("admin", "admin123")
+    create_user("BobbyAxelrod", "Billions")
 
 
 def authenticate_user(username: str, password: str):

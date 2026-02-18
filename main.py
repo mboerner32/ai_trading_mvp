@@ -9,6 +9,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.scanner import run_scan
 from app.database import (
     init_db,
+    seed_users,
     save_scan,
     update_returns,
     get_score_buckets,
@@ -26,8 +27,9 @@ app.add_middleware(
     secret_key="CHANGE_THIS_SECRET_KEY"
 )
 
-# Initialize database
+# Initialize database and seed users
 init_db()
+seed_users()
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
