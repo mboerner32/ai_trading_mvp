@@ -85,12 +85,14 @@ def score_stock(symbol: str, df, fundamentals=None):
     cash_per_share = None
     small_float = False
     high_cash = False
+    institution_pct = None
 
     if fundamentals:
 
         shares_outstanding = fundamentals.get("shares_outstanding")
         float_shares = fundamentals.get("float_shares")
         total_cash = fundamentals.get("total_cash")
+        institution_pct = fundamentals.get("institution_pct")
 
         # Small Float Benchmark (<5M)
         if shares_outstanding and shares_outstanding < 5_000_000:
@@ -107,11 +109,21 @@ def score_stock(symbol: str, df, fundamentals=None):
             except Exception:
                 cash_per_share = None
 
+        # Institutional Ownership (max +2)
+        # Strong backing >= 50%: +2, moderate >= 20%: +1
+        if institution_pct is not None:
+            if institution_pct >= 0.50:
+                score += 2
+            elif institution_pct >= 0.20:
+                score += 1
+
     # --------------------------------------------------
     # SCALE TO 0–100
+    # Max raw score: 2 (rel vol) + 2 (sweet spot) + 1 (sideways)
+    #              + 2 (small float) + 1 (high cash) + 2 (inst. ownership) = 10
     # --------------------------------------------------
 
-    score = max(0, round((score / 8) * 100))
+    score = max(0, round((score / 10) * 100))
 
     # --------------------------------------------------
     # RECOMMENDATION TIERS
@@ -149,6 +161,9 @@ def score_stock(symbol: str, df, fundamentals=None):
             "total_cash": total_cash,
             "cash_per_share": round(cash_per_share, 2) if cash_per_share else None,
             "high_cash": high_cash,
+
+            # Institutional Ownership
+            "institution_pct": round(institution_pct * 100, 1) if institution_pct is not None else None,
 
             # Performance
             "sweet_spot_10_40": sweet_spot,

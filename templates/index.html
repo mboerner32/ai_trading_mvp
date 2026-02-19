@@ -309,6 +309,21 @@
                                 {% endif %}
                             </div>
 
+                            <div>
+                                <strong>Institutional Ownership:</strong>
+                                {% if stock.checklist.institution_pct is not none %}
+                                    {% if stock.checklist.institution_pct >= 50 %}
+                                        <span class="good">✅ {{ stock.checklist.institution_pct }}%</span>
+                                    {% elif stock.checklist.institution_pct >= 20 %}
+                                        <span class="hold">{{ stock.checklist.institution_pct }}%</span>
+                                    {% else %}
+                                        <span class="bad">❌ {{ stock.checklist.institution_pct }}%</span>
+                                    {% endif %}
+                                {% else %}
+                                    <span style="color:#9ca3af;">N/A</span>
+                                {% endif %}
+                            </div>
+
                             {% if stock.ai_rec.rationale %}
                             <div style="grid-column: 1 / -1; margin-top:6px; padding-top:10px;
                                         border-top:1px solid #e5e7eb; color:#4f46e5; font-size:13px;">

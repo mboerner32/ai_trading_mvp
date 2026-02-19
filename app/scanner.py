@@ -86,7 +86,8 @@ def get_fundamentals(symbol):
         return {
             "shares_outstanding": info.get("sharesOutstanding"),
             "float_shares": info.get("floatShares"),
-            "total_cash": info.get("totalCash")
+            "total_cash": info.get("totalCash"),
+            "institution_pct": info.get("institutionsPercentHeld"),
         }
 
     except Exception:

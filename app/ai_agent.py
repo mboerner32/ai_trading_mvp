@@ -35,6 +35,7 @@ Checklist signals:
 - Yesterday Green: {checklist.get('yesterday_green')}
 - Recent Decline: {checklist.get('recent_decline')}
 - 5-Day Return: {checklist.get('five_day_return_pct')}%
+- Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'}
 
 Recommend a position size in dollars. Choose from: $250, $500, $750, $1000, $1500, $2000.
 Never recommend more than ${available_cash:.0f} available cash.
