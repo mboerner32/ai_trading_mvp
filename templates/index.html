@@ -274,7 +274,7 @@
                 </td>
                 <td>${{ stock.price }}</td>
                 <td style="font-size:13px; color:#6b7280;">
-                    ~{{ (1000 / stock.price) | round(1) }} sh
+                    ${{ stock.ai_rec.amount }}
                 </td>
                 <td onclick="event.stopPropagation()">
                     <form method="post" action="/trade/buy" style="display:flex; align-items:center; gap:5px;">
