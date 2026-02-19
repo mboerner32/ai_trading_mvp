@@ -387,6 +387,15 @@
                                 {% endif %}
                             </div>
 
+                            <div>
+                                <strong>No News Catalyst:</strong>
+                                {% if stock.checklist.no_news_catalyst %}
+                                    <span class="good">✅ Organic move</span>
+                                {% else %}
+                                    <span class="hold">⚠️ News present</span>
+                                {% endif %}
+                            </div>
+
                         {% else %}
 
                             <!-- STANDARD / STRICT MODE CHECKLIST -->
@@ -457,6 +466,15 @@
                                     {% endif %}
                                 {% else %}
                                     <span style="color:#9ca3af;">N/A</span>
+                                {% endif %}
+                            </div>
+
+                            <div>
+                                <strong>No News Catalyst:</strong>
+                                {% if stock.checklist.no_news_catalyst %}
+                                    <span class="good">✅ Organic move</span>
+                                {% else %}
+                                    <span class="hold">⚠️ News present</span>
                                 {% endif %}
                             </div>
 

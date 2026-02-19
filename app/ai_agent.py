@@ -49,7 +49,8 @@ Checklist signals:
 - Yesterday Green: {checklist.get('yesterday_green')}
 - Recent Decline: {checklist.get('recent_decline')}
 - 5-Day Return: {checklist.get('five_day_return_pct')}%
-- Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'}{feedback_section}
+- Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'}
+- No News Catalyst (organic move): {checklist.get('no_news_catalyst')}{feedback_section}
 
 Recommend a position size in dollars. Choose from: $250, $500, $750, $1000, $1500, $2000.
 Never recommend more than ${available_cash:.0f} available cash.
@@ -233,6 +234,7 @@ def optimize_complex_ai_weights(
         "daily_sweet_20_40", "daily_ok_10_20", "daily_ok_40_100",
         "sideways_chop", "yesterday_green",
         "shares_lt10m", "shares_lt30m", "shares_gte100m_penalty",
+        "no_news_bonus",
     ]
 
     # ---- Format backtest section ----
@@ -304,6 +306,7 @@ Weight definitions:
 - shares_lt10m:           points when shares outstanding < 10M (ideal float)
 - shares_lt30m:           points when shares outstanding 10-30M (acceptable float)
 - shares_gte100m_penalty: points DEDUCTED when shares >= 100M (too diluted to squeeze)
+- no_news_bonus:          points awarded when no news catalyst detected (organic move preferred)
 
 ## Evidence
 {backtest_section}
@@ -320,7 +323,7 @@ Produce optimal integer weights (0-5 each) to maximize win_rate x avg_return for
 Respond in EXACTLY this format with no other text:
 
 WEIGHTS_JSON:
-{{"rel_vol_50x": 0, "rel_vol_25x": 0, "rel_vol_10x": 0, "daily_sweet_20_40": 0, "daily_ok_10_20": 0, "daily_ok_40_100": 0, "sideways_chop": 0, "yesterday_green": 0, "shares_lt10m": 0, "shares_lt30m": 0, "shares_gte100m_penalty": 0}}
+{{"rel_vol_50x": 0, "rel_vol_25x": 0, "rel_vol_10x": 0, "daily_sweet_20_40": 0, "daily_ok_10_20": 0, "daily_ok_40_100": 0, "sideways_chop": 0, "yesterday_green": 0, "shares_lt10m": 0, "shares_lt30m": 0, "shares_gte100m_penalty": 0, "no_news_bonus": 0}}
 
 RATIONALE:
 [2-3 sentences explaining the key weight changes and why]

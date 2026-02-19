@@ -2,6 +2,7 @@
 
 import requests
 import re
+import time
 import yfinance as yf
 import pandas as pd
 from app.scoring_engine import score_stock, score_stock_squeeze, DEFAULT_SQUEEZE_WEIGHTS
@@ -84,11 +85,25 @@ def get_fundamentals(symbol):
         ticker = yf.Ticker(symbol)
         info = ticker.info
 
+        # Check for recent news (last 3 days) — news-driven moves are less clean
+        recent_news_present = False
+        try:
+            news = ticker.news
+            if news:
+                cutoff_ts = time.time() - (3 * 24 * 3600)
+                recent_news_present = any(
+                    a.get("providerPublishTime", 0) > cutoff_ts
+                    for a in news[:5]
+                )
+        except Exception:
+            pass
+
         return {
             "shares_outstanding": info.get("sharesOutstanding"),
             "float_shares": info.get("floatShares"),
             "total_cash": info.get("totalCash"),
             "institution_pct": info.get("institutionsPercentHeld"),
+            "recent_news_present": recent_news_present,
         }
 
     except Exception:

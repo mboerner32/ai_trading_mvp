@@ -117,13 +117,18 @@ def score_stock(symbol: str, df, fundamentals=None):
             elif institution_pct >= 0.20:
                 score += 1
 
+    # No News Catalyst — organic move preferred over news-driven pump (+1)
+    no_news_catalyst = not (fundamentals or {}).get("recent_news_present", False)
+    if no_news_catalyst:
+        score += 1
+
     # --------------------------------------------------
     # SCALE TO 0–100
     # Max raw score: 2 (rel vol) + 2 (sweet spot) + 1 (sideways)
-    #              + 2 (small float) + 1 (high cash) + 2 (inst. ownership) = 10
+    #              + 2 (small float) + 1 (high cash) + 2 (inst. ownership) + 1 (no news) = 11
     # --------------------------------------------------
 
-    score = max(0, round((score / 10) * 100))
+    score = max(0, round((score / 11) * 100))
 
     # --------------------------------------------------
     # RECOMMENDATION TIERS
@@ -165,6 +170,9 @@ def score_stock(symbol: str, df, fundamentals=None):
             # Institutional Ownership
             "institution_pct": round(institution_pct * 100, 1) if institution_pct is not None else None,
 
+            # News
+            "no_news_catalyst": no_news_catalyst,
+
             # Performance
             "sweet_spot_10_40": sweet_spot,
             "over_100_percent": overheated,
@@ -197,6 +205,7 @@ DEFAULT_SQUEEZE_WEIGHTS = {
     "shares_lt10m":           3,   # shares outstanding < 10M
     "shares_lt30m":           1,   # shares outstanding 10M–30M
     "shares_gte100m_penalty": 2,   # deducted when shares >= 100M (stored positive)
+    "no_news_bonus":          1,   # organic move with no news catalyst
 }
 
 
@@ -294,13 +303,19 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
                 score -= w["shares_gte100m_penalty"]
                 float_tier = "Avoid (≥100M)"
 
+    # --- No News Catalyst ---
+    no_news_catalyst = not (fundamentals or {}).get("recent_news_present", False)
+    if no_news_catalyst:
+        score += w.get("no_news_bonus", 0)
+
     # Compute max achievable score with current weights (no penalties)
     max_score = (
         max(w["rel_vol_50x"], w["rel_vol_25x"], w["rel_vol_10x"], 0) +
         max(w["daily_sweet_20_40"], w["daily_ok_10_20"], w["daily_ok_40_100"], 0) +
         w["sideways_chop"] +
         w["yesterday_green"] +
-        max(w["shares_lt10m"], w["shares_lt30m"], 0)
+        max(w["shares_lt10m"], w["shares_lt30m"], 0) +
+        w.get("no_news_bonus", 0)
     )
     if max_score <= 0:
         max_score = 10
@@ -341,6 +356,9 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
 
             # Institutional Ownership
             "institution_pct": round(institution_pct * 100, 1) if institution_pct is not None else None,
+
+            # News
+            "no_news_catalyst": no_news_catalyst,
 
             # Placeholders for template compatibility
             "high_cash": False,
