@@ -49,6 +49,34 @@ def init_db():
         )
     """)
 
+    # ---------------- TRADES TABLE ----------------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol        TEXT    NOT NULL,
+            entry_price   REAL    NOT NULL,
+            shares        REAL    NOT NULL,
+            position_size REAL    NOT NULL,
+            status        TEXT    NOT NULL DEFAULT 'open',
+            exit_price    REAL,
+            realized_pnl  REAL,
+            opened_at     TEXT    NOT NULL,
+            closed_at     TEXT
+        )
+    """)
+
+    # ---------------- PORTFOLIO TABLE ----------------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio (
+            id   INTEGER PRIMARY KEY,
+            cash REAL    NOT NULL DEFAULT 10000.0
+        )
+    """)
+
+    cursor.execute("""
+        INSERT OR IGNORE INTO portfolio (id, cash) VALUES (1, 10000.0)
+    """)
+
     conn.commit()
     conn.close()
 
@@ -294,3 +322,165 @@ def save_scan(results: list, mode: str):
 
     conn.commit()
     conn.close()
+
+
+# ---------------- PAPER TRADING ----------------
+POSITION_SIZE = 1000.0
+
+
+def open_trade(symbol: str, price: float):
+    if price <= 0:
+        return None
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT cash FROM portfolio WHERE id = 1")
+    row = cursor.fetchone()
+    cash = row[0] if row else 0.0
+
+    if cash < POSITION_SIZE:
+        conn.close()
+        return None
+
+    shares = POSITION_SIZE / price
+    opened_at = datetime.utcnow().isoformat()
+
+    cursor.execute(
+        "UPDATE portfolio SET cash = cash - ? WHERE id = 1",
+        (POSITION_SIZE,)
+    )
+    cursor.execute("""
+        INSERT INTO trades (symbol, entry_price, shares, position_size, status, opened_at)
+        VALUES (?, ?, ?, ?, 'open', ?)
+    """, (symbol, round(price, 4), round(shares, 6), POSITION_SIZE, opened_at))
+
+    trade_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return {"trade_id": trade_id, "shares": shares, "entry_price": price}
+
+
+def get_trade_by_id(trade_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT symbol, entry_price FROM trades WHERE id = ? AND status = 'open'",
+        (trade_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {"symbol": row[0], "entry_price": row[1]}
+
+
+def close_trade(trade_id: int, exit_price: float):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT shares, entry_price, status FROM trades WHERE id = ?",
+        (trade_id,)
+    )
+    row = cursor.fetchone()
+
+    if not row or row[2] != 'open':
+        conn.close()
+        return None
+
+    shares, entry_price, _ = row
+    proceeds = shares * exit_price
+    realized_pnl = proceeds - (shares * entry_price)
+    closed_at = datetime.utcnow().isoformat()
+
+    cursor.execute("""
+        UPDATE trades
+        SET status = 'closed', exit_price = ?, realized_pnl = ?, closed_at = ?
+        WHERE id = ?
+    """, (round(exit_price, 4), round(realized_pnl, 4), closed_at, trade_id))
+    cursor.execute(
+        "UPDATE portfolio SET cash = cash + ? WHERE id = 1",
+        (round(proceeds, 4),)
+    )
+
+    conn.commit()
+    conn.close()
+    return {"realized_pnl": realized_pnl, "proceeds": proceeds}
+
+
+def get_open_positions():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, symbol, entry_price, shares, position_size, opened_at
+        FROM trades WHERE status = 'open'
+        ORDER BY opened_at DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    positions = []
+    for row in rows:
+        trade_id, symbol, entry_price, shares, position_size, opened_at = row
+        positions.append({
+            "trade_id": trade_id,
+            "symbol": symbol,
+            "entry_price": entry_price,
+            "shares": shares,
+            "position_size": position_size,
+            "opened_at": opened_at,
+        })
+    return positions
+
+
+def get_trade_history():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, symbol, entry_price, exit_price, shares,
+               position_size, realized_pnl, opened_at, closed_at
+        FROM trades WHERE status = 'closed'
+        ORDER BY closed_at DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    history = []
+    for row in rows:
+        (trade_id, symbol, entry_price, exit_price, shares,
+         position_size, realized_pnl, opened_at, closed_at) = row
+        pnl_pct = (realized_pnl / position_size * 100) if position_size else 0
+        history.append({
+            "trade_id": trade_id,
+            "symbol": symbol,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "shares": round(shares, 2),
+            "position_size": position_size,
+            "realized_pnl": round(realized_pnl, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "opened_at": opened_at,
+            "closed_at": closed_at,
+        })
+    return history
+
+
+def get_portfolio_summary():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT cash FROM portfolio WHERE id = 1")
+    row = cursor.fetchone()
+    cash = row[0] if row else 10000.0
+
+    cursor.execute("""
+        SELECT COALESCE(SUM(realized_pnl), 0) FROM trades WHERE status = 'closed'
+    """)
+    realized_total = cursor.fetchone()[0]
+
+    conn.close()
+    return {
+        "cash": round(cash, 2),
+        "realized_pnl": round(realized_total, 2),
+    }
