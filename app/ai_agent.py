@@ -4,7 +4,7 @@ import os
 import base64
 import anthropic
 
-client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from environment automatically
 
 
 def recommend_position_size(stock: dict, available_cash: float,
