@@ -98,11 +98,31 @@ def get_fundamentals(symbol):
         except Exception:
             pass
 
+        # Try both field name variants across yfinance versions
+        institution_pct = (
+            info.get("institutionsPercentHeld") or
+            info.get("heldPercentInstitutions")
+        )
+
+        # Fallback: parse major_holders DataFrame
+        if institution_pct is None:
+            try:
+                mh = ticker.major_holders
+                if mh is not None and not mh.empty:
+                    for _, row in mh.iterrows():
+                        breakdown = str(row.get("Breakdown", "")).lower()
+                        if "held by institutions" in breakdown and "float" not in breakdown:
+                            val = str(row.get("Value", "")).replace("%", "").strip()
+                            institution_pct = float(val) / 100
+                            break
+            except Exception:
+                pass
+
         return {
             "shares_outstanding": info.get("sharesOutstanding"),
             "float_shares": info.get("floatShares"),
             "total_cash": info.get("totalCash"),
-            "institution_pct": info.get("institutionsPercentHeld"),
+            "institution_pct": institution_pct,
             "recent_news_present": recent_news_present,
         }
 
