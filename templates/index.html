@@ -190,7 +190,7 @@
     {% if trade_error == "insufficient_funds" %}
     <div style="background:#fef2f2; border:1px solid #fca5a5; color:#dc2626;
                 padding:12px 20px; border-radius:8px; margin-bottom:20px; font-weight:500;">
-        Insufficient funds — you need $1,000 cash to open a new position.
+        Insufficient funds — not enough cash for that position size.
     </div>
     {% endif %}
 
@@ -228,14 +228,19 @@
                     ~{{ (1000 / stock.price) | round(1) }} sh
                 </td>
                 <td onclick="event.stopPropagation()">
-                    <form method="post" action="/trade/buy">
+                    <form method="post" action="/trade/buy" style="display:flex; align-items:center; gap:5px;">
                         <input type="hidden" name="symbol" value="{{ stock.symbol }}">
                         <input type="hidden" name="price" value="{{ stock.price }}">
-                        <input type="hidden" name="position_size" value="{{ stock.ai_rec.amount }}">
+                        <span style="font-size:13px; color:#6b7280;">$</span>
+                        <input type="number" name="position_size"
+                               value="{{ stock.ai_rec.amount }}"
+                               min="1" step="1"
+                               style="width:70px; padding:5px 6px; border:1px solid #d1d5db;
+                                      border-radius:6px; font-size:13px; text-align:right;">
                         <button type="submit" style="background:#4f46e5; color:white; border:none;
                                 padding:6px 14px; border-radius:6px; cursor:pointer;
                                 font-size:13px; font-weight:500;">
-                            Buy ${{ stock.ai_rec.amount }}
+                            Buy
                         </button>
                     </form>
                 </td>
