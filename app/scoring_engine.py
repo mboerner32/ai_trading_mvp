@@ -108,15 +108,21 @@ def score_stock(symbol: str, df, fundamentals=None):
                 cash_per_share = None
 
     # --------------------------------------------------
+    # SCALE TO 0–100
+    # --------------------------------------------------
+
+    score = max(0, round((score / 8) * 100))
+
+    # --------------------------------------------------
     # RECOMMENDATION TIERS
     # --------------------------------------------------
 
     recommendation = "SPECULATIVE"
 
-    if score >= 4:
+    if score >= 50:
         recommendation = "WATCH"
 
-    if score >= 6:
+    if score >= 75:
         recommendation = "TRADE"
 
     # --------------------------------------------------
