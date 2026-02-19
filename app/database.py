@@ -194,27 +194,27 @@ def get_score_buckets():
     return results
 # ---------------- RETURN UPDATES ----------------
 def update_returns():
+    # Fetch pending rows then close connection before slow yf.download calls
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-
     cursor.execute("""
         SELECT id, symbol, timestamp
         FROM scans
         WHERE next_day_return IS NULL
     """)
-
     rows = cursor.fetchall()
+    conn.close()
+
     today = datetime.utcnow().date()
+    updates = []
 
     for scan_id, symbol, timestamp in rows:
         try:
             scan_date = datetime.fromisoformat(timestamp).date()
 
-            # Only process scans at least 3 days old
             if (today - scan_date).days < 3:
                 continue
 
-            # Never request future data
             end_date = min(scan_date + timedelta(days=5), today)
 
             data = yf.download(
@@ -227,7 +227,6 @@ def update_returns():
             if data.empty or len(data) < 2:
                 continue
 
-            # Flatten MultiIndex columns from newer yfinance versions
             if hasattr(data.columns, "levels"):
                 data.columns = data.columns.get_level_values(0)
 
@@ -242,21 +241,26 @@ def update_returns():
             if len(closes) >= 4:
                 three_day = ((closes[3] - closes[0]) / closes[0]) * 100
 
-            cursor.execute("""
-                UPDATE scans
-                SET next_day_return = ?, three_day_return = ?
-                WHERE id = ?
-            """, (
+            updates.append((
                 round(next_day, 2) if next_day is not None else None,
                 round(three_day, 2) if three_day is not None else None,
                 scan_id
             ))
 
         except Exception:
-            continue  # Skip failures silently
+            continue
 
-    conn.commit()
-    conn.close()
+    if updates:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        for (nd, td, sid) in updates:
+            cursor.execute("""
+                UPDATE scans
+                SET next_day_return = ?, three_day_return = ?
+                WHERE id = ?
+            """, (nd, td, sid))
+        conn.commit()
+        conn.close()
 
 
 # ---------------- SAVE SCAN ----------------

@@ -6,3 +6,4 @@ pandas
 passlib[argon2]
 python-multipart
 itsdangerous
+curl_cffi
