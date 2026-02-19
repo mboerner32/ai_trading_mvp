@@ -168,6 +168,12 @@
            class="{{ 'active' if mode == 'strict' else '' }}">
            Strict Mode
         </a>
+
+        <a href="/dashboard?mode=squeeze"
+           class="{{ 'active' if mode == 'squeeze' else '' }}"
+           style="{{ 'background:#0f766e; color:white;' if mode == 'squeeze' else 'background:#d1fae5; color:#065f46;' }}">
+           Squeeze Mode
+        </a>
     </div>
 
     <div class="kpi-grid">
@@ -254,6 +260,93 @@
 
                         <div class="checklist-grid">
 
+                        {% if mode == 'squeeze' %}
+
+                            <!-- SQUEEZE MODE CHECKLIST -->
+                            <div>
+                                <strong>Relative Volume:</strong>
+                                {% set rv = stock.checklist.relative_volume %}
+                                {% if rv and rv >= 50 %}
+                                    <span class="good">✅ {{ rv }}x — Exceptional</span>
+                                {% elif rv and rv >= 25 %}
+                                    <span class="good">✅ {{ rv }}x — Ideal</span>
+                                {% elif rv and rv >= 10 %}
+                                    <span class="hold">{{ rv }}x — Minimum</span>
+                                {% else %}
+                                    <span class="bad">❌ {{ rv }}x</span>
+                                {% endif %}
+                            </div>
+
+                            <div>
+                                <strong>Shares Outstanding:</strong>
+                                {% set so = stock.checklist.shares_outstanding %}
+                                {% if so %}
+                                    {% if so < 10000000 %}
+                                        <span class="good">✅ {{ "{:,.0f}".format(so) }} — Ideal</span>
+                                    {% elif so < 30000000 %}
+                                        <span class="hold">{{ "{:,.0f}".format(so) }} — Acceptable</span>
+                                    {% elif so < 100000000 %}
+                                        <span style="color:#6b7280;">{{ "{:,.0f}".format(so) }} — Large</span>
+                                    {% else %}
+                                        <span class="bad">❌ {{ "{:,.0f}".format(so) }} — Avoid</span>
+                                    {% endif %}
+                                {% else %}
+                                    <span style="color:#9ca3af;">N/A</span>
+                                {% endif %}
+                            </div>
+
+                            <div>
+                                <strong>Daily Gain:</strong>
+                                {% set dp = stock.daily_return_pct %}
+                                {% if dp is not none %}
+                                    {% if 20 <= dp <= 40 %}
+                                        <span class="good">✅ {{ dp }}% — Sweet Spot</span>
+                                    {% elif dp > 40 %}
+                                        <span class="hold">{{ dp }}% — Extended</span>
+                                    {% else %}
+                                        <span style="color:#6b7280;">{{ dp }}%</span>
+                                    {% endif %}
+                                {% else %}
+                                    <span style="color:#9ca3af;">N/A</span>
+                                {% endif %}
+                            </div>
+
+                            <div>
+                                <strong>Barcoding / Consolidation:</strong>
+                                {% if stock.checklist.sideways_chop %}
+                                    <span class="good">✅ Tight range</span>
+                                {% else %}
+                                    <span class="bad">❌ No consolidation</span>
+                                {% endif %}
+                            </div>
+
+                            <div>
+                                <strong>Yesterday Green:</strong>
+                                {% if stock.checklist.yesterday_green %}
+                                    <span class="good">✅</span>
+                                {% else %}
+                                    <span class="bad">❌</span>
+                                {% endif %}
+                            </div>
+
+                            <div>
+                                <strong>Institutional Ownership:</strong>
+                                {% if stock.checklist.institution_pct is not none %}
+                                    {% if stock.checklist.institution_pct >= 50 %}
+                                        <span class="good">✅ {{ stock.checklist.institution_pct }}%</span>
+                                    {% elif stock.checklist.institution_pct >= 20 %}
+                                        <span class="hold">{{ stock.checklist.institution_pct }}%</span>
+                                    {% else %}
+                                        <span style="color:#6b7280;">{{ stock.checklist.institution_pct }}%</span>
+                                    {% endif %}
+                                {% else %}
+                                    <span style="color:#9ca3af;">N/A</span>
+                                {% endif %}
+                            </div>
+
+                        {% else %}
+
+                            <!-- STANDARD / STRICT MODE CHECKLIST -->
                             <div>
                                 <strong>Relative Volume:</strong>
                                 {{ stock.checklist.relative_volume }}
@@ -323,6 +416,8 @@
                                     <span style="color:#9ca3af;">N/A</span>
                                 {% endif %}
                             </div>
+
+                        {% endif %}
 
                             {% if stock.ai_rec.rationale %}
                             <div style="grid-column: 1 / -1; margin-top:6px; padding-top:10px;

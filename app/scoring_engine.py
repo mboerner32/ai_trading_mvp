@@ -176,3 +176,148 @@ def score_stock(symbol: str, df, fundamentals=None):
             "recent_decline": recent_decline,
         }
     }
+
+
+# --------------------------------------------------
+# SQUEEZE MODE SCORER
+# Relative Volume Short-Squeeze Momentum System
+# Target: +20% moves in low-float microcaps with explosive volume
+# --------------------------------------------------
+
+def score_stock_squeeze(symbol: str, df, fundamentals=None):
+
+    if df is None or len(df) < 20:
+        return None
+
+    latest = df.iloc[-1]
+
+    def safe_float(value):
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    price          = safe_float(latest.get("close"))
+    volume         = safe_float(latest.get("volume"))
+    relative_volume = safe_float(latest.get("relative_volume"))
+    daily_return   = safe_float(latest.get("daily_return"))
+    range_10d      = safe_float(latest.get("range_10d"))
+
+    if price is None:
+        return None
+
+    # Hard exclusion: blow-off phase (>100% gain today)
+    if daily_return is not None and daily_return > 1.00:
+        return None
+
+    score = 0
+
+    # --- Relative Volume (max +3) ---
+    relvol_tier = "Below Threshold"
+    if relative_volume is not None:
+        if relative_volume >= 50:
+            score += 3
+            relvol_tier = "Exceptional (≥50x)"
+        elif relative_volume >= 25:
+            score += 2
+            relvol_tier = "Ideal (≥25x)"
+        elif relative_volume >= 10:
+            score += 1
+            relvol_tier = "Minimum (≥10x)"
+
+    # --- Daily Gain sweet spot 20–40% (max +2) ---
+    sweet_spot_squeeze = False
+    if daily_return is not None:
+        sweet_spot_squeeze = 0.20 <= daily_return <= 0.40
+        if sweet_spot_squeeze:
+            score += 2
+        elif 0.10 <= daily_return < 0.20 or 0.40 < daily_return <= 1.00:
+            score += 1
+
+    # --- Sideways Consolidation / Barcoding (max +1) ---
+    sideways_chop = False
+    if range_10d is not None:
+        sideways_chop = range_10d < 0.20
+        if sideways_chop:
+            score += 1
+
+    # --- Yesterday Green (max +1) ---
+    yesterday_green = False
+    if len(df) >= 2:
+        prev_return = safe_float(df.iloc[-2].get("daily_return"))
+        if prev_return is not None and prev_return > 0:
+            yesterday_green = True
+            score += 1
+
+    # --- Shares Outstanding (max +3, min -2) ---
+    shares_outstanding = None
+    float_shares       = None
+    institution_pct    = None
+    float_tier         = "Unknown"
+
+    if fundamentals:
+        shares_outstanding = fundamentals.get("shares_outstanding")
+        float_shares       = fundamentals.get("float_shares")
+        institution_pct    = fundamentals.get("institution_pct")
+
+        if shares_outstanding is not None:
+            if shares_outstanding < 10_000_000:
+                score += 3
+                float_tier = "Ideal (<10M)"
+            elif shares_outstanding < 30_000_000:
+                score += 1
+                float_tier = "Acceptable (<30M)"
+            elif shares_outstanding < 100_000_000:
+                float_tier = "Large (30M–100M)"
+            else:
+                score -= 2
+                float_tier = "Avoid (≥100M)"
+
+    # Scale to 0–100
+    # Max raw: 3 (relvol) + 2 (daily) + 1 (sideways) + 1 (yesterday) + 3 (shares) = 10
+    score = max(0, round((score / 10) * 100))
+
+    recommendation = "SPECULATIVE"
+    if score >= 50:
+        recommendation = "WATCH"
+    if score >= 75:
+        recommendation = "TRADE"
+
+    return {
+        "symbol": symbol,
+        "price": round(price, 2),
+        "volume": int(volume) if volume else None,
+        "relative_volume": round(relative_volume, 2) if relative_volume else None,
+        "daily_return_pct": round(daily_return * 100, 2) if daily_return else None,
+        "score": score,
+        "recommendation": recommendation,
+        "checklist": {
+            "relative_volume": round(relative_volume, 2) if relative_volume else None,
+            "relvol_tier": relvol_tier,
+
+            # Float
+            "shares_outstanding": shares_outstanding,
+            "float_shares": float_shares,
+            "float_tier": float_tier,
+            "small_float": shares_outstanding < 10_000_000 if shares_outstanding else False,
+
+            # Performance
+            "sweet_spot_squeeze": sweet_spot_squeeze,
+            "daily_return_pct": round(daily_return * 100, 2) if daily_return else None,
+
+            # Technical
+            "sideways_chop": sideways_chop,
+            "yesterday_green": yesterday_green,
+
+            # Institutional Ownership
+            "institution_pct": round(institution_pct * 100, 1) if institution_pct is not None else None,
+
+            # Placeholders for template compatibility
+            "high_cash": False,
+            "cash_per_share": None,
+            "five_day_return_pct": None,
+            "recent_decline": False,
+            "over_100_percent": False,
+            "sweet_spot_10_40": sweet_spot_squeeze,
+        }
+    }

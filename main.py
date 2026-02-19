@@ -97,9 +97,7 @@ def dashboard(request: Request, mode: str = "standard", trade_error: str = ""):
     if "user" not in request.session:
         return RedirectResponse("/login")
 
-    strict_mode = mode == "strict"
-
-    scan_data = run_scan(strict=strict_mode)
+    scan_data = run_scan(mode=mode)
     save_scan(scan_data["results"], mode)
     update_returns()
 

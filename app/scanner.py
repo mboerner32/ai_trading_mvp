@@ -4,7 +4,7 @@ import requests
 import re
 import yfinance as yf
 import pandas as pd
-from app.scoring_engine import score_stock
+from app.scoring_engine import score_stock, score_stock_squeeze
 
 
 # ---------------------------------------------------
@@ -137,7 +137,7 @@ def prepare_dataframe(df):
 # ---------------------------------------------------
 # RUN SCAN (SHOW ALL FINVIZ STOCKS)
 # ---------------------------------------------------
-def run_scan(strict=False):
+def run_scan(mode="standard"):
 
     tickers = get_finviz_tickers()
 
@@ -146,6 +146,8 @@ def run_scan(strict=False):
         "total_scanned": 0,
         "qualified": 0
     }
+
+    scorer = score_stock_squeeze if mode == "squeeze" else score_stock
 
     for symbol in tickers:
 
@@ -167,11 +169,7 @@ def run_scan(strict=False):
 
             summary["total_scanned"] += 1
 
-            result = score_stock(
-                symbol,
-                df,
-                fundamentals=fundamentals
-            )
+            result = scorer(symbol, df, fundamentals=fundamentals)
 
             if result:
                 results.append(result)
