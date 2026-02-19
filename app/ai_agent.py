@@ -1,12 +1,14 @@
 # ai_trading_mvp/app/ai_agent.py
 
 import os
+import base64
 import anthropic
 
 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
 
-def recommend_position_size(stock: dict, available_cash: float) -> dict:
+def recommend_position_size(stock: dict, available_cash: float,
+                            feedback_context: list = None) -> dict:
     """
     Calls Claude to recommend a position size for a given stock.
     Returns {"amount": int, "rationale": str}.
@@ -16,6 +18,22 @@ def recommend_position_size(stock: dict, available_cash: float) -> dict:
 
     shares_outstanding = checklist.get("shares_outstanding")
     shares_str = f"{shares_outstanding:,}" if shares_outstanding else "N/A"
+
+    # Build optional learned-pattern context from user feedback
+    feedback_section = ""
+    if feedback_context:
+        snippets = []
+        for fb in feedback_context[:3]:
+            analysis = (fb.get("chart_analysis") or "").strip()
+            if analysis:
+                sym = fb.get("symbol") or "?"
+                snippets.append(f"- {sym}: {analysis[:180]}")
+        if snippets:
+            feedback_section = (
+                "\n\nLearned patterns from user-submitted winning trades:\n"
+                + "\n".join(snippets)
+                + "\nWeigh these patterns when sizing this position."
+            )
 
     prompt = f"""You are a trading risk manager for a paper trading simulator.
 
@@ -35,7 +53,7 @@ Checklist signals:
 - Yesterday Green: {checklist.get('yesterday_green')}
 - Recent Decline: {checklist.get('recent_decline')}
 - 5-Day Return: {checklist.get('five_day_return_pct')}%
-- Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'}
+- Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'}{feedback_section}
 
 Recommend a position size in dollars. Choose from: $250, $500, $750, $1000, $1500, $2000.
 Never recommend more than ${available_cash:.0f} available cash.
@@ -76,3 +94,108 @@ RATIONALE: <one sentence, 15 words or less>"""
 
     except Exception:
         return {"amount": 1000, "rationale": ""}
+
+
+def analyze_and_optimize_weights(opt_data: dict) -> str:
+    """
+    Analyzes per-bucket backtest performance and recommends scoring weight
+    adjustments to maximize win rate × avg return.
+    Uses claude-sonnet-4-6 for richer reasoning.
+    """
+    def fmt(stats):
+        if not stats or stats["count"] == 0:
+            return "No data"
+        return (f"{stats['count']} trades | "
+                f"{stats['win_rate']}% win rate | "
+                f"{stats['avg_return']:+.1f}% avg 1-day return")
+
+    rv = opt_data["relative_volume"]
+    dg = opt_data["daily_gain"]
+    so = opt_data["shares_outstanding"]
+
+    prompt = f"""You are a quantitative trading system optimizer.
+Analyze this backtested signal performance and recommend specific integer weight adjustments.
+
+TOTAL BACKTESTED TRADES: {opt_data['total_trades']}
+
+RELATIVE VOLUME (current scoring: ≥29x → +2pts, ≥10x → +1pt, max 10pts total):
+- ≥50x:    {fmt(rv.get(">=50x"))}
+- 25–50x:  {fmt(rv.get("25-50x"))}
+- 10–25x:  {fmt(rv.get("10-25x"))}
+- <10x:    {fmt(rv.get("<10x"))}
+
+DAILY GAIN (current scoring: 10–40% → +2pts, else → 0pts):
+- 20–40%:   {fmt(dg.get("20-40%"))}
+- 10–20%:   {fmt(dg.get("10-20%"))}
+- 40–100%:  {fmt(dg.get("40-100%"))}
+- <10%:     {fmt(dg.get("<10%"))}
+
+SHARES OUTSTANDING (current scoring: <5M → +2pts, else → 0pts):
+- <1M:    {fmt(so.get("<1M"))}
+- 1–5M:   {fmt(so.get("1-5M"))}
+- 5–10M:  {fmt(so.get("5-10M"))}
+- 10–30M: {fmt(so.get("10-30M"))}
+- 30M+:   {fmt(so.get("30M+"))}
+
+For each signal, state whether to increase, decrease, split, or keep the current weights and by how much. Focus on the combination of win rate AND average return — a bucket with 70% win rate and +5% avg return is better than 60% win rate and +8% avg return.
+
+Format your response with these exact section headers:
+## Relative Volume Weights
+## Daily Gain Weights
+## Shares Outstanding Weights
+## Top 3 Changes to Implement Now"""
+
+    try:
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=900,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return message.content[0].text.strip()
+    except Exception as e:
+        return f"Analysis unavailable: {str(e)}"
+
+
+def analyze_chart_feedback(image_bytes: bytes, media_type: str, user_text: str) -> str:
+    """
+    Uses Claude vision to extract chart patterns and trade signals from a
+    user-submitted screenshot. Returns a bullet-point analysis string.
+    """
+    b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+
+    notes = f"User notes: {user_text}" if user_text else "No notes provided."
+
+    prompt = f"""Analyze this trading chart screenshot submitted as a winning trade example.
+{notes}
+
+Extract and list:
+1. Chart pattern visible (consolidation box, barcode, deep collapse rebound, breakout, etc.)
+2. Volume profile (spike, sustained, thin)
+3. Price action characteristics (tight range before move, gap up, steady climb, etc.)
+4. Key signals that made this a good setup
+5. One-line lesson for identifying similar setups in the future
+
+Be specific and concise. Use bullet points."""
+
+    try:
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=450,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": b64,
+                        }
+                    },
+                    {"type": "text", "text": prompt}
+                ]
+            }]
+        )
+        return message.content[0].text.strip()
+    except Exception as e:
+        return f"Could not analyze chart: {str(e)}"

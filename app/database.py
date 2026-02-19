@@ -77,6 +77,17 @@ def init_db():
         INSERT OR IGNORE INTO portfolio (id, cash) VALUES (1, 10000.0)
     """)
 
+    # ---------------- FEEDBACK TABLE ----------------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS feedback (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at     TEXT NOT NULL,
+            symbol         TEXT,
+            user_text      TEXT,
+            chart_analysis TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -484,3 +495,94 @@ def get_portfolio_summary():
         "cash": round(cash, 2),
         "realized_pnl": round(realized_total, 2),
     }
+
+
+# ---------------- WEIGHT OPTIMIZATION DATA ----------------
+def get_optimization_data():
+    """
+    Buckets historical scan signals by range and computes win rate + avg return
+    per bucket. Used by the AI weight optimizer.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT relative_volume, today_return, shares_outstanding, next_day_return
+        FROM scans
+        WHERE next_day_return IS NOT NULL
+        ORDER BY id DESC LIMIT 500
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        return None
+
+    def bucket_stats(values):
+        if not values:
+            return {"count": 0, "avg_return": 0.0, "win_rate": 0.0}
+        wins = [v for v in values if v > 0]
+        return {
+            "count": len(values),
+            "avg_return": round(sum(values) / len(values), 2),
+            "win_rate": round(len(wins) / len(values) * 100, 1),
+        }
+
+    relvol  = {">=50x": [], "25-50x": [], "10-25x": [], "<10x": []}
+    gain    = {"20-40%": [], "10-20%": [], "40-100%": [], "<10%": []}
+    shares  = {"<1M": [], "1-5M": [], "5-10M": [], "10-30M": [], "30M+": []}
+
+    for rv, tr, so, nd in rows:
+        if rv is not None:
+            if rv >= 50:   relvol[">=50x"].append(nd)
+            elif rv >= 25: relvol["25-50x"].append(nd)
+            elif rv >= 10: relvol["10-25x"].append(nd)
+            else:          relvol["<10x"].append(nd)
+
+        if tr is not None:
+            if 20 <= tr <= 40:        gain["20-40%"].append(nd)
+            elif 10 <= tr < 20:       gain["10-20%"].append(nd)
+            elif 40 < tr <= 100:      gain["40-100%"].append(nd)
+            elif tr < 10:             gain["<10%"].append(nd)
+
+        if so is not None:
+            if so < 1_000_000:        shares["<1M"].append(nd)
+            elif so < 5_000_000:      shares["1-5M"].append(nd)
+            elif so < 10_000_000:     shares["5-10M"].append(nd)
+            elif so < 30_000_000:     shares["10-30M"].append(nd)
+            else:                     shares["30M+"].append(nd)
+
+    return {
+        "total_trades": len(rows),
+        "relative_volume": {k: bucket_stats(v) for k, v in relvol.items()},
+        "daily_gain":      {k: bucket_stats(v) for k, v in gain.items()},
+        "shares_outstanding": {k: bucket_stats(v) for k, v in shares.items()},
+    }
+
+
+# ---------------- FEEDBACK ----------------
+def save_feedback(symbol: str, user_text: str, chart_analysis: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO feedback (created_at, symbol, user_text, chart_analysis)
+        VALUES (?, ?, ?, ?)
+    """, (datetime.utcnow().isoformat(), symbol or "", user_text or "", chart_analysis or ""))
+    conn.commit()
+    conn.close()
+
+
+def get_recent_feedback(limit: int = 10):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, created_at, symbol, user_text, chart_analysis
+        FROM feedback
+        ORDER BY id DESC LIMIT ?
+    """, (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "created_at": r[1], "symbol": r[2],
+         "user_text": r[3], "chart_analysis": r[4]}
+        for r in rows
+    ]

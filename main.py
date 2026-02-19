@@ -2,14 +2,18 @@
 
 import yfinance as yf
 
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, Request, Form, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.scanner import run_scan
-from app.ai_agent import recommend_position_size
+from app.ai_agent import (
+    recommend_position_size,
+    analyze_and_optimize_weights,
+    analyze_chart_feedback,
+)
 from app.database import (
     init_db,
     seed_users,
@@ -26,6 +30,9 @@ from app.database import (
     get_open_positions,
     get_trade_history,
     get_portfolio_summary,
+    get_optimization_data,
+    save_feedback,
+    get_recent_feedback,
 )
 
 app = FastAPI()
@@ -102,8 +109,9 @@ def dashboard(request: Request, mode: str = "standard", trade_error: str = ""):
     update_returns()
 
     available_cash = get_portfolio_summary()["cash"]
+    feedback_context = get_recent_feedback(limit=5)
     for stock in scan_data["results"]:
-        stock["ai_rec"] = recommend_position_size(stock, available_cash)
+        stock["ai_rec"] = recommend_position_size(stock, available_cash, feedback_context)
 
     return templates.TemplateResponse(
         "index.html",
@@ -213,6 +221,90 @@ def trade_sell(request: Request, trade_id: int):
     close_trade(trade_id, current_price)
 
     return RedirectResponse("/trades", status_code=303)
+
+
+# ---------------- WEIGHT OPTIMIZER ----------------
+@app.post("/optimize", response_class=HTMLResponse)
+def optimize_weights(request: Request):
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+
+    opt_data = get_optimization_data()
+    if not opt_data or opt_data["total_trades"] < 5:
+        analysis = (
+            "Not enough backtested data yet — need at least 5 scans with known returns. "
+            "Returns are filled in automatically once scans are 3+ trading days old."
+        )
+    else:
+        analysis = analyze_and_optimize_weights(opt_data)
+
+    return templates.TemplateResponse(
+        "analytics.html",
+        {
+            "request": request,
+            "score_buckets": get_score_buckets(),
+            "holding_perf": get_holding_performance(),
+            "equity_curve": get_equity_curve(),
+            "user": request.session["user"],
+            "weight_analysis": analysis,
+            "opt_data": opt_data,
+        }
+    )
+
+
+# ---------------- FEEDBACK ----------------
+@app.get("/feedback", response_class=HTMLResponse)
+def feedback_page(request: Request):
+    if "user" not in request.session:
+        return RedirectResponse("/login")
+
+    return templates.TemplateResponse(
+        "feedback.html",
+        {
+            "request": request,
+            "user": request.session["user"],
+            "recent_feedback": get_recent_feedback(limit=10),
+        }
+    )
+
+
+@app.post("/feedback", response_class=HTMLResponse)
+async def submit_feedback(
+    request: Request,
+    symbol: str = Form(""),
+    user_text: str = Form(""),
+    chart: UploadFile = File(None),
+):
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+
+    chart_analysis = ""
+    if chart and chart.filename:
+        image_bytes = await chart.read()
+        # Determine media type from filename
+        fn = chart.filename.lower()
+        if fn.endswith(".png"):
+            media_type = "image/png"
+        elif fn.endswith(".gif"):
+            media_type = "image/gif"
+        elif fn.endswith(".webp"):
+            media_type = "image/webp"
+        else:
+            media_type = "image/jpeg"
+        chart_analysis = analyze_chart_feedback(image_bytes, media_type, user_text)
+
+    save_feedback(symbol.upper().strip(), user_text, chart_analysis)
+
+    return templates.TemplateResponse(
+        "feedback.html",
+        {
+            "request": request,
+            "user": request.session["user"],
+            "recent_feedback": get_recent_feedback(limit=10),
+            "submitted": True,
+            "chart_analysis": chart_analysis,
+        }
+    )
 
 
 # ---------------- LOGOUT ----------------

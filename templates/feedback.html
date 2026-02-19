@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Trade Feedback – Reno Robs Trading</title>
+
+    <style>
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial;
+            background-color: #f7f9fc;
+            color: #1f2937;
+        }
+
+        .navbar {
+            background: white;
+            padding: 18px 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+
+        .navbar h2 { margin: 0; font-weight: 600; }
+
+        .nav-links a {
+            margin-left: 20px;
+            text-decoration: none;
+            font-weight: 500;
+            color: #4f46e5;
+        }
+
+        .logout { color: #dc2626; }
+
+        .container {
+            padding: 40px;
+            max-width: 900px;
+            margin: auto;
+        }
+
+        .card {
+            background: white;
+            padding: 28px;
+            border-radius: 10px;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.05);
+            margin-bottom: 30px;
+        }
+
+        label {
+            display: block;
+            font-weight: 500;
+            font-size: 14px;
+            margin-bottom: 6px;
+            color: #374151;
+        }
+
+        input[type="text"], textarea {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 10px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            background: #f9fafb;
+        }
+
+        textarea { resize: vertical; min-height: 80px; }
+
+        input[type="file"] {
+            font-size: 14px;
+        }
+
+        .submit-btn {
+            background: #4f46e5;
+            color: white;
+            border: none;
+            padding: 11px 26px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 16px;
+        }
+
+        .success-banner {
+            background: #f0fdf4;
+            border: 1px solid #86efac;
+            color: #166534;
+            padding: 14px 20px;
+            border-radius: 8px;
+            margin-bottom: 24px;
+            font-weight: 500;
+        }
+
+        .analysis-box {
+            background: #f8f9ff;
+            border: 1px solid #e0e7ff;
+            border-radius: 8px;
+            padding: 16px 20px;
+            font-size: 13px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            margin-top: 16px;
+            color: #1e1b4b;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+
+        .feedback-entry {
+            border-bottom: 1px solid #f1f5f9;
+            padding: 16px 0;
+        }
+
+        .feedback-entry:last-child { border-bottom: none; }
+
+        .feedback-meta {
+            font-size: 12px;
+            color: #9ca3af;
+            margin-bottom: 6px;
+        }
+
+        .feedback-symbol {
+            font-weight: 700;
+            font-size: 15px;
+            color: #4f46e5;
+        }
+
+        .feedback-text {
+            font-size: 13px;
+            color: #374151;
+            margin: 4px 0 8px;
+        }
+
+        .feedback-analysis {
+            font-size: 12px;
+            color: #4b5563;
+            background: #f9fafb;
+            border-radius: 6px;
+            padding: 10px 14px;
+            white-space: pre-wrap;
+            line-height: 1.6;
+        }
+
+        .empty-note {
+            color: #9ca3af;
+            font-size: 14px;
+            padding: 16px 0;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="navbar">
+    <div style="display:flex; align-items:center; gap:12px;">
+        <img src="/static/logo.png" alt="Logo" style="height:44px; width:auto; border-radius:6px;">
+        <h2 style="margin:0;">Reno Robs Trading</h2>
+    </div>
+
+    <div class="nav-links">
+        <span style="margin-right:20px; color:#6b7280;">
+            Logged in as {{ user }}
+        </span>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/analytics">Analytics</a>
+        <a href="/feedback">Feedback</a>
+        <a href="/logout" class="logout">Logout</a>
+    </div>
+</div>
+
+<div class="container">
+
+    <h2 style="margin-bottom:8px;">Trade Feedback</h2>
+    <p style="color:#6b7280; font-size:14px; margin-bottom:28px;">
+        Upload a screenshot of a winning chart setup and describe what worked.
+        Claude will analyze the pattern and inject these learnings into future position sizing recommendations.
+    </p>
+
+    {% if submitted %}
+    <div class="success-banner">
+        Feedback saved! Claude's chart analysis is shown below and will be used in future recommendations.
+    </div>
+
+    {% if chart_analysis %}
+    <div class="card" style="border-left:4px solid #4f46e5;">
+        <div style="font-weight:600; margin-bottom:8px; color:#4f46e5;">Claude's Chart Analysis</div>
+        <div class="analysis-box">{{ chart_analysis }}</div>
+    </div>
+    {% endif %}
+    {% endif %}
+
+    <!-- SUBMISSION FORM -->
+    <div class="card">
+        <div class="section-title" style="font-size:16px; margin-bottom:20px;">Submit Winning Trade</div>
+
+        <form method="post" action="/feedback" enctype="multipart/form-data">
+
+            <div style="display:grid; grid-template-columns:1fr 2fr; gap:20px; margin-bottom:16px;">
+                <div>
+                    <label>Ticker Symbol (optional)</label>
+                    <input type="text" name="symbol" placeholder="e.g. AAPL" maxlength="10">
+                </div>
+                <div>
+                    <label>Chart Screenshot</label>
+                    <input type="file" name="chart" accept="image/*">
+                    <div style="font-size:12px; color:#9ca3af; margin-top:4px;">
+                        PNG, JPG, or WEBP. Claude will extract chart patterns automatically.
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-bottom:4px;">
+                <label>What made this a good setup? (describe the pattern, catalyst, or signals you noticed)</label>
+                <textarea name="user_text" placeholder="e.g. Tight barcoding for 3 days then massive volume spike. Float was only 2M shares. Relative volume was 40x before the move..."></textarea>
+            </div>
+
+            <button type="submit" class="submit-btn">Submit & Analyze</button>
+        </form>
+    </div>
+
+    <!-- RECENT FEEDBACK -->
+    <div class="section-title">Recent Submissions</div>
+
+    <div class="card">
+        {% if recent_feedback %}
+            {% for entry in recent_feedback %}
+            <div class="feedback-entry">
+                <div class="feedback-meta">
+                    {{ entry.created_at[:10] }} &nbsp;·&nbsp;
+                    {% if entry.symbol %}
+                        <span class="feedback-symbol">{{ entry.symbol }}</span>
+                    {% else %}
+                        <span style="color:#9ca3af;">No symbol</span>
+                    {% endif %}
+                </div>
+                {% if entry.user_text %}
+                <div class="feedback-text">{{ entry.user_text }}</div>
+                {% endif %}
+                {% if entry.chart_analysis %}
+                <div class="feedback-analysis">{{ entry.chart_analysis }}</div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        {% else %}
+            <p class="empty-note">No feedback submitted yet.</p>
+        {% endif %}
+    </div>
+
+</div>
+
+</body>
+</html>
