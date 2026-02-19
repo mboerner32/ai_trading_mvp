@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.scanner import run_scan
+from app.ai_agent import recommend_position_size
 from app.database import (
     init_db,
     seed_users,
@@ -102,6 +103,10 @@ def dashboard(request: Request, mode: str = "standard", trade_error: str = ""):
     save_scan(scan_data["results"], mode)
     update_returns()
 
+    available_cash = get_portfolio_summary()["cash"]
+    for stock in scan_data["results"]:
+        stock["ai_rec"] = recommend_position_size(stock, available_cash)
+
     return templates.TemplateResponse(
         "index.html",
         {
@@ -179,12 +184,16 @@ def trades_page(request: Request):
 
 
 @app.post("/trade/buy")
-def trade_buy(request: Request, symbol: str = Form(...), price: float = Form(...)):
-
+def trade_buy(
+    request: Request,
+    symbol: str = Form(...),
+    price: float = Form(...),
+    position_size: float = Form(1000.0)
+):
     if "user" not in request.session:
         return RedirectResponse("/login", status_code=303)
 
-    result = open_trade(symbol, price)
+    result = open_trade(symbol, price, position_size)
 
     if result is None:
         return RedirectResponse("/dashboard?trade_error=insufficient_funds", status_code=303)

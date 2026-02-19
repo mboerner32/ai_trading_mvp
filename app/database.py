@@ -328,8 +328,8 @@ def save_scan(results: list, mode: str):
 POSITION_SIZE = 1000.0
 
 
-def open_trade(symbol: str, price: float):
-    if price <= 0:
+def open_trade(symbol: str, price: float, position_size: float = POSITION_SIZE):
+    if price <= 0 or position_size <= 0:
         return None
 
     conn = sqlite3.connect(DB_NAME)
@@ -339,21 +339,21 @@ def open_trade(symbol: str, price: float):
     row = cursor.fetchone()
     cash = row[0] if row else 0.0
 
-    if cash < POSITION_SIZE:
+    if cash < position_size:
         conn.close()
         return None
 
-    shares = POSITION_SIZE / price
+    shares = position_size / price
     opened_at = datetime.utcnow().isoformat()
 
     cursor.execute(
         "UPDATE portfolio SET cash = cash - ? WHERE id = 1",
-        (POSITION_SIZE,)
+        (position_size,)
     )
     cursor.execute("""
         INSERT INTO trades (symbol, entry_price, shares, position_size, status, opened_at)
         VALUES (?, ?, ?, ?, 'open', ?)
-    """, (symbol, round(price, 4), round(shares, 6), POSITION_SIZE, opened_at))
+    """, (symbol, round(price, 4), round(shares, 6), position_size, opened_at))
 
     trade_id = cursor.lastrowid
     conn.commit()
