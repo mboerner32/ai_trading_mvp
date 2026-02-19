@@ -13,6 +13,7 @@ from app.ai_agent import (
     recommend_position_size,
     analyze_and_optimize_weights,
     analyze_chart_feedback,
+    synthesize_feedback_hypotheses,
 )
 from app.database import (
     init_db,
@@ -33,6 +34,9 @@ from app.database import (
     get_optimization_data,
     save_feedback,
     get_recent_feedback,
+    get_all_feedback,
+    save_hypothesis,
+    get_hypothesis,
 )
 
 app = FastAPI()
@@ -109,9 +113,10 @@ def dashboard(request: Request, mode: str = "standard", trade_error: str = ""):
     update_returns()
 
     available_cash = get_portfolio_summary()["cash"]
-    feedback_context = get_recent_feedback(limit=5)
+    hypothesis_data = get_hypothesis()
+    hypothesis_text = hypothesis_data["content"] if hypothesis_data else None
     for stock in scan_data["results"]:
-        stock["ai_rec"] = recommend_position_size(stock, available_cash, feedback_context)
+        stock["ai_rec"] = recommend_position_size(stock, available_cash, hypothesis_text)
 
     return templates.TemplateResponse(
         "index.html",
@@ -264,6 +269,7 @@ def feedback_page(request: Request):
             "request": request,
             "user": request.session["user"],
             "recent_feedback": get_recent_feedback(limit=10),
+            "hypothesis": get_hypothesis(),
         }
     )
 
@@ -295,12 +301,21 @@ async def submit_feedback(
 
     save_feedback(symbol.upper().strip(), user_text, chart_analysis)
 
+    # Re-synthesize hypotheses across ALL feedback after each new submission
+    all_feedback = get_all_feedback()
+    hypothesis_text = synthesize_feedback_hypotheses(all_feedback)
+    if hypothesis_text:
+        save_hypothesis(hypothesis_text, len(all_feedback))
+
+    hypothesis_data = get_hypothesis()
+
     return templates.TemplateResponse(
         "feedback.html",
         {
             "request": request,
             "user": request.session["user"],
             "recent_feedback": get_recent_feedback(limit=10),
+            "hypothesis": hypothesis_data,
             "submitted": True,
             "chart_analysis": chart_analysis,
         }

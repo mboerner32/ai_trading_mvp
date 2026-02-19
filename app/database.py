@@ -88,6 +88,16 @@ def init_db():
         )
     """)
 
+    # ---------------- SETTINGS TABLE ----------------
+    # Generic key/value store for persisting AI-generated outputs.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key        TEXT PRIMARY KEY,
+            value      TEXT,
+            updated_at TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -586,3 +596,63 @@ def get_recent_feedback(limit: int = 10):
          "user_text": r[3], "chart_analysis": r[4]}
         for r in rows
     ]
+
+
+def get_all_feedback():
+    """Returns all feedback entries for hypothesis synthesis."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, created_at, symbol, user_text, chart_analysis
+        FROM feedback
+        ORDER BY id ASC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "created_at": r[1], "symbol": r[2],
+         "user_text": r[3], "chart_analysis": r[4]}
+        for r in rows
+    ]
+
+
+# ---------------- HYPOTHESIS STORAGE ----------------
+def save_hypothesis(content: str, feedback_count: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO settings (key, value, updated_at)
+        VALUES ('hypothesis', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                       updated_at = excluded.updated_at
+    """, (content, datetime.utcnow().isoformat()))
+    cursor.execute("""
+        INSERT INTO settings (key, value, updated_at)
+        VALUES ('hypothesis_feedback_count', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                       updated_at = excluded.updated_at
+    """, (str(feedback_count), datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_hypothesis():
+    """Returns (content, feedback_count, updated_at) or None if no hypothesis stored."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT value, updated_at FROM settings WHERE key = 'hypothesis'
+    """)
+    row = cursor.fetchone()
+    cursor.execute("""
+        SELECT value FROM settings WHERE key = 'hypothesis_feedback_count'
+    """)
+    count_row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "content": row[0],
+        "feedback_count": int(count_row[0]) if count_row else 0,
+        "updated_at": row[1],
+    }

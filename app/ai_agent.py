@@ -8,32 +8,28 @@ client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
 
 def recommend_position_size(stock: dict, available_cash: float,
-                            feedback_context: list = None) -> dict:
+                            hypothesis: str = None) -> dict:
     """
     Calls Claude to recommend a position size for a given stock.
     Returns {"amount": int, "rationale": str}.
     Falls back to {"amount": 1000, "rationale": ""} on any error.
+
+    hypothesis: synthesized pattern hypotheses from accumulated user feedback.
+                If provided, injected as learned context to inform sizing.
     """
     checklist = stock.get("checklist", {})
 
     shares_outstanding = checklist.get("shares_outstanding")
     shares_str = f"{shares_outstanding:,}" if shares_outstanding else "N/A"
 
-    # Build optional learned-pattern context from user feedback
+    # Inject synthesized hypothesis context (concise — first 500 chars)
     feedback_section = ""
-    if feedback_context:
-        snippets = []
-        for fb in feedback_context[:3]:
-            analysis = (fb.get("chart_analysis") or "").strip()
-            if analysis:
-                sym = fb.get("symbol") or "?"
-                snippets.append(f"- {sym}: {analysis[:180]}")
-        if snippets:
-            feedback_section = (
-                "\n\nLearned patterns from user-submitted winning trades:\n"
-                + "\n".join(snippets)
-                + "\nWeigh these patterns when sizing this position."
-            )
+    if hypothesis:
+        summary = hypothesis[:500].strip()
+        feedback_section = (
+            f"\n\nHypotheses derived from user-submitted winning trade patterns:\n{summary}"
+            "\nUse these hypotheses to adjust sizing confidence."
+        )
 
     prompt = f"""You are a trading risk manager for a paper trading simulator.
 
@@ -94,6 +90,61 @@ RATIONALE: <one sentence, 15 words or less>"""
 
     except Exception:
         return {"amount": 1000, "rationale": ""}
+
+
+def synthesize_feedback_hypotheses(feedback_entries: list) -> str:
+    """
+    Reads all accumulated user feedback and synthesizes cross-entry patterns
+    into testable hypotheses. Returns hypothesis text to be stored and reused.
+    Uses claude-sonnet-4-6 for pattern recognition across multiple entries.
+    """
+    if not feedback_entries:
+        return ""
+
+    # Build a structured summary of all submissions
+    entries_text = ""
+    for i, fb in enumerate(feedback_entries, 1):
+        sym = fb.get("symbol") or "Unknown"
+        user_text = (fb.get("user_text") or "").strip()
+        chart_analysis = (fb.get("chart_analysis") or "").strip()
+        date = (fb.get("created_at") or "")[:10]
+        entries_text += f"\n--- Entry {i} ({date}) — {sym} ---\n"
+        if user_text:
+            entries_text += f"User notes: {user_text}\n"
+        if chart_analysis:
+            entries_text += f"Chart analysis: {chart_analysis}\n"
+
+    n = len(feedback_entries)
+
+    prompt = f"""You are analyzing {n} winning trade submissions from a trader to identify recurring patterns and form testable hypotheses.
+
+{entries_text}
+
+Based on ALL submissions above, identify patterns that appear across multiple entries (not just one). For each hypothesis:
+- State what the pattern is
+- Note how many entries support it (even if indirectly)
+- Rate confidence: HIGH (3+ entries), EMERGING (2 entries), PRELIMINARY (1 entry but notable)
+- State how this should influence position sizing (size up, size down, or no effect)
+
+Then write a AGENT CONTEXT section: a compact 3-4 sentence summary of the highest-confidence hypotheses formatted for injection into a trading AI agent.
+
+Format exactly:
+## Hypotheses
+
+[numbered list]
+
+## Agent Context
+[compact paragraph]"""
+
+    try:
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return message.content[0].text.strip()
+    except Exception as e:
+        return f"Synthesis unavailable: {str(e)}"
 
 
 def analyze_and_optimize_weights(opt_data: dict) -> str:
