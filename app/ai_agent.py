@@ -395,6 +395,9 @@ def analyze_chart_feedback(image_bytes: bytes, media_type: str, user_text: str) 
     Uses Claude vision to extract chart patterns and trade signals from a
     user-submitted screenshot. Returns a bullet-point analysis string.
     """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return "Chart analysis unavailable: ANTHROPIC_API_KEY environment variable is not set."
+
     b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
 
     notes = f"User notes: {user_text}" if user_text else "No notes provided."

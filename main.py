@@ -55,6 +55,13 @@ app.add_middleware(
 init_db()
 seed_users()
 
+# Log API key status at startup so it's visible in Render logs
+import os as _os
+if _os.environ.get("ANTHROPIC_API_KEY"):
+    print("STARTUP: ANTHROPIC_API_KEY is set ✓")
+else:
+    print("STARTUP: WARNING — ANTHROPIC_API_KEY is NOT set. AI features will fail.")
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 templates = Jinja2Templates(directory="templates")
