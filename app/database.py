@@ -71,6 +71,7 @@ def create_user(username: str, password: str):
 
 def seed_users():
     """Ensure default users exist — safe to call on every startup."""
+    create_user("admin", "admin123")
     create_user("BobbyAxelrod", "Billions")
 
 
