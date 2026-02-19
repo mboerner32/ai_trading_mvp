@@ -4,7 +4,8 @@ import requests
 import re
 import yfinance as yf
 import pandas as pd
-from app.scoring_engine import score_stock, score_stock_squeeze
+from app.scoring_engine import score_stock, score_stock_squeeze, DEFAULT_SQUEEZE_WEIGHTS
+from app.database import get_squeeze_weights
 
 
 # ---------------------------------------------------
@@ -147,7 +148,14 @@ def run_scan(mode="standard"):
         "qualified": 0
     }
 
-    scorer = score_stock_squeeze if mode == "squeeze" else score_stock
+    if mode == "squeeze":
+        weights_data = get_squeeze_weights()
+        active_weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS
+        scorer = lambda symbol, df, fundamentals=None: score_stock_squeeze(
+            symbol, df, fundamentals, weights=active_weights
+        )
+    else:
+        scorer = score_stock
 
     for symbol in tickers:
 

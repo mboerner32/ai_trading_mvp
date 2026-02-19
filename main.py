@@ -2,7 +2,7 @@
 
 import yfinance as yf
 
-from fastapi import FastAPI, Request, Form, UploadFile, File
+from fastapi import FastAPI, Request, Form, UploadFile, File, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -14,7 +14,9 @@ from app.ai_agent import (
     analyze_and_optimize_weights,
     analyze_chart_feedback,
     synthesize_feedback_hypotheses,
+    optimize_complex_ai_weights,
 )
+from app.scoring_engine import DEFAULT_SQUEEZE_WEIGHTS
 from app.database import (
     init_db,
     seed_users,
@@ -37,6 +39,8 @@ from app.database import (
     get_all_feedback,
     save_hypothesis,
     get_hypothesis,
+    save_squeeze_weights,
+    get_squeeze_weights,
 )
 
 app = FastAPI()
@@ -103,7 +107,7 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
 
 # ---------------- DASHBOARD ----------------
 @app.get("/dashboard", response_class=HTMLResponse)
-def dashboard(request: Request, mode: str = "standard", trade_error: str = ""):
+def dashboard(request: Request, mode: str = "squeeze", trade_error: str = ""):
 
     if "user" not in request.session:
         return RedirectResponse("/login")
@@ -118,6 +122,8 @@ def dashboard(request: Request, mode: str = "standard", trade_error: str = ""):
     for stock in scan_data["results"]:
         stock["ai_rec"] = recommend_position_size(stock, available_cash, hypothesis_text)
 
+    ai_weights_info = get_squeeze_weights() if mode == "squeeze" else None
+
     return templates.TemplateResponse(
         "index.html",
         {
@@ -126,7 +132,8 @@ def dashboard(request: Request, mode: str = "standard", trade_error: str = ""):
             "summary": scan_data["summary"],
             "mode": mode,
             "trade_error": trade_error,
-            "user": request.session["user"]
+            "user": request.session["user"],
+            "ai_weights_info": ai_weights_info,
         }
     )
 
@@ -274,9 +281,28 @@ def feedback_page(request: Request):
     )
 
 
+def _run_weight_optimization(all_feedback: list, hypothesis_content: str | None):
+    """Background task: optimize Complex + AI weights without blocking the response."""
+    try:
+        opt_data = get_optimization_data()
+        weights_data = get_squeeze_weights()
+        current_weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS.copy()
+        opt_result = optimize_complex_ai_weights(opt_data, all_feedback, current_weights, hypothesis_content)
+        if "error" not in opt_result:
+            save_squeeze_weights(
+                opt_result["weights"],
+                opt_result["rationale"],
+                opt_result["suggestions"],
+                opt_result["summary"],
+            )
+    except Exception:
+        pass  # never crash the background task
+
+
 @app.post("/feedback", response_class=HTMLResponse)
 async def submit_feedback(
     request: Request,
+    background_tasks: BackgroundTasks,
     symbol: str = Form(""),
     user_text: str = Form(""),
     chart: UploadFile = File(None),
@@ -309,6 +335,13 @@ async def submit_feedback(
 
     hypothesis_data = get_hypothesis()
 
+    # Schedule weight optimization as a background task so it doesn't block the response
+    background_tasks.add_task(
+        _run_weight_optimization,
+        all_feedback,
+        hypothesis_data["content"] if hypothesis_data else None,
+    )
+
     return templates.TemplateResponse(
         "feedback.html",
         {
@@ -318,6 +351,46 @@ async def submit_feedback(
             "hypothesis": hypothesis_data,
             "submitted": True,
             "chart_analysis": chart_analysis,
+        }
+    )
+
+
+# ---------------- COMPLEX + AI OPTIMIZER ----------------
+@app.post("/optimize-complex", response_class=HTMLResponse)
+def optimize_complex(request: Request):
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+
+    opt_data = get_optimization_data()
+    all_feedback = get_all_feedback()
+    hypothesis_data = get_hypothesis()
+
+    weights_data = get_squeeze_weights()
+    current_weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS.copy()
+
+    opt_result = optimize_complex_ai_weights(
+        opt_data, all_feedback, current_weights,
+        hypothesis_data["content"] if hypothesis_data else None
+    )
+
+    if "error" not in opt_result:
+        save_squeeze_weights(
+            opt_result["weights"],
+            opt_result["rationale"],
+            opt_result["suggestions"],
+            opt_result["summary"],
+        )
+
+    return templates.TemplateResponse(
+        "analytics.html",
+        {
+            "request": request,
+            "score_buckets": get_score_buckets(),
+            "holding_perf": get_holding_performance(),
+            "equity_curve": get_equity_curve(),
+            "user": request.session["user"],
+            "complex_ai_result": opt_result,
+            "complex_ai_weights": get_squeeze_weights(),
         }
     )
 

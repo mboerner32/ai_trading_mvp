@@ -160,22 +160,64 @@
 <div class="container">
 
     <div class="mode-toggle" style="margin-bottom:20px;">
-        <a href="/dashboard?mode=standard"
-           class="{{ 'active' if mode == 'standard' else '' }}">
-           Standard Mode
+        <a href="/dashboard?mode=squeeze"
+           class="{{ 'active' if mode == 'squeeze' else '' }}"
+           style="{{ 'background:#0f766e; color:white;' if mode == 'squeeze' else 'background:#d1fae5; color:#065f46;' }}">
+           Complex + AI Mode
         </a>
 
         <a href="/dashboard?mode=strict"
            class="{{ 'active' if mode == 'strict' else '' }}">
-           Strict Mode
+           Complex Mode
         </a>
 
-        <a href="/dashboard?mode=squeeze"
-           class="{{ 'active' if mode == 'squeeze' else '' }}"
-           style="{{ 'background:#0f766e; color:white;' if mode == 'squeeze' else 'background:#d1fae5; color:#065f46;' }}">
-           Squeeze Mode
+        <a href="/dashboard?mode=standard"
+           class="{{ 'active' if mode == 'standard' else '' }}">
+           Standard Mode
         </a>
     </div>
+
+    {% if mode == 'squeeze' %}
+    <div style="background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%);
+                color: white; padding: 14px 20px; border-radius: 10px;
+                margin-bottom: 20px; display: flex; justify-content: space-between;
+                align-items: flex-start; gap: 16px;">
+        <div style="flex: 1;">
+            <div style="font-weight: 700; font-size: 14px; margin-bottom: 4px;">
+                {% if ai_weights_info %}
+                    AI-Optimized Weights Active
+                {% else %}
+                    Default Weights Active — Submit feedback to start training the AI
+                {% endif %}
+            </div>
+            {% if ai_weights_info %}
+                {% if ai_weights_info.summary %}
+                <div style="font-size: 13px; opacity: 0.9; margin-bottom: 5px;">
+                    {{ ai_weights_info.summary }}
+                </div>
+                {% endif %}
+                <div style="font-size: 12px; opacity: 0.75; margin-bottom: 5px;">
+                    Last optimized: {{ ai_weights_info.updated_at[:10] }}
+                </div>
+                {% if ai_weights_info.suggestions %}
+                <div style="font-size: 12px; opacity: 0.85;">
+                    <strong>Suggested new signals:</strong>
+                    {{ ai_weights_info.suggestions | join(" · ") }}
+                </div>
+                {% endif %}
+            {% else %}
+                <div style="font-size: 12px; opacity: 0.8; margin-top: 2px;">
+                    Each feedback submission automatically re-trains and applies new scoring weights.
+                </div>
+            {% endif %}
+        </div>
+        <a href="/analytics" style="color: white; text-decoration: none; font-size: 13px;
+                                    padding: 7px 14px; border: 1px solid rgba(255,255,255,0.45);
+                                    border-radius: 6px; white-space: nowrap; flex-shrink: 0;">
+            Optimizer →
+        </a>
+    </div>
+    {% endif %}
 
     <div class="kpi-grid">
         <div class="card">

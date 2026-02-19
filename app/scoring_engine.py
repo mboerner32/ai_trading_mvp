@@ -184,7 +184,23 @@ def score_stock(symbol: str, df, fundamentals=None):
 # Target: +20% moves in low-float microcaps with explosive volume
 # --------------------------------------------------
 
-def score_stock_squeeze(symbol: str, df, fundamentals=None):
+# Default weights — overridden by AI optimizer when stored in DB
+DEFAULT_SQUEEZE_WEIGHTS = {
+    "rel_vol_50x":            3,   # relative volume >= 50x
+    "rel_vol_25x":            2,   # relative volume >= 25x (exclusive)
+    "rel_vol_10x":            1,   # relative volume >= 10x (exclusive)
+    "daily_sweet_20_40":      2,   # daily gain 20–40% (sweet spot)
+    "daily_ok_10_20":         1,   # daily gain 10–20%
+    "daily_ok_40_100":        1,   # daily gain 40–100%
+    "sideways_chop":          1,   # 10-day range < 20% (consolidation)
+    "yesterday_green":        1,   # previous day positive
+    "shares_lt10m":           3,   # shares outstanding < 10M
+    "shares_lt30m":           1,   # shares outstanding 10M–30M
+    "shares_gte100m_penalty": 2,   # deducted when shares >= 100M (stored positive)
+}
+
+
+def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
 
     if df is None or len(df) < 20:
         return None
@@ -210,46 +226,51 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None):
     if daily_return is not None and daily_return > 1.00:
         return None
 
+    # Merge provided weights with defaults so any missing key falls back safely
+    w = {**DEFAULT_SQUEEZE_WEIGHTS, **(weights or {})}
+
     score = 0
 
-    # --- Relative Volume (max +3) ---
+    # --- Relative Volume ---
     relvol_tier = "Below Threshold"
     if relative_volume is not None:
         if relative_volume >= 50:
-            score += 3
+            score += w["rel_vol_50x"]
             relvol_tier = "Exceptional (≥50x)"
         elif relative_volume >= 25:
-            score += 2
+            score += w["rel_vol_25x"]
             relvol_tier = "Ideal (≥25x)"
         elif relative_volume >= 10:
-            score += 1
+            score += w["rel_vol_10x"]
             relvol_tier = "Minimum (≥10x)"
 
-    # --- Daily Gain sweet spot 20–40% (max +2) ---
+    # --- Daily Gain ---
     sweet_spot_squeeze = False
     if daily_return is not None:
         sweet_spot_squeeze = 0.20 <= daily_return <= 0.40
         if sweet_spot_squeeze:
-            score += 2
-        elif 0.10 <= daily_return < 0.20 or 0.40 < daily_return <= 1.00:
-            score += 1
+            score += w["daily_sweet_20_40"]
+        elif 0.10 <= daily_return < 0.20:
+            score += w["daily_ok_10_20"]
+        elif 0.40 < daily_return <= 1.00:
+            score += w["daily_ok_40_100"]
 
-    # --- Sideways Consolidation / Barcoding (max +1) ---
+    # --- Sideways Consolidation / Barcoding ---
     sideways_chop = False
     if range_10d is not None:
         sideways_chop = range_10d < 0.20
         if sideways_chop:
-            score += 1
+            score += w["sideways_chop"]
 
-    # --- Yesterday Green (max +1) ---
+    # --- Yesterday Green ---
     yesterday_green = False
     if len(df) >= 2:
         prev_return = safe_float(df.iloc[-2].get("daily_return"))
         if prev_return is not None and prev_return > 0:
             yesterday_green = True
-            score += 1
+            score += w["yesterday_green"]
 
-    # --- Shares Outstanding (max +3, min -2) ---
+    # --- Shares Outstanding ---
     shares_outstanding = None
     float_shares       = None
     institution_pct    = None
@@ -262,20 +283,29 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None):
 
         if shares_outstanding is not None:
             if shares_outstanding < 10_000_000:
-                score += 3
+                score += w["shares_lt10m"]
                 float_tier = "Ideal (<10M)"
             elif shares_outstanding < 30_000_000:
-                score += 1
+                score += w["shares_lt30m"]
                 float_tier = "Acceptable (<30M)"
             elif shares_outstanding < 100_000_000:
                 float_tier = "Large (30M–100M)"
             else:
-                score -= 2
+                score -= w["shares_gte100m_penalty"]
                 float_tier = "Avoid (≥100M)"
 
-    # Scale to 0–100
-    # Max raw: 3 (relvol) + 2 (daily) + 1 (sideways) + 1 (yesterday) + 3 (shares) = 10
-    score = max(0, round((score / 10) * 100))
+    # Compute max achievable score with current weights (no penalties)
+    max_score = (
+        max(w["rel_vol_50x"], w["rel_vol_25x"], w["rel_vol_10x"], 0) +
+        max(w["daily_sweet_20_40"], w["daily_ok_10_20"], w["daily_ok_40_100"], 0) +
+        w["sideways_chop"] +
+        w["yesterday_green"] +
+        max(w["shares_lt10m"], w["shares_lt30m"], 0)
+    )
+    if max_score <= 0:
+        max_score = 10
+
+    score = max(0, round((score / max_score) * 100))
 
     recommendation = "SPECULATIVE"
     if score >= 50:

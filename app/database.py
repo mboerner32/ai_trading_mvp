@@ -1,4 +1,5 @@
 import sqlite3
+import json
 from datetime import datetime, timedelta
 import yfinance as yf
 from passlib.context import CryptContext
@@ -655,4 +656,65 @@ def get_hypothesis():
         "content": row[0],
         "feedback_count": int(count_row[0]) if count_row else 0,
         "updated_at": row[1],
+    }
+
+
+# ---------------- COMPLEX + AI WEIGHT STORAGE ----------------
+def save_squeeze_weights(weights: dict, rationale: str = "",
+                         suggestions: list = None, summary: str = ""):
+    """Persist AI-optimized squeeze weights to the settings table."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    now = datetime.utcnow().isoformat()
+
+    for key, value in [
+        ("squeeze_weights",             json.dumps(weights)),
+        ("squeeze_weights_rationale",   rationale),
+        ("squeeze_weights_suggestions", json.dumps(suggestions or [])),
+        ("squeeze_weights_summary",     summary),
+    ]:
+        cursor.execute("""
+            INSERT INTO settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                           updated_at = excluded.updated_at
+        """, (key, value, now))
+
+    conn.commit()
+    conn.close()
+
+
+def get_squeeze_weights():
+    """
+    Returns dict with AI-optimized weights, rationale, suggestions, summary,
+    and updated_at. Returns None if no weights have been stored yet.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    keys = [
+        "squeeze_weights",
+        "squeeze_weights_rationale",
+        "squeeze_weights_suggestions",
+        "squeeze_weights_summary",
+    ]
+    result = {}
+    for key in keys:
+        cursor.execute("SELECT value, updated_at FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        if row:
+            result[key] = row[0]
+            result["updated_at"] = row[1]
+
+    conn.close()
+
+    if "squeeze_weights" not in result:
+        return None
+
+    return {
+        "weights":     json.loads(result["squeeze_weights"]),
+        "rationale":   result.get("squeeze_weights_rationale", ""),
+        "suggestions": json.loads(result.get("squeeze_weights_suggestions", "[]")),
+        "summary":     result.get("squeeze_weights_summary", ""),
+        "updated_at":  result.get("updated_at", ""),
     }
