@@ -165,12 +165,30 @@ def analytics(request: Request):
 
 
 # ---------------- TRADES ----------------
+TARGET_GAIN = 0.20  # 20% profit target — auto-sell when hit
+
+
 @app.get("/trades", response_class=HTMLResponse)
 def trades_page(request: Request):
 
     if "user" not in request.session:
         return RedirectResponse("/login")
 
+    # --- Auto-close any positions that have hit the 20% target ---
+    auto_closed = []
+    for pos in get_open_positions():
+        target_price = pos["entry_price"] * (1 + TARGET_GAIN)
+        current_price = _fetch_current_price(pos["symbol"], pos["entry_price"])
+        if current_price >= target_price:
+            result = close_trade(pos["trade_id"], current_price)
+            if result:
+                auto_closed.append({
+                    "symbol": pos["symbol"],
+                    "exit_price": round(current_price, 4),
+                    "realized_pnl": round(result["realized_pnl"], 2),
+                })
+
+    # Reload after any auto-closes
     positions = get_open_positions()
     history = get_trade_history()
     summary = get_portfolio_summary()
@@ -183,10 +201,14 @@ def trades_page(request: Request):
         open_value += current_value
 
         pos["current_price"] = round(current_price, 4)
+        pos["target_price"] = round(pos["entry_price"] * (1 + TARGET_GAIN), 4)
         pos["unrealized_pnl"] = round(unrealized_pnl, 2)
         pos["current_value"] = round(current_value, 2)
         pos["pnl_pct"] = round(
             (current_price - pos["entry_price"]) / pos["entry_price"] * 100, 2
+        )
+        pos["to_target_pct"] = round(
+            (pos["target_price"] - current_price) / current_price * 100, 2
         )
 
     total_value = summary["cash"] + open_value
@@ -198,6 +220,7 @@ def trades_page(request: Request):
             "user": request.session["user"],
             "positions": positions,
             "history": history,
+            "auto_closed": auto_closed,
             "summary": {
                 **summary,
                 "open_value": round(open_value, 2),

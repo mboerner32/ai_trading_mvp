@@ -175,6 +175,22 @@
 
     </div>
 
+    <!-- AUTO-CLOSE NOTIFICATIONS -->
+    {% if auto_closed %}
+    <div style="background:#f0fdf4; border:1px solid #86efac; border-radius:10px;
+                padding:16px 20px; margin-bottom:24px;">
+        <div style="font-weight:700; color:#15803d; margin-bottom:8px;">
+            🎯 Target Hit — Position{{ 's' if auto_closed|length > 1 else '' }} Auto-Sold at +20%
+        </div>
+        {% for t in auto_closed %}
+        <div style="font-size:14px; color:#166534;">
+            <strong>{{ t.symbol }}</strong> sold at ${{ t.exit_price }} &nbsp;·&nbsp;
+            P&amp;L: <strong>+${{ "{:,.2f}".format(t.realized_pnl) }}</strong>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
     <!-- OPEN POSITIONS -->
     <div class="section-title">Open Positions</div>
 
@@ -184,7 +200,9 @@
             <tr>
                 <th>Symbol</th>
                 <th>Entry Price</th>
+                <th>Target (+20%)</th>
                 <th>Current Price</th>
+                <th>To Target</th>
                 <th>Shares</th>
                 <th>Current Value</th>
                 <th>Unrealized P&amp;L</th>
@@ -198,7 +216,15 @@
             <tr>
                 <td><strong>{{ pos.symbol }}</strong></td>
                 <td>${{ pos.entry_price }}</td>
+                <td style="color:#0f766e; font-weight:600;">${{ pos.target_price }}</td>
                 <td>${{ pos.current_price }}</td>
+                <td style="font-size:13px; color:{{ '#16a34a' if pos.to_target_pct <= 5 else '#6b7280' }};">
+                    {% if pos.to_target_pct <= 0 %}
+                        🎯 At target
+                    {% else %}
+                        +{{ pos.to_target_pct }}% away
+                    {% endif %}
+                </td>
                 <td>{{ pos.shares | round(2) }}</td>
                 <td>${{ "{:,.2f}".format(pos.current_value) }}</td>
                 <td class="{{ 'good' if pos.unrealized_pnl >= 0 else 'bad' }}">
