@@ -1,10 +1,13 @@
+import os
 import sqlite3
 import json
 from datetime import datetime, timedelta
 import yfinance as yf
 from passlib.context import CryptContext
 
-DB_NAME = "scan_history.db"
+# On Render: mount a persistent disk at /data and set DB_PATH=/data/scan_history.db
+# Locally: falls back to scan_history.db in the project root
+DB_NAME = os.environ.get("DB_PATH", "scan_history.db")
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
