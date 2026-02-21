@@ -102,6 +102,17 @@ def init_db():
         )
     """)
 
+    # ---------------- WEIGHT CHANGELOG TABLE ----------------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS weight_changelog (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            updated_at  TEXT NOT NULL,
+            summary     TEXT,
+            rationale   TEXT,
+            weights     TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -757,3 +768,36 @@ def get_scan_cache(mode: str, max_age_minutes: int = 15):
         return None
     data["cache_age_minutes"] = round(age_minutes)
     return data
+
+
+# ---------------- WEIGHT CHANGELOG ----------------
+def save_weight_changelog(summary: str, rationale: str, weights: dict):
+    now = datetime.utcnow().isoformat()
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO weight_changelog (updated_at, summary, rationale, weights) VALUES (?, ?, ?, ?)",
+        (now, summary, rationale, json.dumps(weights))
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_weight_changelog(limit: int = 20) -> list:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT updated_at, summary, rationale, weights FROM weight_changelog ORDER BY id DESC LIMIT ?",
+        (limit,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "updated_at": r[0],
+            "summary":    r[1],
+            "rationale":  r[2],
+            "weights":    json.loads(r[3]) if r[3] else {},
+        }
+        for r in rows
+    ]

@@ -232,6 +232,17 @@
                 <strong>Why:</strong> {{ weights_info.rationale }}
             </div>
             {% endif %}
+
+            <form method="post" action="/apply-model-update" style="margin-top:14px;">
+                <button type="submit"
+                        style="background:#0f766e; color:white; border:none; padding:9px 20px;
+                               border-radius:8px; font-size:13px; font-weight:600; cursor:pointer;">
+                    Apply to Complex + AI Model
+                </button>
+                <span style="font-size:12px; color:#9ca3af; margin-left:10px;">
+                    Saves updated weights &amp; logs the change
+                </span>
+            </form>
         </div>
         {% endif %}
     </div>

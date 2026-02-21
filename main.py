@@ -46,6 +46,8 @@ from app.database import (
     get_squeeze_weights,
     save_scan_cache,
     get_scan_cache,
+    save_weight_changelog,
+    get_weight_changelog,
 )
 
 app = FastAPI()
@@ -192,6 +194,7 @@ def analytics(request: Request):
             "score_buckets": get_score_buckets(),
             "holding_perf": get_holding_performance(),
             "equity_curve": get_equity_curve(),
+            "weight_changelog": get_weight_changelog(),
             "user": request.session["user"]
         }
     )
@@ -465,6 +468,11 @@ def optimize_complex(request: Request):
             opt_result["suggestions"],
             opt_result["summary"],
         )
+        save_weight_changelog(
+            opt_result.get("summary", ""),
+            opt_result.get("rationale", ""),
+            opt_result["weights"],
+        )
 
     return templates.TemplateResponse(
         "analytics.html",
@@ -473,11 +481,45 @@ def optimize_complex(request: Request):
             "score_buckets": get_score_buckets(),
             "holding_perf": get_holding_performance(),
             "equity_curve": get_equity_curve(),
+            "weight_changelog": get_weight_changelog(),
             "user": request.session["user"],
             "complex_ai_result": opt_result,
             "complex_ai_weights": get_squeeze_weights(),
         }
     )
+
+
+# ---------------- APPLY MODEL UPDATE ----------------
+@app.post("/apply-model-update")
+def apply_model_update(request: Request):
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+
+    all_feedback = get_all_feedback()
+    hypothesis_data = get_hypothesis()
+    opt_data = get_optimization_data()
+    weights_data = get_squeeze_weights()
+    current_weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS.copy()
+
+    opt_result = optimize_complex_ai_weights(
+        opt_data, all_feedback, current_weights,
+        hypothesis_data["content"] if hypothesis_data else None
+    )
+
+    if "error" not in opt_result:
+        save_squeeze_weights(
+            opt_result["weights"],
+            opt_result["rationale"],
+            opt_result["suggestions"],
+            opt_result["summary"],
+        )
+        save_weight_changelog(
+            opt_result.get("summary", ""),
+            opt_result.get("rationale", ""),
+            opt_result["weights"],
+        )
+
+    return RedirectResponse("/analytics", status_code=303)
 
 
 # ---------------- LOGOUT ----------------

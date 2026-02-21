@@ -324,6 +324,43 @@
         {% endif %}
     </div>
 
+    <!-- WEIGHT CHANGELOG -->
+    <div class="section-title" style="color:#4f46e5;">Complex + AI Model — Change Log</div>
+
+    <div class="chart-card" style="margin-bottom:40px; border-left:4px solid #4f46e5;">
+        {% if weight_changelog %}
+        <table style="margin-bottom:0;">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Summary</th>
+                    <th>Rationale</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for entry in weight_changelog %}
+                <tr>
+                    <td style="white-space:nowrap; font-size:13px; color:#6b7280;">
+                        {{ entry.updated_at[:16].replace("T", " ") }}
+                    </td>
+                    <td style="font-size:13px; font-weight:600; color:#1f2937;">
+                        {{ entry.summary or "—" }}
+                    </td>
+                    <td style="font-size:12px; color:#4b5563; line-height:1.5;">
+                        {{ entry.rationale or "—" }}
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="empty-note">
+            No model updates logged yet. Use "Apply to Complex + AI Model" on the Feedback page
+            or click "Re-optimize Now" above to log the first entry.
+        </p>
+        {% endif %}
+    </div>
+
     <!-- EQUITY CURVE -->
     <div class="section-title">Equity Curve (compounded, $10k start)</div>
 
