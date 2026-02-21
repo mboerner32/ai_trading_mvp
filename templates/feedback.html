@@ -2,6 +2,7 @@
 <html>
 <head>
     <title>Trade Feedback – Reno Robs Trading</title>
+    <link rel="icon" type="image/png" href="/static/logo.png">
 
     <style>
         body {
@@ -229,10 +230,26 @@
                     <input type="text" name="symbol" placeholder="e.g. AAPL" maxlength="10">
                 </div>
                 <div>
-                    <label>Chart Screenshot</label>
-                    <input type="file" name="chart" accept="image/*">
-                    <div style="font-size:12px; color:#9ca3af; margin-top:4px;">
-                        PNG, JPG, or WEBP. RR's Proprietary AI Algorithm will extract chart patterns automatically.
+                    <label>Chart Screenshots</label>
+
+                    <!-- Hidden real input submitted with the form -->
+                    <input type="file" id="chartsInput" name="charts"
+                           accept=".png,.jpg,.jpeg,.webp,.gif" multiple style="display:none">
+
+                    <!-- Ephemeral picker (not submitted, resets each use) -->
+                    <input type="file" id="chartsPicker"
+                           accept=".png,.jpg,.jpeg,.webp,.gif" multiple style="display:none">
+
+                    <button type="button" id="addFilesBtn"
+                            style="background:#f3f4f6; border:1px solid #d1d5db; border-radius:8px;
+                                   padding:8px 16px; font-size:13px; cursor:pointer; margin-bottom:6px;">
+                        + Add Screenshot(s)
+                    </button>
+
+                    <div id="fileList" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;"></div>
+
+                    <div style="font-size:12px; color:#9ca3af; margin-top:6px;">
+                        Click to keep adding files one at a time — each batch adds to the list.
                     </div>
                 </div>
             </div>
@@ -275,6 +292,49 @@
     </div>
 
 </div>
+
+<script>
+    const realInput   = document.getElementById('chartsInput');
+    const picker      = document.getElementById('chartsPicker');
+    const fileListEl  = document.getElementById('fileList');
+    const addBtn      = document.getElementById('addFilesBtn');
+    const accumulator = new DataTransfer();
+
+    addBtn.addEventListener('click', () => picker.click());
+
+    picker.addEventListener('change', function () {
+        Array.from(this.files).forEach(file => accumulator.items.add(file));
+        realInput.files = accumulator.files;
+        this.value = '';   // reset picker so same file can be added again
+        renderList();
+    });
+
+    function removeFile(idx) {
+        const fresh = new DataTransfer();
+        Array.from(accumulator.files).forEach((f, i) => {
+            if (i !== idx) fresh.items.add(f);
+        });
+        accumulator.items.clear();
+        Array.from(fresh.files).forEach(f => accumulator.items.add(f));
+        realInput.files = accumulator.files;
+        renderList();
+    }
+
+    function renderList() {
+        fileListEl.innerHTML = '';
+        Array.from(accumulator.files).forEach((f, i) => {
+            const tag = document.createElement('div');
+            tag.style.cssText = 'background:#e0e7ff;border-radius:6px;padding:4px 10px;' +
+                                'font-size:12px;display:flex;align-items:center;gap:6px;';
+            tag.innerHTML = `<span>📎 ${f.name}</span>` +
+                `<span onclick="removeFile(${i})" style="cursor:pointer;color:#6b7280;font-weight:700;">×</span>`;
+            fileListEl.appendChild(tag);
+        });
+        addBtn.textContent = accumulator.files.length
+            ? `+ Add More (${accumulator.files.length} queued)`
+            : '+ Add Screenshot(s)';
+    }
+</script>
 
 </body>
 </html>

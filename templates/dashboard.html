@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Reno Robs Trading</title>
+    <link rel="icon" type="image/png" href="/static/logo.png">
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f6f9;
+            padding: 40px;
+        }
+
+        h2 {
+            margin-bottom: 20px;
+        }
+
+        .cards {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+            flex: 1;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        th, td {
+            padding: 16px;
+            text-align: left;
+        }
+
+        th {
+            background: #f0f2f5;
+        }
+
+        tr.expandable:hover {
+            background: #f9fafb;
+        }
+
+        tr.details {
+            background: #fafafa;
+        }
+
+        .good {
+            color: green;
+            font-weight: bold;
+        }
+
+        .bad {
+            color: red;
+            font-weight: bold;
+        }
+
+        .neutral {
+            color: #555;
+        }
+
+        .score {
+            font-weight: bold;
+        }
+
+        .strong { color: green; }
+        .watch { color: orange; }
+        .spec { color: #b45309; }
+        .weak { color: red; }
+
+    </style>
+</head>
+<body>
+
+<h2>AI Trading MVP Dashboard</h2>
+
+<div class="cards">
+    <div class="card">
+        <h3>Total Stocks Scanned</h3>
+        <p>{{ summary.total_scanned }}</p>
+    </div>
+
+    <div class="card">
+        <h3>Qualified Stocks</h3>
+        <p>{{ summary.qualified }}</p>
+    </div>
+
+    <div class="card">
+        <h3>Mode</h3>
+        <p>{{ mode | capitalize }}</p>
+    </div>
+</div>
+
+<h3>Scan Results</h3>
+
+<table>
+    <thead>
+        <tr>
+            <th>Symbol</th>
+            <th>Price</th>
+            <th>Score</th>
+            <th>Recommendation</th>
+        </tr>
+    </thead>
+
+    <tbody>
+        {% for stock in results %}
+
+        <!-- Clickable Row -->
+        <tr class="expandable" onclick="toggleRow('{{ stock.symbol }}')" style="cursor:pointer;">
+            <td><strong>{{ stock.symbol }}</strong></td>
+            <td>${{ stock.price }}</td>
+            <td class="score">{{ stock.score }}</td>
+            <td>
+                {% if stock.recommendation == "Strong Setup" %}
+                    <span class="strong">⚡ Strong Setup</span>
+                {% elif stock.recommendation == "Watchlist" %}
+                    <span class="watch">📈 Watchlist</span>
+                {% elif stock.recommendation == "Speculative" %}
+                    <span class="spec">👀 Speculative</span>
+                {% else %}
+                    <span class="weak">❌ Weak</span>
+                {% endif %}
+            </td>
+        </tr>
+
+        <!-- Expandable Checklist -->
+        <tr id="details-{{ stock.symbol }}" class="details" style="display:none;">
+            <td colspan="4">
+                <div style="padding:20px;">
+
+                    <h4>Checklist Breakdown</h4>
+                    <div style="line-height:1.8;">
+
+                        <!-- Relative Volume -->
+                        <strong>Relative Volume:</strong>
+                        {{ stock.checklist.relative_volume }}
+                        {% if stock.checklist.high_relative_volume %}
+                            <span class="good">✅ High</span>
+                        {% else %}
+                            <span class="bad">❌ Low</span>
+                        {% endif %}
+
+                        {% if stock.checklist.rvol_sweet_spot %}
+                            <span class="good">🔥 Sweet Spot (29+)</span>
+                        {% endif %}
+                        <br>
+
+                        <!-- Float -->
+                        <strong>Small Float (&lt;5M):</strong>
+                        {% if stock.checklist.small_float_under_5m %}
+                            <span class="good">✅ Yes</span>
+                        {% else %}
+                            <span class="neutral">No</span>
+                        {% endif %}
+                        <br>
+
+                        <!-- Cash -->
+                        <strong>High Cash Per Share:</strong>
+                        {% if stock.checklist.high_cash_per_share %}
+                            <span class="good">✅ Yes</span>
+                        {% else %}
+                            <span class="neutral">Unknown / No</span>
+                        {% endif %}
+                        <br>
+
+                        <!-- Performance -->
+                        <strong>Performance Today:</strong>
+                        {% if stock.checklist.sweet_spot_move_10_40 %}
+                            <span class="good">✅ Sweet Spot (10–40%)</span>
+                        {% endif %}
+
+                        {% if stock.checklist.over_100_percent %}
+                            <span class="bad">❌ Over 100%</span>
+                        {% endif %}
+                        <br>
+
+                        <!-- Technical -->
+                        <strong>Sideways Chop:</strong>
+                        {% if stock.checklist.sideways_chop %}
+                            <span class="good">✅ Yes</span>
+                        {% else %}
+                            <span class="neutral">No</span>
+                        {% endif %}
+                        <br>
+
+                        <strong>Up Yesterday:</strong>
+                        {% if stock.checklist.yesterday_green %}
+                            <span class="good">✅ Yes</span>
+                        {% else %}
+                            <span class="neutral">No</span>
+                        {% endif %}
+                        <br>
+
+                        <strong>Recent 1–3 Day Decline:</strong>
+                        {% if stock.checklist.recent_1_3_day_decline %}
+                            <span class="bad">❌ Significant</span>
+                        {% else %}
+                            <span class="good">✅ Stable</span>
+                        {% endif %}
+                        <br>
+
+                    </div>
+                </div>
+            </td>
+        </tr>
+
+        {% endfor %}
+    </tbody>
+</table>
+
+<script>
+function toggleRow(symbol) {
+    const row = document.getElementById("details-" + symbol);
+    row.style.display = row.style.display === "none" ? "table-row" : "none";
+}
+</script>
+
+</body>
+</html>

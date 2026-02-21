@@ -3,7 +3,8 @@
 import yfinance as yf
 
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, Request, Form, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, Request, Form, BackgroundTasks
+from fastapi.responses import Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -84,13 +85,26 @@ def _fetch_current_price(symbol: str, fallback: float) -> float:
     return fallback
 
 
+# ---------------- HEALTH CHECK ----------------
+@app.get("/health")
+@app.head("/health")
+def health():
+    return Response(status_code=200)
+
+
 # ---------------- ROOT ----------------
 @app.get("/")
+@app.head("/")
 def root():
     return RedirectResponse("/login")
 
 
 # ---------------- LOGIN ----------------
+@app.head("/login")
+def login_head():
+    return Response(status_code=200)
+
+
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
     return templates.TemplateResponse(
@@ -351,33 +365,42 @@ def _run_weight_optimization(all_feedback: list, hypothesis_content: str | None)
 async def submit_feedback(
     request: Request,
     background_tasks: BackgroundTasks,
-    symbol: str = Form(""),
-    user_text: str = Form(""),
-    chart: UploadFile = File(None),
 ):
     if "user" not in request.session:
         return RedirectResponse("/login", status_code=303)
 
+    form = await request.form()
+    symbol = form.get("symbol", "")
+    user_text = form.get("user_text", "")
+    charts = form.getlist("charts")
+
     chart_analysis = ""
-    if chart and chart.filename:
-        image_bytes = await chart.read()
-        # Determine media type from filename
-        fn = chart.filename.lower()
-        if fn.endswith(".png"):
-            media_type = "image/png"
-        elif fn.endswith(".gif"):
-            media_type = "image/gif"
-        elif fn.endswith(".webp"):
-            media_type = "image/webp"
-        else:
-            media_type = "image/jpeg"
-        chart_analysis = analyze_chart_feedback(
-            image_bytes, media_type, user_text, symbol=symbol.strip() or None
-        )
+    valid_charts = [c for c in charts if hasattr(c, "filename") and c.filename]
+    if valid_charts:
+        analyses = []
+        for i, chart in enumerate(valid_charts, 1):
+            image_bytes = await chart.read()
+            fn = chart.filename.lower()
+            if fn.endswith(".png"):
+                media_type = "image/png"
+            elif fn.endswith(".gif"):
+                media_type = "image/gif"
+            elif fn.endswith(".webp"):
+                media_type = "image/webp"
+            else:
+                media_type = "image/jpeg"
+            result = analyze_chart_feedback(
+                image_bytes, media_type, user_text, symbol=symbol.strip() or None
+            )
+            if len(valid_charts) > 1:
+                analyses.append(f"--- Chart {i} of {len(valid_charts)} ---\n{result}")
+            else:
+                analyses.append(result)
+        chart_analysis = "\n\n".join(analyses)
 
     save_feedback(symbol.upper().strip(), user_text, chart_analysis)
 
-    # Re-synthesize hypotheses across ALL feedback after each new submission
+    # Re-synthesize hypothesis from ALL feedback (including just-saved) synchronously
     all_feedback = get_all_feedback()
     hypothesis_text = synthesize_feedback_hypotheses(all_feedback)
     if hypothesis_text:
@@ -385,7 +408,7 @@ async def submit_feedback(
 
     hypothesis_data = get_hypothesis()
 
-    # Schedule weight optimization as a background task so it doesn't block the response
+    # Weight optimization runs in background (slower, doesn't need to block)
     background_tasks.add_task(
         _run_weight_optimization,
         all_feedback,
