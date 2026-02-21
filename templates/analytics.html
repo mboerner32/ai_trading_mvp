@@ -175,6 +175,39 @@
             <p class="neutral">{{ total.n }}</p>
         </div>
 
+        <div class="card">
+            <h3>Win Rate</h3>
+            {% if risk_metrics and risk_metrics.win_rate is not none %}
+                <p class="{{ 'positive' if risk_metrics.win_rate >= 50 else 'negative' }}">
+                    {{ risk_metrics.win_rate }}%
+                </p>
+            {% else %}
+                <p class="neutral">—</p>
+            {% endif %}
+        </div>
+
+        <div class="card">
+            <h3>Sharpe Ratio</h3>
+            {% if risk_metrics and risk_metrics.sharpe is not none %}
+                <p class="{{ 'positive' if risk_metrics.sharpe >= 1 else ('neutral' if risk_metrics.sharpe >= 0 else 'negative') }}">
+                    {{ risk_metrics.sharpe }}
+                </p>
+            {% else %}
+                <p class="neutral">—</p>
+            {% endif %}
+        </div>
+
+        <div class="card">
+            <h3>Max Drawdown</h3>
+            {% if risk_metrics and risk_metrics.max_drawdown is not none %}
+                <p class="{{ 'negative' if risk_metrics.max_drawdown > 10 else 'neutral' }}">
+                    -{{ risk_metrics.max_drawdown }}%
+                </p>
+            {% else %}
+                <p class="neutral">—</p>
+            {% endif %}
+        </div>
+
     </div>
 
     <!-- SCORE BUCKET TABLE -->

@@ -102,6 +102,16 @@ def init_db():
         )
     """)
 
+    # ---------------- WATCHLIST TABLE ----------------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS watchlist (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol         TEXT NOT NULL UNIQUE,
+            added_at       TEXT NOT NULL,
+            price_at_add   REAL
+        )
+    """)
+
     # ---------------- WEIGHT CHANGELOG TABLE ----------------
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS weight_changelog (
@@ -801,3 +811,76 @@ def get_weight_changelog(limit: int = 20) -> list:
         }
         for r in rows
     ]
+
+
+# ---------------- WATCHLIST ----------------
+def add_to_watchlist(symbol: str, price: float = None):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    now = datetime.utcnow().isoformat()
+    cursor.execute(
+        "INSERT OR IGNORE INTO watchlist (symbol, added_at, price_at_add) VALUES (?, ?, ?)",
+        (symbol.upper().strip(), now, price)
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_from_watchlist(symbol: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM watchlist WHERE symbol = ?", (symbol.upper().strip(),))
+    conn.commit()
+    conn.close()
+
+
+def get_watchlist() -> list:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT symbol, added_at, price_at_add FROM watchlist ORDER BY added_at DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"symbol": r[0], "added_at": r[1], "price_at_add": r[2]} for r in rows]
+
+
+# ---------------- RISK METRICS ----------------
+def get_risk_metrics() -> dict:
+    """Compute Sharpe ratio, max drawdown, and win rate from closed trades."""
+    import math
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT realized_pnl, position_size
+        FROM trades WHERE status = 'closed' AND position_size > 0
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    if len(rows) < 2:
+        return {"sharpe": None, "max_drawdown": None, "win_rate": None, "total_closed": len(rows)}
+
+    returns = [r[0] / r[1] * 100 for r in rows]   # pnl % per trade
+    wins = sum(1 for r in returns if r > 0)
+    win_rate = round(wins / len(returns) * 100, 1)
+
+    mean_r = sum(returns) / len(returns)
+    variance = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
+    std_r = math.sqrt(variance) if variance > 0 else 0
+    sharpe = round(mean_r / std_r, 2) if std_r > 0 else None
+
+    # Max drawdown from equity curve
+    equity = 10000.0
+    peak = equity
+    max_dd = 0.0
+    for r in returns:
+        equity *= (1 + r / 100)
+        peak = max(peak, equity)
+        dd = (peak - equity) / peak * 100
+        max_dd = max(max_dd, dd)
+
+    return {
+        "sharpe":        sharpe,
+        "max_drawdown":  round(max_dd, 2),
+        "win_rate":      win_rate,
+        "total_closed":  len(rows),
+    }

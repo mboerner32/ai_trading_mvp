@@ -193,7 +193,10 @@
     {% endif %}
 
     <!-- OPEN POSITIONS -->
-    <div class="section-title">Open Positions</div>
+    <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:16px;">
+        <div class="section-title" style="margin-bottom:0;">Open Positions</div>
+        <span id="lastRefresh" style="font-size:12px; color:#9ca3af;">Live — refreshes every 60s</span>
+    </div>
 
     {% if positions %}
     <table>
@@ -218,20 +221,16 @@
                 <td><strong>{{ pos.symbol }}</strong></td>
                 <td>${{ pos.entry_price }}</td>
                 <td style="color:#0f766e; font-weight:600;">${{ pos.target_price }}</td>
-                <td>${{ pos.current_price }}</td>
-                <td style="font-size:13px; color:{{ '#16a34a' if pos.to_target_pct <= 5 else '#6b7280' }};">
-                    {% if pos.to_target_pct <= 0 %}
-                        🎯 At target
-                    {% else %}
-                        +{{ pos.to_target_pct }}% away
-                    {% endif %}
+                <td id="price-{{ pos.trade_id }}">${{ pos.current_price }}</td>
+                <td id="totarget-{{ pos.trade_id }}" style="font-size:13px; color:{{ '#16a34a' if pos.to_target_pct <= 5 else '#6b7280' }};">
+                    {% if pos.to_target_pct <= 0 %}🎯 At target{% else %}+{{ pos.to_target_pct }}% away{% endif %}
                 </td>
                 <td>{{ pos.shares | round(2) }}</td>
-                <td>${{ "{:,.2f}".format(pos.current_value) }}</td>
-                <td class="{{ 'good' if pos.unrealized_pnl >= 0 else 'bad' }}">
+                <td id="value-{{ pos.trade_id }}">${{ "{:,.2f}".format(pos.current_value) }}</td>
+                <td id="upnl-{{ pos.trade_id }}" class="{{ 'good' if pos.unrealized_pnl >= 0 else 'bad' }}">
                     {{ "+" if pos.unrealized_pnl >= 0 else "" }}${{ "{:,.2f}".format(pos.unrealized_pnl) }}
                 </td>
-                <td class="{{ 'good' if pos.pnl_pct >= 0 else 'bad' }}">
+                <td id="pnlpct-{{ pos.trade_id }}" class="{{ 'good' if pos.pnl_pct >= 0 else 'bad' }}">
                     {{ "+" if pos.pnl_pct >= 0 else "" }}{{ pos.pnl_pct }}%
                 </td>
                 <td style="font-size:12px; color:#6b7280;">
@@ -294,7 +293,88 @@
     <div class="empty-note">No closed trades yet.</div>
     {% endif %}
 
+    <!-- WATCHLIST -->
+    <div class="section-title">Watchlist</div>
+
+    {% if watchlist %}
+    <table>
+        <thead>
+            <tr>
+                <th>Symbol</th>
+                <th>Price When Added</th>
+                <th>Current Price</th>
+                <th>Change</th>
+                <th>Added</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for w in watchlist %}
+            <tr>
+                <td><strong>{{ w.symbol }}</strong></td>
+                <td>${{ "{:.4f}".format(w.price_at_add) if w.price_at_add else "—" }}</td>
+                <td id="wl-price-{{ w.symbol }}">—</td>
+                <td id="wl-chg-{{ w.symbol }}" style="font-size:13px;">—</td>
+                <td style="font-size:12px; color:#6b7280;">{{ w.added_at[:10] }}</td>
+                <td>
+                    <form method="post" action="/watchlist/remove/{{ w.symbol }}" style="display:inline;">
+                        <button type="submit" style="background:#6b7280; color:white; border:none;
+                                padding:5px 12px; border-radius:6px; cursor:pointer; font-size:12px;">
+                            Remove
+                        </button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-note">
+        No stocks on your watchlist. Click "Watch" on any stock in the Dashboard to track it.
+    </div>
+    {% endif %}
+
 </div>
+
+<script>
+// ---- Live price refresh for open positions (every 60s) ----
+async function refreshPositionPrices() {
+    try {
+        const resp = await fetch('/api/positions/prices');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        for (const [id, d] of Object.entries(data)) {
+            const priceEl   = document.getElementById('price-'   + id);
+            const targetEl  = document.getElementById('totarget-'+ id);
+            const valueEl   = document.getElementById('value-'   + id);
+            const upnlEl    = document.getElementById('upnl-'    + id);
+            const pnlPctEl  = document.getElementById('pnlpct-'  + id);
+            if (priceEl)  priceEl.textContent  = '$' + d.current_price;
+            if (valueEl)  valueEl.textContent  = '$' + d.current_value.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+            if (upnlEl) {
+                upnlEl.textContent = (d.unrealized_pnl >= 0 ? '+' : '') + '$' + Math.abs(d.unrealized_pnl).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+                upnlEl.className = d.unrealized_pnl >= 0 ? 'good' : 'bad';
+            }
+            if (pnlPctEl) {
+                pnlPctEl.textContent = (d.pnl_pct >= 0 ? '+' : '') + d.pnl_pct + '%';
+                pnlPctEl.className = d.pnl_pct >= 0 ? 'good' : 'bad';
+            }
+            if (targetEl) {
+                if (d.to_target_pct <= 0) {
+                    targetEl.textContent = '🎯 At target';
+                    targetEl.style.color = '#16a34a';
+                } else {
+                    targetEl.textContent = '+' + d.to_target_pct + '% away';
+                    targetEl.style.color = d.to_target_pct <= 5 ? '#16a34a' : '#6b7280';
+                }
+            }
+        }
+        document.getElementById('lastRefresh').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    } catch(e) {}
+}
+
+setInterval(refreshPositionPrices, 60000);
+</script>
 
 </body>
 </html>

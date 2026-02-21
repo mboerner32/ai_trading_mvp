@@ -1,9 +1,11 @@
 # ai_trading_mvp/main.py
 
 import asyncio
+import pytz
 import yfinance as yf
 
 from concurrent.futures import ThreadPoolExecutor
+from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, Request, Form, BackgroundTasks
 from fastapi.responses import Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -48,6 +50,10 @@ from app.database import (
     get_scan_cache,
     save_weight_changelog,
     get_weight_changelog,
+    add_to_watchlist,
+    remove_from_watchlist,
+    get_watchlist,
+    get_risk_metrics,
 )
 
 app = FastAPI()
@@ -61,6 +67,24 @@ app.add_middleware(
 # Initialize database and seed users
 init_db()
 seed_users()
+
+# ---------------- SCHEDULER ----------------
+def _scheduled_scan():
+    """Auto-run all scan modes at 9:45am ET Mon–Fri and refresh cache."""
+    print("SCHEDULER: Running scheduled morning scan...")
+    for mode in ["squeeze", "strict", "standard"]:
+        try:
+            data = run_scan(mode=mode)
+            save_scan(data["results"], mode)
+            save_scan_cache(mode, data["results"], data["summary"])
+            print(f"SCHEDULER: {mode} scan complete ({len(data['results'])} results)")
+        except Exception as e:
+            print(f"SCHEDULER: {mode} scan failed — {e}")
+    update_returns()
+
+_scheduler = BackgroundScheduler(timezone=pytz.timezone("America/New_York"))
+_scheduler.add_job(_scheduled_scan, "cron", day_of_week="mon-fri", hour=9, minute=45)
+_scheduler.start()
 
 # Log API key status at startup so it's visible in Render logs
 import os as _os
@@ -195,6 +219,7 @@ def analytics(request: Request):
             "holding_perf": get_holding_performance(),
             "equity_curve": get_equity_curve(),
             "weight_changelog": get_weight_changelog(),
+            "risk_metrics": get_risk_metrics(),
             "user": request.session["user"]
         }
     )
@@ -257,6 +282,7 @@ def trades_page(request: Request):
             "positions": positions,
             "history": history,
             "auto_closed": auto_closed,
+            "watchlist": get_watchlist(),
             "summary": {
                 **summary,
                 "open_value": round(open_value, 2),
@@ -482,6 +508,7 @@ def optimize_complex(request: Request):
             "holding_perf": get_holding_performance(),
             "equity_curve": get_equity_curve(),
             "weight_changelog": get_weight_changelog(),
+            "risk_metrics": get_risk_metrics(),
             "user": request.session["user"],
             "complex_ai_result": opt_result,
             "complex_ai_weights": get_squeeze_weights(),
@@ -520,6 +547,48 @@ def apply_model_update(request: Request):
         )
 
     return RedirectResponse("/analytics", status_code=303)
+
+
+# ---------------- LIVE PRICE API ----------------
+@app.get("/api/positions/prices")
+def api_position_prices(request: Request):
+    if "user" not in request.session:
+        return Response(status_code=401)
+    positions = get_open_positions()
+    TARGET_GAIN = 0.20
+    data = {}
+    for pos in positions:
+        current = _fetch_current_price(pos["symbol"], pos["entry_price"])
+        unrealized = round((current - pos["entry_price"]) * pos["shares"], 2)
+        current_value = round(current * pos["shares"], 2)
+        pnl_pct = round((current - pos["entry_price"]) / pos["entry_price"] * 100, 2)
+        target = round(pos["entry_price"] * (1 + TARGET_GAIN), 4)
+        to_target_pct = round((target - current) / current * 100, 2)
+        data[pos["trade_id"]] = {
+            "current_price":  round(current, 4),
+            "unrealized_pnl": unrealized,
+            "current_value":  current_value,
+            "pnl_pct":        pnl_pct,
+            "to_target_pct":  to_target_pct,
+        }
+    return data
+
+
+# ---------------- WATCHLIST ----------------
+@app.post("/watchlist/add")
+def watchlist_add(request: Request, symbol: str = Form(...), price: float = Form(0.0)):
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    add_to_watchlist(symbol, price or None)
+    return RedirectResponse("/trades", status_code=303)
+
+
+@app.post("/watchlist/remove/{symbol}")
+def watchlist_remove(request: Request, symbol: str):
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    remove_from_watchlist(symbol)
+    return RedirectResponse("/trades", status_code=303)
 
 
 # ---------------- LOGOUT ----------------
