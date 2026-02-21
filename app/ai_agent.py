@@ -3,6 +3,9 @@
 import os
 import base64
 import anthropic
+import yfinance as yf
+import pandas as pd
+from datetime import datetime, date, timedelta
 
 client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from environment automatically
 
@@ -390,34 +393,133 @@ SUMMARY:
         }
 
 
-def analyze_chart_feedback(image_bytes: bytes, media_type: str, user_text: str) -> str:
+def _fetch_historical_factors(symbol: str, move_date: date) -> str | None:
     """
-    Uses Claude vision to extract chart patterns and trade signals from a
-    user-submitted screenshot. Returns a bullet-point analysis string.
+    Fetches actual yfinance data for symbol around move_date and returns
+    a formatted string of the scoring model's key numeric factors.
+    Returns None if data is unavailable.
+    """
+    try:
+        start = move_date - timedelta(days=100)
+        end   = move_date + timedelta(days=5)
+
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(start=start, end=end, interval="1d")
+
+        if df.empty or len(df) < 5:
+            return None
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df.index = pd.to_datetime(df.index).date
+        available = df.index.tolist()
+
+        closest = min(available, key=lambda d: abs((d - move_date).days))
+        if abs((closest - move_date).days) > 5:
+            return None
+
+        idx   = available.index(closest)
+        row   = df.iloc[idx]
+        close = float(row["Close"])
+
+        # Daily return
+        daily_return = None
+        if idx > 0:
+            prev = float(df.iloc[idx - 1]["Close"])
+            if prev > 0:
+                daily_return = (close - prev) / prev * 100
+
+        # Relative volume (63-day avg)
+        relative_volume = None
+        if idx >= 63:
+            avg_vol = float(df["Volume"].iloc[idx - 63:idx].mean())
+            if avg_vol > 0:
+                relative_volume = float(row["Volume"]) / avg_vol
+
+        # 10-day range compression
+        range_10d = None
+        if idx >= 9:
+            high_10 = float(df["High"].iloc[idx - 9:idx + 1].max())
+            low_10  = float(df["Low"].iloc[idx - 9:idx + 1].min())
+            if close > 0:
+                range_10d = (high_10 - low_10) / close * 100
+
+        # Yesterday green
+        yesterday_green = daily_return is not None and daily_return > 0
+        if idx >= 2:
+            prev2 = float(df.iloc[idx - 2]["Close"])
+            prev1 = float(df.iloc[idx - 1]["Close"])
+            yesterday_green = prev1 > prev2
+
+        # Fundamentals
+        info = ticker.info
+        shares = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
+        institution_pct = (
+            info.get("institutionsPercentHeld") or
+            info.get("heldPercentInstitutions")
+        )
+
+        lines = [f"Actual data for {symbol} on {closest}:"]
+        lines.append(f"  Close: ${close:.4f}")
+        lines.append(f"  Volume: {int(row['Volume']):,}")
+        if daily_return is not None:
+            lines.append(f"  Daily return: {daily_return:+.1f}%  [model sweet spot: 20–40%]")
+        if relative_volume is not None:
+            lines.append(f"  Relative volume (63-day avg): {relative_volume:.1f}x  [model tiers: ≥50x=3pts, ≥25x=2pts, ≥10x=1pt]")
+        if range_10d is not None:
+            label = "tight (barcode)" if range_10d < 20 else "normal"
+            lines.append(f"  10-day range % of close: {range_10d:.1f}%  [{label} — model awards +1pt if <20%]")
+        lines.append(f"  Yesterday green: {yesterday_green}")
+        if shares:
+            tier = "Ideal (<10M)" if shares < 10_000_000 else ("Acceptable (<30M)" if shares < 30_000_000 else "Large/Avoid")
+            lines.append(f"  Shares outstanding: {shares:,}  [{tier}]")
+        if institution_pct is not None:
+            lines.append(f"  Institutional ownership: {institution_pct * 100:.1f}%")
+
+        return "\n".join(lines)
+
+    except Exception:
+        return None
+
+
+def analyze_chart_feedback(image_bytes: bytes, media_type: str,
+                           user_text: str, symbol: str = None) -> str:
+    """
+    Two-step analysis:
+    1. Vision call — extracts chart patterns AND the date of the significant move.
+    2. If symbol + date found, fetches actual yfinance data and runs a second
+       AI call that cross-references chart patterns against real numeric signals
+       to produce model-optimization insights.
     """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return "Chart analysis unavailable: ANTHROPIC_API_KEY environment variable is not set."
 
     b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
-
     notes = f"User notes: {user_text}" if user_text else "No notes provided."
+    symbol_hint = f"The ticker symbol is {symbol.upper()}." if symbol else ""
 
-    prompt = f"""Analyze this trading chart screenshot submitted as a winning trade example.
+    vision_prompt = f"""Analyze this trading chart screenshot submitted as a winning trade example.
 {notes}
+{symbol_hint}
 
-Extract and list:
+First, identify the date when the significant price increase began. Output it on its own line:
+MOVE_DATE: YYYY-MM-DD
+
+Then provide your chart analysis:
+CHART_ANALYSIS:
 1. Chart pattern visible (consolidation box, barcode, deep collapse rebound, breakout, etc.)
 2. Volume profile (spike, sustained, thin)
 3. Price action characteristics (tight range before move, gap up, steady climb, etc.)
 4. Key signals that made this a good setup
 5. One-line lesson for identifying similar setups in the future
 
-Be specific and concise. Use bullet points."""
+Be specific and concise. Use bullet points for the analysis section."""
 
     try:
-        message = client.messages.create(
+        vision_msg = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=450,
+            max_tokens=600,
             messages=[{
                 "role": "user",
                 "content": [
@@ -429,10 +531,67 @@ Be specific and concise. Use bullet points."""
                             "data": b64,
                         }
                     },
-                    {"type": "text", "text": prompt}
+                    {"type": "text", "text": vision_prompt}
                 ]
             }]
         )
-        return message.content[0].text.strip()
+        vision_text = vision_msg.content[0].text.strip()
+
+        # Parse the move date
+        move_date = None
+        for line in vision_text.splitlines():
+            if line.strip().startswith("MOVE_DATE:"):
+                raw = line.replace("MOVE_DATE:", "").strip()
+                try:
+                    move_date = datetime.strptime(raw, "%Y-%m-%d").date()
+                except ValueError:
+                    pass
+                break
+
+        # Step 2 — fetch real data and cross-reference if possible
+        if symbol and move_date:
+            historical = _fetch_historical_factors(symbol.upper(), move_date)
+        else:
+            historical = None
+
+        if historical:
+            enrich_prompt = f"""You are optimizing a short-squeeze momentum scoring model.
+A trader submitted this as a winning trade example.
+
+--- Visual chart analysis ---
+{vision_text}
+
+--- Actual historical data ---
+{historical}
+
+Cross-reference the chart patterns with the real numeric signals and produce:
+
+## Numeric Signal Review
+For each model factor (relative volume, daily gain %, 10-day range, float size, yesterday green,
+institutional ownership), state: was it present, at what level, and how strongly it contributed.
+
+## Model Weight Suggestions
+Based on which factors were strongest here, suggest specific weight increases or decreases
+for our scoring model.
+
+## Untracked Signals
+List any patterns visible in the chart or data that our model does not currently score,
+that appear to have predictive value.
+
+## Key Takeaway
+One sentence summarizing the most important optimization insight from this trade.
+
+Be specific with numbers. Use bullet points."""
+
+            enrich_msg = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=700,
+                messages=[{"role": "user", "content": enrich_prompt}]
+            )
+            return enrich_msg.content[0].text.strip()
+
+        # Return chart-only analysis if no historical data available
+        return vision_text
+
     except Exception as e:
         return f"Could not analyze chart: {str(e)}"

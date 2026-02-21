@@ -371,7 +371,9 @@ async def submit_feedback(
             media_type = "image/webp"
         else:
             media_type = "image/jpeg"
-        chart_analysis = analyze_chart_feedback(image_bytes, media_type, user_text)
+        chart_analysis = analyze_chart_feedback(
+            image_bytes, media_type, user_text, symbol=symbol.strip() or None
+        )
 
     save_feedback(symbol.upper().strip(), user_text, chart_analysis)
 
