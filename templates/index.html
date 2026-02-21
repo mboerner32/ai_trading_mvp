@@ -159,7 +159,7 @@
 
 <div class="container">
 
-    <div class="mode-toggle" style="margin-bottom:20px;">
+    <div class="mode-toggle" style="margin-bottom:20px; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
         <a href="/dashboard?mode=squeeze"
            class="{{ 'active' if mode == 'squeeze' else '' }}"
            style="{{ 'background:#0f766e; color:white;' if mode == 'squeeze' else 'background:#d1fae5; color:#065f46;' }}">
@@ -175,6 +175,24 @@
            class="{{ 'active' if mode == 'standard' else '' }}">
            Standard Mode
         </a>
+
+        <span style="margin-left:auto; display:flex; align-items:center; gap:12px;">
+            {% if cache_age > 0 %}
+            <span style="font-size:13px; color:#6b7280;">
+                Cached {{ cache_age }} min ago
+            </span>
+            {% else %}
+            <span style="font-size:13px; color:#16a34a; font-weight:500;">
+                Live scan
+            </span>
+            {% endif %}
+            <a href="/dashboard?mode={{ mode }}&refresh=1"
+               style="font-size:13px; font-weight:500; padding:7px 14px;
+                      background:#f3f4f6; border-radius:6px; text-decoration:none;
+                      color:#374151; border:1px solid #d1d5db;">
+                ↻ Refresh
+            </a>
+        </span>
     </div>
 
     {% if mode == 'squeeze' %}

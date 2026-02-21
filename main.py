@@ -2,6 +2,7 @@
 
 import yfinance as yf
 
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Request, Form, UploadFile, File, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -41,6 +42,8 @@ from app.database import (
     get_hypothesis,
     save_squeeze_weights,
     get_squeeze_weights,
+    save_scan_cache,
+    get_scan_cache,
 )
 
 app = FastAPI()
@@ -114,20 +117,34 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
 
 # ---------------- DASHBOARD ----------------
 @app.get("/dashboard", response_class=HTMLResponse)
-def dashboard(request: Request, mode: str = "squeeze", trade_error: str = ""):
+def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
+              refresh: str = ""):
 
     if "user" not in request.session:
         return RedirectResponse("/login")
 
-    scan_data = run_scan(mode=mode)
-    save_scan(scan_data["results"], mode)
-    update_returns()
+    # Serve from cache (15-min TTL) unless user clicked Refresh
+    cached = None if refresh else get_scan_cache(mode)
+    if cached:
+        scan_data = {"results": cached["results"], "summary": cached["summary"]}
+        cache_age = cached["cache_age_minutes"]
+    else:
+        scan_data = run_scan(mode=mode)
+        save_scan(scan_data["results"], mode)
+        update_returns()
+        save_scan_cache(mode, scan_data["results"], scan_data["summary"])
+        cache_age = 0
 
     available_cash = get_portfolio_summary()["cash"]
     hypothesis_data = get_hypothesis()
     hypothesis_text = hypothesis_data["content"] if hypothesis_data else None
-    for stock in scan_data["results"]:
+
+    # Parallel AI position sizing
+    def _size(stock):
         stock["ai_rec"] = recommend_position_size(stock, available_cash, hypothesis_text)
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        list(executor.map(_size, scan_data["results"]))
 
     ai_weights_info = get_squeeze_weights() if mode == "squeeze" else None
 
@@ -141,6 +158,7 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = ""):
             "trade_error": trade_error,
             "user": request.session["user"],
             "ai_weights_info": ai_weights_info,
+            "cache_age": cache_age,
         }
     )
 

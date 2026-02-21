@@ -721,3 +721,39 @@ def get_squeeze_weights():
         "summary":     result.get("squeeze_weights_summary", ""),
         "updated_at":  result.get("updated_at", ""),
     }
+
+
+# ---------------- SCAN CACHE ----------------
+def save_scan_cache(mode: str, results: list, summary: dict):
+    """Persist the last scan results so repeat dashboard loads are instant."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    now = datetime.utcnow().isoformat()
+    value = json.dumps({"results": results, "summary": summary, "cached_at": now})
+    cursor.execute("""
+        INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    """, (f"scan_cache_{mode}", value, now))
+    conn.commit()
+    conn.close()
+
+
+def get_scan_cache(mode: str, max_age_minutes: int = 15):
+    """
+    Returns cached scan data if younger than max_age_minutes, else None.
+    Result includes 'results', 'summary', and 'cache_age_minutes'.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (f"scan_cache_{mode}",))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    data = json.loads(row[0])
+    cached_at = datetime.fromisoformat(data["cached_at"])
+    age_minutes = (datetime.utcnow() - cached_at).total_seconds() / 60
+    if age_minutes > max_age_minutes:
+        return None
+    data["cache_age_minutes"] = round(age_minutes)
+    return data

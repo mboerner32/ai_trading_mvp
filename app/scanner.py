@@ -5,6 +5,7 @@ import re
 import time
 import yfinance as yf
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.scoring_engine import score_stock, score_stock_squeeze, DEFAULT_SQUEEZE_WEIGHTS
 from app.database import get_squeeze_weights
 
@@ -192,8 +193,7 @@ def run_scan(mode="standard"):
     else:
         scorer = score_stock
 
-    for symbol in tickers:
-
+    def _scan_one(symbol):
         try:
             df = yf.download(
                 symbol,
@@ -202,25 +202,23 @@ def run_scan(mode="standard"):
                 progress=False,
                 auto_adjust=False
             )
-
             if df.empty:
-                continue
-
+                return None
             df = prepare_dataframe(df)
-
             fundamentals = get_fundamentals(symbol)
+            return scorer(symbol, df, fundamentals=fundamentals)
+        except Exception as e:
+            print(f"Error scanning {symbol}: {e}")
+            return None
 
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_scan_one, sym): sym for sym in tickers}
+        for future in as_completed(futures):
             summary["total_scanned"] += 1
-
-            result = scorer(symbol, df, fundamentals=fundamentals)
-
+            result = future.result()
             if result:
                 results.append(result)
                 summary["qualified"] += 1
-
-        except Exception as e:
-            print(f"Error scanning {symbol}: {e}")
-            continue
 
     results = sorted(results, key=lambda x: x["score"], reverse=True)
 
