@@ -1,5 +1,6 @@
 # ai_trading_mvp/main.py
 
+import asyncio
 import yfinance as yf
 
 from concurrent.futures import ThreadPoolExecutor
@@ -339,13 +340,22 @@ def feedback_page(request: Request):
             "user": request.session["user"],
             "recent_feedback": get_recent_feedback(limit=10),
             "hypothesis": get_hypothesis(),
+            "weights_info": get_squeeze_weights(),
         }
     )
 
 
-def _run_weight_optimization(all_feedback: list, hypothesis_content: str | None):
-    """Background task: optimize Complex + AI weights without blocking the response."""
+
+
+def _run_hypothesis_and_weights(all_feedback: list):
+    """Background task: synthesize hypothesis from all feedback then optimize weights."""
     try:
+        hypothesis_text = synthesize_feedback_hypotheses(all_feedback)
+        hypothesis_content = None
+        if hypothesis_text:
+            save_hypothesis(hypothesis_text, len(all_feedback))
+            hypothesis_content = hypothesis_text
+
         opt_data = get_optimization_data()
         weights_data = get_squeeze_weights()
         current_weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS.copy()
@@ -358,7 +368,7 @@ def _run_weight_optimization(all_feedback: list, hypothesis_content: str | None)
                 opt_result["summary"],
             )
     except Exception:
-        pass  # never crash the background task
+        pass
 
 
 @app.post("/feedback", response_class=HTMLResponse)
@@ -377,8 +387,9 @@ async def submit_feedback(
     chart_analysis = ""
     valid_charts = [c for c in charts if hasattr(c, "filename") and c.filename]
     if valid_charts:
-        analyses = []
-        for i, chart in enumerate(valid_charts, 1):
+        # Read all file bytes first
+        chart_data = []
+        for chart in valid_charts:
             image_bytes = await chart.read()
             fn = chart.filename.lower()
             if fn.endswith(".png"):
@@ -389,31 +400,31 @@ async def submit_feedback(
                 media_type = "image/webp"
             else:
                 media_type = "image/jpeg"
-            result = analyze_chart_feedback(
-                image_bytes, media_type, user_text, symbol=symbol.strip() or None
-            )
-            if len(valid_charts) > 1:
-                analyses.append(f"--- Chart {i} of {len(valid_charts)} ---\n{result}")
-            else:
-                analyses.append(result)
+            chart_data.append((image_bytes, media_type))
+
+        # Analyze all charts in parallel
+        loop = asyncio.get_event_loop()
+        sym = symbol.strip() or None
+        tasks = [
+            loop.run_in_executor(None, analyze_chart_feedback, img, mt, user_text, sym)
+            for img, mt in chart_data
+        ]
+        results = await asyncio.gather(*tasks)
+
+        if len(valid_charts) > 1:
+            analyses = [f"--- Chart {i+1} of {len(results)} ---\n{r}" for i, r in enumerate(results)]
+        else:
+            analyses = list(results)
         chart_analysis = "\n\n".join(analyses)
 
     save_feedback(symbol.upper().strip(), user_text, chart_analysis)
 
-    # Re-synthesize hypothesis from ALL feedback (including just-saved) synchronously
+    # Hypothesis synthesis + weight optimization run in background
+    # save_feedback already committed, so get_all_feedback() includes this submission
     all_feedback = get_all_feedback()
-    hypothesis_text = synthesize_feedback_hypotheses(all_feedback)
-    if hypothesis_text:
-        save_hypothesis(hypothesis_text, len(all_feedback))
+    background_tasks.add_task(_run_hypothesis_and_weights, all_feedback)
 
     hypothesis_data = get_hypothesis()
-
-    # Weight optimization runs in background (slower, doesn't need to block)
-    background_tasks.add_task(
-        _run_weight_optimization,
-        all_feedback,
-        hypothesis_data["content"] if hypothesis_data else None,
-    )
 
     return templates.TemplateResponse(
         "feedback.html",
@@ -422,6 +433,7 @@ async def submit_feedback(
             "user": request.session["user"],
             "recent_feedback": get_recent_feedback(limit=10),
             "hypothesis": hypothesis_data,
+            "weights_info": get_squeeze_weights(),
             "submitted": True,
             "chart_analysis": chart_analysis,
         }
