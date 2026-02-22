@@ -6,20 +6,10 @@ to generate labeled training examples (qualifying scan day → next-day return).
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import requests
 import yfinance as yf
 
-# Use curl_cffi browser impersonation to bypass Yahoo Finance bot detection.
-# Falls back to a plain requests.Session with a hard timeout if unavailable.
-try:
-    from curl_cffi import requests as _curl
-    _SESSION = _curl.Session(impersonate="chrome120")
-except Exception:
-    class _TimeoutSession(requests.Session):
-        def request(self, method, url, **kwargs):
-            kwargs.setdefault("timeout", 15)
-            return super().request(method, url, **kwargs)
-    _SESSION = _TimeoutSession()
+# yfinance >=0.2.54 manages its own curl_cffi session internally.
+# Do NOT pass a custom session — it will be rejected if it's not curl_cffi.
 
 from app.database import DB_NAME
 from app.scanner import prepare_dataframe
@@ -113,8 +103,7 @@ def _process_ticker(symbol, weights=None):
     try:
         df = yf.download(
             symbol, period="2y", interval="1d",
-            progress=False, auto_adjust=False,
-            session=_SESSION
+            progress=False, auto_adjust=False
         )
         if df.empty or len(df) < 70:
             return []
@@ -124,7 +113,7 @@ def _process_ticker(symbol, weights=None):
         # Fetch current shares outstanding (best available proxy for historical)
         shares_outstanding = None
         try:
-            shares_outstanding = yf.Ticker(symbol, session=_SESSION).info.get("sharesOutstanding")
+            shares_outstanding = yf.Ticker(symbol).info.get("sharesOutstanding")
         except Exception:
             pass
 

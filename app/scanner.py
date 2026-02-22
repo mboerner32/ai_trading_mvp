@@ -9,18 +9,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.scoring_engine import score_stock, score_stock_squeeze, DEFAULT_SQUEEZE_WEIGHTS
 from app.database import get_squeeze_weights
 
-# Use curl_cffi to impersonate a real browser — bypasses Yahoo Finance's bot detection.
-# Falls back to a plain requests.Session with a timeout if curl_cffi isn't available.
-try:
-    from curl_cffi import requests as _curl
-    _YF_SESSION = _curl.Session(impersonate="chrome120")
-except Exception:
-    class _TimeoutSession(requests.Session):
-        def request(self, method, url, **kwargs):
-            kwargs.setdefault("timeout", 15)
-            return super().request(method, url, **kwargs)
-    _YF_SESSION = _TimeoutSession()
-
 
 # ---------------------------------------------------
 # FINVIZ FILTER (Exact Replica)
@@ -95,7 +83,7 @@ def get_finviz_tickers():
 def get_fundamentals(symbol):
 
     try:
-        ticker = yf.Ticker(symbol, session=_YF_SESSION)
+        ticker = yf.Ticker(symbol)
         info = ticker.info
 
         # Check for recent news (last 3 days) — news-driven moves are less clean
@@ -221,8 +209,7 @@ def run_scan(mode="standard"):
                 period="6mo",
                 interval="1d",
                 progress=False,
-                auto_adjust=False,
-                session=_YF_SESSION
+                auto_adjust=False
             )
             if df.empty:
                 return None
