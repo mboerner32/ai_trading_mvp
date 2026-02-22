@@ -151,6 +151,67 @@ Format exactly:
         return f"Synthesis unavailable: {str(e)}"
 
 
+def synthesize_historical_hypothesis(opt_data: dict, historical_count: int) -> str:
+    """
+    Generates a hypothesis from quantitative historical backtest data (win rates by bucket).
+    Stores the result in the same format as synthesize_feedback_hypotheses.
+    """
+    if not opt_data:
+        return ""
+
+    def fmt_bucket(name, stats):
+        if stats["count"] == 0:
+            return None
+        return (f"  {name}: {stats['count']} trades, "
+                f"{stats['win_rate']}% win rate, "
+                f"{stats['avg_return']:+.1f}% avg next-day return")
+
+    relvol_lines  = [fmt_bucket(k, v) for k, v in opt_data.get("relative_volume", {}).items()]
+    gain_lines    = [fmt_bucket(k, v) for k, v in opt_data.get("daily_gain", {}).items()]
+    shares_lines  = [fmt_bucket(k, v) for k, v in opt_data.get("shares_outstanding", {}).items()]
+
+    relvol_text  = "\n".join(l for l in relvol_lines  if l)
+    gain_text    = "\n".join(l for l in gain_lines    if l)
+    shares_text  = "\n".join(l for l in shares_lines  if l)
+
+    prompt = f"""You are analyzing {historical_count} historical momentum/squeeze trades to find which signals predict next-day gains.
+
+Relative Volume buckets (next-day return after scan day):
+{relvol_text}
+
+Today's gain buckets:
+{gain_text}
+
+Shares outstanding buckets:
+{shares_text}
+
+Identify the strongest statistical patterns. For each hypothesis:
+- State what the signal predicts
+- Reference the supporting win rate and avg return
+- Rate confidence: HIGH (many trades, clear edge), EMERGING (positive pattern, moderate sample), PRELIMINARY (limited data)
+- State how this should influence position sizing
+
+Then write an AGENT CONTEXT section: a compact 3-4 sentence summary for injection into a trading AI agent.
+
+Format exactly:
+## Hypotheses
+
+[numbered list]
+
+## Agent Context
+[compact paragraph]"""
+
+    try:
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return message.content[0].text.strip()
+    except Exception as e:
+        return f"Synthesis unavailable: {str(e)}"
+
+
 def analyze_and_optimize_weights(opt_data: dict) -> str:
     """
     Analyzes per-bucket backtest performance and recommends scoring weight

@@ -21,6 +21,7 @@ from app.ai_agent import (
     analyze_and_optimize_weights,
     analyze_chart_feedback,
     synthesize_feedback_hypotheses,
+    synthesize_historical_hypothesis,
     optimize_complex_ai_weights,
 )
 from app.scoring_engine import DEFAULT_SQUEEZE_WEIGHTS
@@ -378,10 +379,23 @@ def feedback_page(request: Request):
             "recent_feedback": get_recent_feedback(limit=10),
             "hypothesis": get_hypothesis(),
             "weights_info": get_squeeze_weights(),
+            "historical_count": get_historical_count(),
         }
     )
 
 
+
+
+@app.post("/synthesize-historical-hypothesis")
+def synthesize_from_historical(request: Request):
+    if "user" not in request.session:
+        return RedirectResponse("/login")
+    opt_data = get_optimization_data()
+    hist_count = get_historical_count()
+    text = synthesize_historical_hypothesis(opt_data, hist_count)
+    if text:
+        save_hypothesis(text, hist_count)
+    return RedirectResponse("/feedback", status_code=303)
 
 
 def _run_hypothesis_and_weights(all_feedback: list):
