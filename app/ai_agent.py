@@ -560,22 +560,22 @@ def analyze_chart_feedback(image_bytes: bytes, media_type: str,
     notes = f"User notes: {user_text}" if user_text else "No notes provided."
     symbol_hint = f"The ticker symbol is {symbol.upper()}." if symbol else ""
 
-    vision_prompt = f"""Analyze this trading chart screenshot submitted as a winning trade example.
+    vision_prompt = f"""This is a confirmed winning trade submitted by a trader as a learning example. Trust the chart as real.
 {notes}
 {symbol_hint}
 
-First, identify the date when the significant price increase began. Output it on its own line:
+First, identify the date when the significant price move began. Output it on its own line:
 MOVE_DATE: YYYY-MM-DD
 
-Then provide your chart analysis:
+Then analyze what made this a good setup:
 CHART_ANALYSIS:
-1. Chart pattern visible (consolidation box, barcode, deep collapse rebound, breakout, etc.)
-2. Volume profile (spike, sustained, thin)
-3. Price action characteristics (tight range before move, gap up, steady climb, etc.)
-4. Key signals that made this a good setup
-5. One-line lesson for identifying similar setups in the future
+1. Chart pattern (consolidation box, barcode, deep collapse rebound, breakout, flag, etc.)
+2. Volume profile (spike, sustained, thin, climactic)
+3. Price action before the move (tight range, compression, gap up, steady base, etc.)
+4. Specific signals that set this up — be concrete about what you see
+5. One-line lesson: how to recognize this same setup in the future
 
-Be specific and concise. Use bullet points for the analysis section."""
+Be specific and concrete. Use bullet points."""
 
     try:
         vision_msg = client.messages.create(
@@ -616,31 +616,31 @@ Be specific and concise. Use bullet points for the analysis section."""
             historical = None
 
         if historical:
-            enrich_prompt = f"""You are optimizing a short-squeeze momentum scoring model.
-A trader submitted this as a winning trade example.
+            enrich_prompt = f"""You are learning from a confirmed winning trade to improve a short-squeeze momentum scoring model.
+The trader already made money on this trade. Accept it as a valid real example.
 
---- Visual chart analysis ---
+--- What the chart shows ---
 {vision_text}
 
---- Actual historical data ---
+--- Numeric data from that date ---
 {historical}
 
-Cross-reference the chart patterns with the real numeric signals and produce:
+Use the numeric data to measure how strong each signal was on that specific day. Produce:
 
-## Numeric Signal Review
+## Signal Strength on This Trade
 For each model factor (relative volume, daily gain %, 10-day range, float size, yesterday green,
-institutional ownership), state: was it present, at what level, and how strongly it contributed.
+institutional ownership), state the actual level and rate it: Strong / Moderate / Weak / Absent.
 
 ## Model Weight Suggestions
-Based on which factors were strongest here, suggest specific weight increases or decreases
-for our scoring model.
+Based on which signals were strongest in this confirmed winner, suggest specific weight increases
+or decreases to help the model find more setups like this.
 
-## Untracked Signals
-List any patterns visible in the chart or data that our model does not currently score,
-that appear to have predictive value.
+## Patterns Not Yet Tracked
+List any chart or data patterns visible here that our model doesn't currently score
+but appear predictive of the move.
 
 ## Key Takeaway
-One sentence summarizing the most important optimization insight from this trade.
+One sentence: the single most important thing this trade teaches the model.
 
 Be specific with numbers. Use bullet points."""
 
