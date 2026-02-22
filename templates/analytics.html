@@ -224,6 +224,10 @@
 
     <!-- SCORE BUCKET TABLE -->
     <div class="section-title">Score Bucket Performance</div>
+    <p style="color:#6b7280; font-size:13px; margin:-8px 0 16px;">
+        <strong>Hit 20%+</strong> = % of setups that spiked ≥20% next day (take-profit target).
+        This is the primary signal quality metric.
+    </p>
 
     <table>
         <thead>
@@ -231,7 +235,8 @@
                 <th>Score Bucket</th>
                 <th>Trades</th>
                 <th>Avg Return</th>
-                <th>Win Rate</th>
+                <th>Any Gain %</th>
+                <th style="color:#0f766e;">Hit 20%+ ★</th>
             </tr>
         </thead>
         <tbody>
@@ -245,6 +250,9 @@
                 <td>
                     {% if data.trades > 0 %}{{ data.win_rate }}%{% else %}—{% endif %}
                 </td>
+                <td style="font-weight:600; color:{% if data.hit_20pct >= 30 %}#0f766e{% elif data.hit_20pct >= 15 %}#92400e{% else %}#6b7280{% endif %};">
+                    {% if data.trades > 0 %}{{ data.hit_20pct }}%{% else %}—{% endif %}
+                </td>
             </tr>
         {% endfor %}
         </tbody>
@@ -256,8 +264,8 @@
     <div class="chart-card" style="margin-bottom:40px; border-left: 4px solid #0f766e;">
         <p style="color:#6b7280; font-size:14px; margin-top:0; margin-bottom:16px;">
             Analyzes backtesting data <strong>and</strong> your feedback submissions to continuously
-            refine the scoring weights used in Complex + AI Mode. Weights are also auto-updated
-            each time you submit feedback. Requires 5+ scans with known returns for backtest input.
+            refine scoring weights. <strong>Objective: maximize the rate of 20%+ next-day spikes.</strong>
+            Weights auto-update on each feedback submission. Requires 5+ scans with known returns.
         </p>
 
         {% if complex_ai_weights %}
@@ -383,8 +391,8 @@
     <div class="chart-card" style="margin-bottom:40px;">
         <p style="color:#6b7280; font-size:14px; margin-top:0; margin-bottom:16px;">
             Analyzes your backtesting data and recommends scoring weight adjustments
-            to maximize the combination of win rate and average return.
-            Requires 5+ scans with known returns (filled in automatically after 3 trading days).
+            to maximize the <strong>20%+ next-day spike rate</strong> — the take-profit target.
+            Also suggests new criteria to track. Requires 5+ scans with known returns.
         </p>
 
         <form method="post" action="/optimize">

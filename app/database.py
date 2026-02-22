@@ -260,17 +260,17 @@ def get_score_buckets():
 
     for bucket, values in buckets.items():
         if values:
-            wins = [v for v in values if v > 0]
+            wins    = [v for v in values if v > 0]
+            hits_20 = [v for v in values if v >= 20]
             results[bucket] = {
-                "trades": len(values),
+                "trades":     len(values),
                 "avg_return": round(sum(values)/len(values), 2),
-                "win_rate": round((len(wins)/len(values))*100, 2)
+                "win_rate":   round((len(wins)/len(values))*100, 2),
+                "hit_20pct":  round((len(hits_20)/len(values))*100, 2),
             }
         else:
             results[bucket] = {
-                "trades": 0,
-                "avg_return": 0,
-                "win_rate": 0
+                "trades": 0, "avg_return": 0, "win_rate": 0, "hit_20pct": 0
             }
 
     return results
@@ -567,12 +567,14 @@ def get_optimization_data():
 
     def bucket_stats(values):
         if not values:
-            return {"count": 0, "avg_return": 0.0, "win_rate": 0.0}
-        wins = [v for v in values if v > 0]
+            return {"count": 0, "avg_return": 0.0, "win_rate": 0.0, "hit_20pct": 0.0}
+        wins    = [v for v in values if v > 0]
+        hits_20 = [v for v in values if v >= 20]
         return {
-            "count": len(values),
+            "count":      len(values),
             "avg_return": round(sum(values) / len(values), 2),
-            "win_rate": round(len(wins) / len(values) * 100, 1),
+            "win_rate":   round(len(wins)    / len(values) * 100, 1),
+            "hit_20pct":  round(len(hits_20) / len(values) * 100, 1),
         }
 
     relvol  = {">=50x": [], "25-50x": [], "10-25x": [], "<10x": []}
@@ -994,12 +996,15 @@ def get_sizing_stats() -> dict | None:
     def bucket_stats(returns):
         if not returns:
             return None
-        wins = sum(1 for r in returns if r > 0)
+        # "win" = hit the 20% take-profit target next day
+        wins    = sum(1 for r in returns if r >= 20)
+        any_pos = sum(1 for r in returns if r > 0)
         sorted_r = sorted(returns)
         median = sorted_r[len(sorted_r) // 2]
         return {
             "count":      len(returns),
-            "win_rate":   round(wins / len(returns) * 100, 1),
+            "win_rate":   round(wins    / len(returns) * 100, 1),  # 20%+ hit rate
+            "any_pos":    round(any_pos / len(returns) * 100, 1),  # any positive
             "avg_return": round(sum(returns) / len(returns), 2),
             "median":     round(median, 2),
         }

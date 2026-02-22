@@ -38,10 +38,10 @@ def recommend_position_size(stock: dict, available_cash: float,
             if buckets:
                 parts = []
                 for bkt, s in buckets.items():
-                    parts.append(f"{bkt}→{s['win_rate']}%win/{s['avg_return']:+.1f}%avg({s['count']})")
+                    parts.append(f"{bkt}→{s['win_rate']}%hit20pct/{s['avg_return']:+.1f}%avg({s['count']})")
                 lines.append(f"  {label}: {' | '.join(parts)}")
 
-        lines.append("Use these stats to calibrate size: higher win rate + positive avg return → larger size.")
+        lines.append("Use these stats to calibrate size: higher 20%+ hit rate + positive avg return → larger size.")
         calibration_section = "\n".join(lines)
 
     # ---- Qualitative hypothesis section ----
@@ -53,6 +53,7 @@ def recommend_position_size(stock: dict, available_cash: float,
         )
 
     prompt = f"""You are a trading risk manager for a paper trading simulator.
+Strategy: buy low-float momentum stocks and target a 20%+ spike the next day.
 
 Stock: {stock['symbol']}
 Score: {stock['score']}/100
@@ -71,7 +72,7 @@ Checklist signals:
 
 Recommend a position size in dollars. Choose from: $250, $500, $750, $1000, $1500, $2000.
 Never recommend more than ${available_cash:.0f} available cash.
-Base your sizing primarily on the historical calibration stats above — match this stock's score and signals to the buckets showing the best edge.
+Base your sizing on the 20%+ hit rate in the historical calibration stats — higher hit rate = larger position.
 
 Respond in exactly this format (no other text):
 AMOUNT: <dollar amount>
@@ -148,8 +149,10 @@ def synthesize_combined_hypothesis(feedback_entries: list,
         def fmt_bucket(name, stats):
             if stats["count"] == 0:
                 return None
+            hit = stats.get("hit_20pct", "?")
             return (f"  {name}: {stats['count']} trades, "
-                    f"{stats['win_rate']}% win rate, "
+                    f"{hit}% hit 20%+ target, "
+                    f"{stats['win_rate']}% any-gain, "
                     f"{stats['avg_return']:+.1f}% avg next-day return")
 
         relvol_lines = [fmt_bucket(k, v) for k, v in opt_data.get("relative_volume", {}).items()]
@@ -173,17 +176,21 @@ def synthesize_combined_hypothesis(feedback_entries: list,
 1. {len(feedback_entries)} manually submitted winning trades (qualitative: chart screenshots + trader notes)
 2. {historical_count} labeled historical scan examples (quantitative: next-day return statistics)
 
+GOAL: Identify which setup characteristics most reliably predict a 20%+ next-day price spike.
+That is the specific take-profit target. Focus all hypotheses on this binary outcome (spike 20%+ or not).
+
 {feedback_section}
 
 {historical_section}
 
 Identify patterns supported by either or both sources. For each hypothesis:
-- State what the pattern is
+- State what the pattern is and how it correlates with 20%+ next-day spikes
 - Note whether evidence is from manual submissions, historical stats, or both
 - Rate confidence: HIGH (strong evidence), EMERGING (moderate), PRELIMINARY (limited)
-- State how it should influence position sizing (size up, size down, no effect)
+- State how it should influence position sizing (size up for high 20%+ hit rate, size down otherwise)
 
-Then write an AGENT CONTEXT section: a compact 3-4 sentence summary of the highest-confidence hypotheses for injection into a trading AI agent.
+Then write an AGENT CONTEXT section: a compact 3-4 sentence summary specifically about which signals
+predict 20%+ next-day spikes, formatted for injection into a trading AI agent.
 
 Format exactly:
 ## Hypotheses
@@ -270,8 +277,10 @@ def synthesize_historical_hypothesis(opt_data: dict, historical_count: int) -> s
     def fmt_bucket(name, stats):
         if stats["count"] == 0:
             return None
+        hit = stats.get("hit_20pct", "?")
         return (f"  {name}: {stats['count']} trades, "
-                f"{stats['win_rate']}% win rate, "
+                f"{hit}% hit 20%+ target, "
+                f"{stats['win_rate']}% any-gain, "
                 f"{stats['avg_return']:+.1f}% avg next-day return")
 
     relvol_lines  = [fmt_bucket(k, v) for k, v in opt_data.get("relative_volume", {}).items()]
@@ -282,9 +291,11 @@ def synthesize_historical_hypothesis(opt_data: dict, historical_count: int) -> s
     gain_text    = "\n".join(l for l in gain_lines    if l)
     shares_text  = "\n".join(l for l in shares_lines  if l)
 
-    prompt = f"""You are analyzing {historical_count} historical momentum/squeeze trades to find which signals predict next-day gains.
+    prompt = f"""You are analyzing {historical_count} historical momentum/squeeze trades to find which signals predict a 20%+ next-day price spike.
 
-Relative Volume buckets (next-day return after scan day):
+GOAL: The strategy buys after a scan signal and targets a 20% gain the next day. Identify which bucket characteristics most reliably produce that outcome.
+
+Relative Volume buckets (next-day return stats after scan day):
 {relvol_text}
 
 Today's gain buckets:
@@ -293,13 +304,14 @@ Today's gain buckets:
 Shares outstanding buckets:
 {shares_text}
 
-Identify the strongest statistical patterns. For each hypothesis:
-- State what the signal predicts
-- Reference the supporting win rate and avg return
+Identify the strongest statistical patterns predicting 20%+ next-day spikes. For each hypothesis:
+- State what the signal predicts about the 20%+ outcome
+- Reference the supporting hit rate and avg return data
 - Rate confidence: HIGH (many trades, clear edge), EMERGING (positive pattern, moderate sample), PRELIMINARY (limited data)
-- State how this should influence position sizing
+- State how this should influence position sizing (size up when 20%+ hit rate is highest)
 
-Then write an AGENT CONTEXT section: a compact 3-4 sentence summary for injection into a trading AI agent.
+Then write an AGENT CONTEXT section: a compact 3-4 sentence summary specifically about
+which signals predict 20%+ next-day spikes, for injection into a trading AI agent.
 
 Format exactly:
 ## Hypotheses
@@ -323,32 +335,35 @@ Format exactly:
 def analyze_and_optimize_weights(opt_data: dict) -> str:
     """
     Analyzes per-bucket backtest performance and recommends scoring weight
-    adjustments to maximize win rate × avg return.
+    adjustments to maximize 20%+ next-day spike rate.
     Uses claude-sonnet-4-6 for richer reasoning.
     """
     def fmt(stats):
         if not stats or stats["count"] == 0:
             return "No data"
+        hit = stats.get("hit_20pct", 0)
         return (f"{stats['count']} trades | "
-                f"{stats['win_rate']}% win rate | "
-                f"{stats['avg_return']:+.1f}% avg 1-day return")
+                f"{hit}% hit 20%+ | "
+                f"{stats['win_rate']}% any-gain | "
+                f"{stats['avg_return']:+.1f}% avg return")
 
     rv = opt_data["relative_volume"]
     dg = opt_data["daily_gain"]
     so = opt_data["shares_outstanding"]
 
     prompt = f"""You are a quantitative trading system optimizer.
-Analyze this backtested signal performance and recommend specific integer weight adjustments.
+Goal: maximize the rate at which top-scored stocks spike 20%+ the next day (our take-profit target).
+Analyze this backtested signal performance and recommend specific weight adjustments.
 
 TOTAL BACKTESTED TRADES: {opt_data['total_trades']}
 
-RELATIVE VOLUME (current scoring: ≥29x → +2pts, ≥10x → +1pt, max 10pts total):
+RELATIVE VOLUME (current scoring: ≥29x → +2pts, ≥10x → +1pt):
 - ≥50x:    {fmt(rv.get(">=50x"))}
 - 25–50x:  {fmt(rv.get("25-50x"))}
 - 10–25x:  {fmt(rv.get("10-25x"))}
 - <10x:    {fmt(rv.get("<10x"))}
 
-DAILY GAIN (current scoring: 10–40% → +2pts, else → 0pts):
+DAILY GAIN TODAY (current scoring: 10–40% → +2pts, else → 0pts):
 - 20–40%:   {fmt(dg.get("20-40%"))}
 - 10–20%:   {fmt(dg.get("10-20%"))}
 - 40–100%:  {fmt(dg.get("40-100%"))}
@@ -361,13 +376,16 @@ SHARES OUTSTANDING (current scoring: <5M → +2pts, else → 0pts):
 - 10–30M: {fmt(so.get("10-30M"))}
 - 30M+:   {fmt(so.get("30M+"))}
 
-For each signal, state whether to increase, decrease, split, or keep the current weights and by how much. Focus on the combination of win rate AND average return — a bucket with 70% win rate and +5% avg return is better than 60% win rate and +8% avg return.
+For each signal, state whether to increase, decrease, split, or keep the current weights.
+Focus primarily on the "hit 20%+" column — that is the actual success metric.
+Also suggest 3 new criteria not currently tracked that could improve 20%+ prediction.
 
 Format your response with these exact section headers:
 ## Relative Volume Weights
 ## Daily Gain Weights
 ## Shares Outstanding Weights
-## Top 3 Changes to Implement Now"""
+## Top 3 Changes to Implement Now
+## New Criteria to Track"""
 
     try:
         message = client.messages.create(
@@ -414,8 +432,10 @@ def optimize_complex_ai_weights(
         def fmt(stats):
             if not stats or stats["count"] == 0:
                 return "No data"
+            hit = stats.get("hit_20pct", 0)
             return (f"{stats['count']} trades | "
-                    f"{stats['win_rate']}% win rate | "
+                    f"{hit}% hit 20%+ target | "
+                    f"{stats['win_rate']}% any-gain | "
                     f"{stats['avg_return']:+.1f}% avg return")
 
         rv = opt_data["relative_volume"]
@@ -423,6 +443,7 @@ def optimize_complex_ai_weights(
         so = opt_data["shares_outstanding"]
 
         backtest_section = f"""BACKTESTED SIGNAL PERFORMANCE ({opt_data['total_trades']} trades with known next-day returns):
+Goal: predict which setups will spike 20%+ the next day.
 
 Relative Volume:
 - >=50x:   {fmt(rv.get(">=50x"))}
@@ -430,7 +451,7 @@ Relative Volume:
 - 10-25x:  {fmt(rv.get("10-25x"))}
 - <10x:    {fmt(rv.get("<10x"))}
 
-Daily Gain:
+Daily Gain (today's move):
 - 20-40%:  {fmt(dg.get("20-40%"))}
 - 10-20%:  {fmt(dg.get("10-20%"))}
 - 40-100%: {fmt(dg.get("40-100%"))}
@@ -486,11 +507,12 @@ Weight definitions:
 {feedback_section}
 
 ## Task
-Produce optimal integer weights (0-5 each) to maximize win_rate x avg_return for top-scored stocks.
-- Upweight signals that show both high win rate AND positive avg return
-- Zero-out or downweight signals that do not predict outcomes
-- The penalty weight should reflect how strongly large floats hurt outcomes
-- Also suggest 3-5 new data points to collect to further improve the model
+The goal is to predict which setups will spike 20%+ the next day (our take-profit target).
+Produce optimal integer weights (0-5 each) to maximize the "hit 20%+ target" rate for top-scored stocks.
+- Upweight signals where "hit 20%+ target" rate is highest — these are the true predictors
+- Zero-out or downweight signals that do not correlate with 20%+ next-day spikes
+- The penalty weight should reflect how strongly large floats suppress 20%+ moves
+- Also suggest 3-5 new criteria to track that could further improve 20%+ spike prediction (e.g. catalyst type, time of day, sector, gap size, prior-day volume trend)
 
 Respond in EXACTLY this format with no other text:
 
