@@ -124,6 +124,14 @@ def init_db():
     """)
 
     conn.commit()
+
+    # Migration: add notes column to trades if not present
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN notes TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
     conn.close()
 
 
@@ -374,7 +382,8 @@ def save_scan(results: list, mode: str):
 POSITION_SIZE = 1000.0
 
 
-def open_trade(symbol: str, price: float, position_size: float = POSITION_SIZE):
+def open_trade(symbol: str, price: float, position_size: float = POSITION_SIZE,
+               notes: str = ""):
     if price <= 0 or position_size <= 0:
         return None
 
@@ -397,9 +406,9 @@ def open_trade(symbol: str, price: float, position_size: float = POSITION_SIZE):
         (position_size,)
     )
     cursor.execute("""
-        INSERT INTO trades (symbol, entry_price, shares, position_size, status, opened_at)
-        VALUES (?, ?, ?, ?, 'open', ?)
-    """, (symbol, round(price, 4), round(shares, 6), position_size, opened_at))
+        INSERT INTO trades (symbol, entry_price, shares, position_size, status, opened_at, notes)
+        VALUES (?, ?, ?, ?, 'open', ?, ?)
+    """, (symbol, round(price, 4), round(shares, 6), position_size, opened_at, notes or ""))
 
     trade_id = cursor.lastrowid
     conn.commit()
@@ -459,7 +468,8 @@ def get_open_positions():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, symbol, entry_price, shares, position_size, opened_at
+        SELECT id, symbol, entry_price, shares, position_size, opened_at,
+               COALESCE(notes, '')
         FROM trades WHERE status = 'open'
         ORDER BY opened_at DESC
     """)
@@ -468,7 +478,7 @@ def get_open_positions():
 
     positions = []
     for row in rows:
-        trade_id, symbol, entry_price, shares, position_size, opened_at = row
+        trade_id, symbol, entry_price, shares, position_size, opened_at, notes = row
         positions.append({
             "trade_id": trade_id,
             "symbol": symbol,
@@ -476,6 +486,7 @@ def get_open_positions():
             "shares": shares,
             "position_size": position_size,
             "opened_at": opened_at,
+            "notes": notes,
         })
     return positions
 
@@ -485,7 +496,8 @@ def get_trade_history():
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, symbol, entry_price, exit_price, shares,
-               position_size, realized_pnl, opened_at, closed_at
+               position_size, realized_pnl, opened_at, closed_at,
+               COALESCE(notes, '')
         FROM trades WHERE status = 'closed'
         ORDER BY closed_at DESC
     """)
@@ -495,7 +507,7 @@ def get_trade_history():
     history = []
     for row in rows:
         (trade_id, symbol, entry_price, exit_price, shares,
-         position_size, realized_pnl, opened_at, closed_at) = row
+         position_size, realized_pnl, opened_at, closed_at, notes) = row
         pnl_pct = (realized_pnl / position_size * 100) if position_size else 0
         history.append({
             "trade_id": trade_id,
@@ -508,6 +520,7 @@ def get_trade_history():
             "pnl_pct": round(pnl_pct, 2),
             "opened_at": opened_at,
             "closed_at": closed_at,
+            "notes": notes,
         })
     return history
 

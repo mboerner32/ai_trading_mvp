@@ -15,21 +15,33 @@ from app.database import DB_NAME
 from app.scanner import prepare_dataframe
 from app.scoring_engine import DEFAULT_SQUEEZE_WEIGHTS
 
-# Known historical low-float / momentum tickers (2022–2024)
+# Known historical low-float / momentum tickers
+# Updated 2025: removed confirmed-delisted/bankrupt symbols, added 2023–2025 active plays
 SEED_TICKERS = [
-    "BBBY", "NAKD", "SNDL", "CTRM", "IDEX", "KOSS", "EXPR", "ATER",
-    "SPRT", "PROG", "BBIG", "WISH", "GOEV", "XELA", "RIDE", "NKLA",
-    "WKHS", "OCGN", "CLOV", "MVIS", "BLNK", "FCEL", "GNUS", "IMPP",
-    "MULN", "FFIE", "HPNN", "MINE", "MARK", "PHUN", "DPRO", "AUVI",
-    "VERB", "ILUS", "PIXY", "INPX", "MOBQ", "WRAP", "WISA", "SHOT",
-    "TLRY", "HEXO", "BNGO", "DARE", "AVXL", "AYTU", "BCRX", "NEPT",
-    "SESN", "GSAT", "SONN", "KULR", "AULT", "EFSH", "UPXI", "TRKA",
-    "VISL", "AMPE", "BPTH", "ATXI", "LODE", "HMBL", "MNMD", "KERN",
-    "IZEA", "COCP", "GTII", "ADXS", "ATOS", "MEGL", "BFRI", "CFRX",
-    "DPLO", "BBAI", "ZEST", "LIDR", "LTRY", "RETO", "TPST", "GERN",
-    "OCEA", "NOVN", "NRXP", "ISIG", "MTTR", "TBIO", "EBON", "DCFC",
-    "DGLY", "HYMC", "IPIX", "GRPN", "FGEN", "LUMO", "SNPX", "RKDA",
-    "XCUR", "SYTA", "NURO", "VVPR", "VLDR", "HYLN", "SOLO", "LKFN",
+    # --- Momentum era 2020–2022 (still useful historical data) ---
+    "SNDL", "CTRM", "IDEX", "KOSS", "ATER",
+    "PROG", "XELA", "WKHS", "OCGN", "CLOV",
+    "MVIS", "BLNK", "FCEL", "GNUS", "IMPP",
+    "MULN", "FFIE", "MARK", "PHUN", "DPRO",
+    "AUVI", "VERB", "ILUS", "PIXY", "MOBQ",
+    "WRAP", "WISA", "SHOT", "TLRY", "BNGO",
+    "DARE", "AVXL", "AYTU", "BCRX", "NEPT",
+    "SESN", "GSAT", "SONN", "KULR", "AULT",
+    "EFSH", "UPXI", "TRKA", "VISL", "AMPE",
+    "BPTH", "ATXI", "LODE", "MNMD", "KERN",
+    "IZEA", "COCP", "ADXS", "ATOS", "MEGL",
+    "BFRI", "BBAI", "ZEST", "TPST", "GERN",
+    "OCEA", "NOVN", "NRXP", "ISIG", "MTTR",
+    "DGLY", "HYMC", "IPIX", "GRPN", "FGEN",
+    "RKDA", "NURO", "VVPR", "HYLN",
+
+    # --- Active 2023–2025 momentum plays ---
+    "SOUN", "RGTI", "QBTS", "IONQ", "ASTS",
+    "LUNR", "DJT",  "ABAT", "GFAI", "ENVX",
+    "MVST", "HOLO", "SRM",  "OUST", "GREE",
+    "CLSK", "MMAT", "LAZR", "AIXI", "CODA",
+    "CTXR", "KAVL", "PALI", "MIGI", "COCH",
+    "FFAI", "CRKN", "ONCO", "BTBT", "PRST",
 ]
 
 

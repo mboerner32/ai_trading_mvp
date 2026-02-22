@@ -314,12 +314,13 @@ def trade_buy(
     request: Request,
     symbol: str = Form(...),
     price: float = Form(...),
-    position_size: float = Form(1000.0)
+    position_size: float = Form(1000.0),
+    notes: str = Form(""),
 ):
     if "user" not in request.session:
         return RedirectResponse("/login", status_code=303)
 
-    result = open_trade(symbol, price, position_size)
+    result = open_trade(symbol, price, position_size, notes)
 
     if result is None:
         return RedirectResponse("/dashboard?trade_error=insufficient_funds", status_code=303)
