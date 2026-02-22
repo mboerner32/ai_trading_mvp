@@ -181,6 +181,16 @@ def _process_ticker(symbol, weights=None):
                 if c3 and c3 > 0:
                     three_day_return = round((c3 - close_today) / close_today * 100, 2)
 
+            # First trading day (1–7) where close reached +20% from scan-day close
+            days_to_20pct = None
+            for days_ahead in range(1, 8):
+                if i + days_ahead < n:
+                    c = _safe(df.iloc[i + days_ahead].get("close"))
+                    if c and c > 0 and close_today > 0:
+                        if (c / close_today - 1) >= 0.20:
+                            days_to_20pct = days_ahead
+                            break
+
             scan_date = df.index[i]
             timestamp = (
                 scan_date.isoformat()
@@ -198,6 +208,7 @@ def _process_ticker(symbol, weights=None):
                 "shares_outstanding": shares_outstanding,
                 "next_day_return":    next_day_return,
                 "three_day_return":   three_day_return,
+                "days_to_20pct":      days_to_20pct,
             })
 
         return examples

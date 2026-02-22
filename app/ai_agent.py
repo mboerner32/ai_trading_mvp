@@ -150,8 +150,10 @@ def synthesize_combined_hypothesis(feedback_entries: list,
             if stats["count"] == 0:
                 return None
             hit = stats.get("hit_20pct", "?")
+            days = stats.get("avg_days_to_20pct")
+            days_str = f" (avg {days}d to target)" if days is not None else ""
             return (f"  {name}: {stats['count']} trades, "
-                    f"{hit}% hit 20%+ target, "
+                    f"{hit}% hit 20%+ target{days_str}, "
                     f"{stats['win_rate']}% any-gain, "
                     f"{stats['avg_return']:+.1f}% avg next-day return")
 
@@ -176,18 +178,19 @@ def synthesize_combined_hypothesis(feedback_entries: list,
 1. {len(feedback_entries)} manually submitted winning trades (qualitative: chart screenshots + trader notes)
 2. {historical_count} labeled historical scan examples (quantitative: next-day return statistics)
 
-GOAL: Identify which setup characteristics most reliably predict a 20%+ next-day price spike.
-That is the specific take-profit target. Focus all hypotheses on this binary outcome (spike 20%+ or not).
+GOAL: Identify which setup characteristics most reliably predict a 20%+ price spike within 7 trading days.
+That is the specific take-profit target. Setups that hit 20%+ FASTER (fewer days) are higher quality signals.
 
 {feedback_section}
 
 {historical_section}
 
 Identify patterns supported by either or both sources. For each hypothesis:
-- State what the pattern is and how it correlates with 20%+ next-day spikes
+- State what the pattern is and how it correlates with 20%+ spikes
 - Note whether evidence is from manual submissions, historical stats, or both
+- Note if setups with this characteristic tend to hit 20%+ faster (lower avg_days_to_20pct = better)
 - Rate confidence: HIGH (strong evidence), EMERGING (moderate), PRELIMINARY (limited)
-- State how it should influence position sizing (size up for high 20%+ hit rate, size down otherwise)
+- State how it should influence position sizing (size up for high 20%+ hit rate + fast hit, size down otherwise)
 
 Then write an AGENT CONTEXT section: a compact 3-4 sentence summary specifically about which signals
 predict 20%+ next-day spikes, formatted for injection into a trading AI agent.
@@ -278,8 +281,10 @@ def synthesize_historical_hypothesis(opt_data: dict, historical_count: int) -> s
         if stats["count"] == 0:
             return None
         hit = stats.get("hit_20pct", "?")
+        days = stats.get("avg_days_to_20pct")
+        days_str = f" (avg {days}d to target)" if days is not None else ""
         return (f"  {name}: {stats['count']} trades, "
-                f"{hit}% hit 20%+ target, "
+                f"{hit}% hit 20%+ target{days_str}, "
                 f"{stats['win_rate']}% any-gain, "
                 f"{stats['avg_return']:+.1f}% avg next-day return")
 
@@ -291,9 +296,10 @@ def synthesize_historical_hypothesis(opt_data: dict, historical_count: int) -> s
     gain_text    = "\n".join(l for l in gain_lines    if l)
     shares_text  = "\n".join(l for l in shares_lines  if l)
 
-    prompt = f"""You are analyzing {historical_count} historical momentum/squeeze trades to find which signals predict a 20%+ next-day price spike.
+    prompt = f"""You are analyzing {historical_count} historical momentum/squeeze trades to find which signals predict a 20%+ price spike within 7 trading days.
 
-GOAL: The strategy buys after a scan signal and targets a 20% gain the next day. Identify which bucket characteristics most reliably produce that outcome.
+GOAL: The strategy buys after a scan signal and targets a 20%+ gain. Setups that hit 20%+ in fewer days are the strongest signals — avg_days_to_20pct lower = higher quality setup.
+Identify which bucket characteristics most reliably produce that outcome AND hit it fastest.
 
 Relative Volume buckets (next-day return stats after scan day):
 {relvol_text}
@@ -304,11 +310,12 @@ Today's gain buckets:
 Shares outstanding buckets:
 {shares_text}
 
-Identify the strongest statistical patterns predicting 20%+ next-day spikes. For each hypothesis:
+Identify the strongest statistical patterns predicting 20%+ spikes. For each hypothesis:
 - State what the signal predicts about the 20%+ outcome
-- Reference the supporting hit rate and avg return data
+- Reference the supporting hit rate, avg return, and avg days-to-target data
+- Lower avg_days_to_20pct = faster to target = stronger signal quality
 - Rate confidence: HIGH (many trades, clear edge), EMERGING (positive pattern, moderate sample), PRELIMINARY (limited data)
-- State how this should influence position sizing (size up when 20%+ hit rate is highest)
+- State how this should influence position sizing (size up when 20%+ hit rate is highest AND days-to-target is lowest)
 
 Then write an AGENT CONTEXT section: a compact 3-4 sentence summary specifically about
 which signals predict 20%+ next-day spikes, for injection into a trading AI agent.
@@ -342,8 +349,10 @@ def analyze_and_optimize_weights(opt_data: dict) -> str:
         if not stats or stats["count"] == 0:
             return "No data"
         hit = stats.get("hit_20pct", 0)
+        days = stats.get("avg_days_to_20pct")
+        days_str = f" (avg {days}d to target)" if days is not None else ""
         return (f"{stats['count']} trades | "
-                f"{hit}% hit 20%+ | "
+                f"{hit}% hit 20%+{days_str} | "
                 f"{stats['win_rate']}% any-gain | "
                 f"{stats['avg_return']:+.1f}% avg return")
 
@@ -377,8 +386,9 @@ SHARES OUTSTANDING (current scoring: <5M → +2pts, else → 0pts):
 - 30M+:   {fmt(so.get("30M+"))}
 
 For each signal, state whether to increase, decrease, split, or keep the current weights.
-Focus primarily on the "hit 20%+" column — that is the actual success metric.
-Also suggest 3 new criteria not currently tracked that could improve 20%+ prediction.
+Focus primarily on the "hit 20%+" column AND avg days-to-target — lower days = faster to target = higher quality signal.
+Upweight signals with both high hit rate AND fast time-to-target.
+Also suggest 3 new criteria not currently tracked that could improve 20%+ prediction speed and reliability.
 
 Format your response with these exact section headers:
 ## Relative Volume Weights
@@ -433,8 +443,10 @@ def optimize_complex_ai_weights(
             if not stats or stats["count"] == 0:
                 return "No data"
             hit = stats.get("hit_20pct", 0)
+            days = stats.get("avg_days_to_20pct")
+            days_str = f" (avg {days}d to target)" if days is not None else ""
             return (f"{stats['count']} trades | "
-                    f"{hit}% hit 20%+ target | "
+                    f"{hit}% hit 20%+ target{days_str} | "
                     f"{stats['win_rate']}% any-gain | "
                     f"{stats['avg_return']:+.1f}% avg return")
 
@@ -512,7 +524,8 @@ Produce optimal integer weights (0-5 each) to maximize the "hit 20%+ target" rat
 - Upweight signals where "hit 20%+ target" rate is highest — these are the true predictors
 - Zero-out or downweight signals that do not correlate with 20%+ next-day spikes
 - The penalty weight should reflect how strongly large floats suppress 20%+ moves
-- Also suggest 3-5 new criteria to track that could further improve 20%+ spike prediction (e.g. catalyst type, time of day, sector, gap size, prior-day volume trend)
+- Upweight signals where "hit 20%+ target" rate is highest AND avg days-to-target is lowest (fast hits = best signal)
+- Also suggest 3-5 new criteria to track that could further improve 20%+ spike prediction speed and reliability (e.g. catalyst type, time of day, sector, gap size, prior-day volume trend)
 
 Respond in EXACTLY this format with no other text:
 

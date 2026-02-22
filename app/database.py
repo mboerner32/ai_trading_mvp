@@ -132,6 +132,13 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # column already exists
 
+    # Migration: add days_to_20pct — how many trading days until stock first hit +20%
+    try:
+        cursor.execute("ALTER TABLE scans ADD COLUMN days_to_20pct INTEGER")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
     conn.close()
 
 
@@ -231,7 +238,7 @@ def get_score_buckets():
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT score, next_day_return
+        SELECT score, next_day_return, days_to_20pct
         FROM scans
         WHERE next_day_return IS NOT NULL
     """)
@@ -239,38 +246,35 @@ def get_score_buckets():
     rows = cursor.fetchall()
     conn.close()
 
-    buckets = {
-        "80-100": [],
-        "60-79": [],
-        "40-59": [],
-        "0-39": []
-    }
+    buckets = {"80-100": [], "60-79": [], "40-59": [], "0-39": []}
 
-    for score, ret in rows:
-        if score >= 80:
-            buckets["80-100"].append(ret)
-        elif score >= 60:
-            buckets["60-79"].append(ret)
-        elif score >= 40:
-            buckets["40-59"].append(ret)
-        else:
-            buckets["0-39"].append(ret)
+    for score, ret, d20 in rows:
+        item = (ret, d20)
+        if score >= 80:   buckets["80-100"].append(item)
+        elif score >= 60: buckets["60-79"].append(item)
+        elif score >= 40: buckets["40-59"].append(item)
+        else:             buckets["0-39"].append(item)
 
     results = {}
 
-    for bucket, values in buckets.items():
-        if values:
+    for bucket, items in buckets.items():
+        if items:
+            values  = [v for v, d in items]
             wins    = [v for v in values if v > 0]
-            hits_20 = [v for v in values if v >= 20]
+            hits_20 = [(v, d) for v, d in items if v >= 20]
+            valid_days = [d for v, d in hits_20 if d is not None]
+            avg_days = round(sum(valid_days) / len(valid_days), 1) if valid_days else None
             results[bucket] = {
-                "trades":     len(values),
-                "avg_return": round(sum(values)/len(values), 2),
-                "win_rate":   round((len(wins)/len(values))*100, 2),
-                "hit_20pct":  round((len(hits_20)/len(values))*100, 2),
+                "trades":            len(items),
+                "avg_return":        round(sum(values)/len(values), 2),
+                "win_rate":          round(len(wins)/len(items)*100, 2),
+                "hit_20pct":         round(len(hits_20)/len(items)*100, 2),
+                "avg_days_to_20pct": avg_days,
             }
         else:
             results[bucket] = {
-                "trades": 0, "avg_return": 0, "win_rate": 0, "hit_20pct": 0
+                "trades": 0, "avg_return": 0, "win_rate": 0,
+                "hit_20pct": 0, "avg_days_to_20pct": None,
             }
 
     return results
@@ -297,7 +301,8 @@ def update_returns():
             if (today - scan_date).days < 3:
                 continue
 
-            end_date = min(scan_date + timedelta(days=5), today)
+            # Fetch 14 calendar days to cover 7 trading days
+            end_date = min(scan_date + timedelta(days=14), today)
 
             data = yf.download(
                 symbol,
@@ -313,20 +318,27 @@ def update_returns():
                 data.columns = data.columns.get_level_values(0)
 
             closes = data["Close"].tolist()
+            base   = closes[0]
 
-            next_day = None
+            next_day  = None
             three_day = None
-
             if len(closes) >= 2:
-                next_day = ((closes[1] - closes[0]) / closes[0]) * 100
-
+                next_day  = (closes[1] - base) / base * 100
             if len(closes) >= 4:
-                three_day = ((closes[3] - closes[0]) / closes[0]) * 100
+                three_day = (closes[3] - base) / base * 100
+
+            # First trading day within 7 where stock closed up ≥20% from scan close
+            days_to_20pct = None
+            for d in range(1, min(8, len(closes))):
+                if (closes[d] / base - 1) >= 0.20:
+                    days_to_20pct = d
+                    break
 
             updates.append((
-                round(next_day, 2) if next_day is not None else None,
+                round(next_day,  2) if next_day  is not None else None,
                 round(three_day, 2) if three_day is not None else None,
-                scan_id
+                days_to_20pct,
+                scan_id,
             ))
 
         except Exception:
@@ -335,12 +347,12 @@ def update_returns():
     if updates:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        for (nd, td, sid) in updates:
+        for (nd, td, d20, sid) in updates:
             cursor.execute("""
                 UPDATE scans
-                SET next_day_return = ?, three_day_return = ?
+                SET next_day_return = ?, three_day_return = ?, days_to_20pct = ?
                 WHERE id = ?
-            """, (nd, td, sid))
+            """, (nd, td, d20, sid))
         conn.commit()
         conn.close()
 
@@ -554,7 +566,8 @@ def get_optimization_data():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT relative_volume, today_return, shares_outstanding, next_day_return
+        SELECT relative_volume, today_return, shares_outstanding,
+               next_day_return, days_to_20pct
         FROM scans
         WHERE next_day_return IS NOT NULL
         ORDER BY id DESC LIMIT 500
@@ -565,46 +578,53 @@ def get_optimization_data():
     if not rows:
         return None
 
-    def bucket_stats(values):
-        if not values:
-            return {"count": 0, "avg_return": 0.0, "win_rate": 0.0, "hit_20pct": 0.0}
-        wins    = [v for v in values if v > 0]
-        hits_20 = [v for v in values if v >= 20]
+    def bucket_stats(items):
+        """items = list of (next_day_return, days_to_20pct)"""
+        if not items:
+            return {"count": 0, "avg_return": 0.0, "win_rate": 0.0,
+                    "hit_20pct": 0.0, "avg_days_to_20pct": None}
+        values  = [nd for nd, d in items]
+        wins    = [nd for nd in values if nd > 0]
+        hits_20 = [(nd, d) for nd, d in items if nd >= 20]
+        valid_days = [d for nd, d in hits_20 if d is not None]
+        avg_days = round(sum(valid_days) / len(valid_days), 1) if valid_days else None
         return {
-            "count":      len(values),
-            "avg_return": round(sum(values) / len(values), 2),
-            "win_rate":   round(len(wins)    / len(values) * 100, 1),
-            "hit_20pct":  round(len(hits_20) / len(values) * 100, 1),
+            "count":             len(items),
+            "avg_return":        round(sum(values) / len(values), 2),
+            "win_rate":          round(len(wins)    / len(items) * 100, 1),
+            "hit_20pct":         round(len(hits_20) / len(items) * 100, 1),
+            "avg_days_to_20pct": avg_days,
         }
 
     relvol  = {">=50x": [], "25-50x": [], "10-25x": [], "<10x": []}
     gain    = {"20-40%": [], "10-20%": [], "40-100%": [], "<10%": []}
     shares  = {"<1M": [], "1-5M": [], "5-10M": [], "10-30M": [], "30M+": []}
 
-    for rv, tr, so, nd in rows:
+    for rv, tr, so, nd, d20 in rows:
+        item = (nd, d20)
         if rv is not None:
-            if rv >= 50:   relvol[">=50x"].append(nd)
-            elif rv >= 25: relvol["25-50x"].append(nd)
-            elif rv >= 10: relvol["10-25x"].append(nd)
-            else:          relvol["<10x"].append(nd)
+            if rv >= 50:   relvol[">=50x"].append(item)
+            elif rv >= 25: relvol["25-50x"].append(item)
+            elif rv >= 10: relvol["10-25x"].append(item)
+            else:          relvol["<10x"].append(item)
 
         if tr is not None:
-            if 20 <= tr <= 40:        gain["20-40%"].append(nd)
-            elif 10 <= tr < 20:       gain["10-20%"].append(nd)
-            elif 40 < tr <= 100:      gain["40-100%"].append(nd)
-            elif tr < 10:             gain["<10%"].append(nd)
+            if 20 <= tr <= 40:   gain["20-40%"].append(item)
+            elif 10 <= tr < 20:  gain["10-20%"].append(item)
+            elif 40 < tr <= 100: gain["40-100%"].append(item)
+            elif tr < 10:        gain["<10%"].append(item)
 
         if so is not None:
-            if so < 1_000_000:        shares["<1M"].append(nd)
-            elif so < 5_000_000:      shares["1-5M"].append(nd)
-            elif so < 10_000_000:     shares["5-10M"].append(nd)
-            elif so < 30_000_000:     shares["10-30M"].append(nd)
-            else:                     shares["30M+"].append(nd)
+            if so < 1_000_000:   shares["<1M"].append(item)
+            elif so < 5_000_000: shares["1-5M"].append(item)
+            elif so < 10_000_000:shares["5-10M"].append(item)
+            elif so < 30_000_000:shares["10-30M"].append(item)
+            else:                shares["30M+"].append(item)
 
     return {
-        "total_trades": len(rows),
-        "relative_volume": {k: bucket_stats(v) for k, v in relvol.items()},
-        "daily_gain":      {k: bucket_stats(v) for k, v in gain.items()},
+        "total_trades":       len(rows),
+        "relative_volume":    {k: bucket_stats(v) for k, v in relvol.items()},
+        "daily_gain":         {k: bucket_stats(v) for k, v in gain.items()},
         "shares_outstanding": {k: bucket_stats(v) for k, v in shares.items()},
     }
 
@@ -885,8 +905,8 @@ def save_historical_scans(examples: list) -> int:
             INSERT INTO scans (
                 timestamp, symbol, score, recommendation, mode,
                 relative_volume, today_return, shares_outstanding,
-                news_recent, next_day_return, three_day_return
-            ) VALUES (?, ?, ?, ?, 'historical', ?, ?, ?, 0, ?, ?)
+                news_recent, next_day_return, three_day_return, days_to_20pct
+            ) VALUES (?, ?, ?, ?, 'historical', ?, ?, ?, 0, ?, ?, ?)
         """, (
             ex["timestamp"],
             ex["symbol"],
@@ -897,6 +917,7 @@ def save_historical_scans(examples: list) -> int:
             ex.get("shares_outstanding"),
             ex.get("next_day_return"),
             ex.get("three_day_return"),
+            ex.get("days_to_20pct"),
         ))
     conn.commit()
     conn.close()
@@ -948,7 +969,7 @@ def get_historical_examples(limit: int = 20) -> list:
     cursor = conn.cursor()
     cursor.execute("""
         SELECT symbol, score, today_return, relative_volume, shares_outstanding,
-               next_day_return, timestamp
+               next_day_return, timestamp, days_to_20pct
         FROM scans
         WHERE mode = 'historical' AND next_day_return IS NOT NULL
         ORDER BY score DESC
@@ -965,6 +986,7 @@ def get_historical_examples(limit: int = 20) -> list:
             "shares_outstanding": r[4],
             "next_day_return":    round(r[5], 2) if r[5] is not None else None,
             "timestamp":          (r[6] or "")[:10],
+            "days_to_20pct":      r[7],
         }
         for r in rows
     ]
@@ -982,7 +1004,7 @@ def get_sizing_stats() -> dict | None:
     cursor = conn.cursor()
     cursor.execute("""
         SELECT score, relative_volume, shares_outstanding,
-               today_return, next_day_return
+               today_return, next_day_return, days_to_20pct
         FROM scans
         WHERE next_day_return IS NOT NULL
         ORDER BY id DESC LIMIT 1000
@@ -993,20 +1015,25 @@ def get_sizing_stats() -> dict | None:
     if len(rows) < 10:
         return None
 
-    def bucket_stats(returns):
-        if not returns:
+    def bucket_stats(items):
+        """items = list of (next_day_return, days_to_20pct)"""
+        if not items:
             return None
-        # "win" = hit the 20% take-profit target next day
-        wins    = sum(1 for r in returns if r >= 20)
-        any_pos = sum(1 for r in returns if r > 0)
-        sorted_r = sorted(returns)
-        median = sorted_r[len(sorted_r) // 2]
+        returns = [nd for nd, d in items]
+        # "win" = hit the 20% take-profit target within 7 trading days
+        hits_20    = [(nd, d) for nd, d in items if nd >= 20]
+        any_pos    = sum(1 for nd in returns if nd > 0)
+        valid_days = [d for nd, d in hits_20 if d is not None]
+        avg_days   = round(sum(valid_days) / len(valid_days), 1) if valid_days else None
+        sorted_r   = sorted(returns)
+        median     = sorted_r[len(sorted_r) // 2]
         return {
-            "count":      len(returns),
-            "win_rate":   round(wins    / len(returns) * 100, 1),  # 20%+ hit rate
-            "any_pos":    round(any_pos / len(returns) * 100, 1),  # any positive
-            "avg_return": round(sum(returns) / len(returns), 2),
-            "median":     round(median, 2),
+            "count":             len(items),
+            "win_rate":          round(len(hits_20) / len(items) * 100, 1),  # 20%+ hit rate
+            "any_pos":           round(any_pos      / len(items) * 100, 1),
+            "avg_return":        round(sum(returns) / len(returns), 2),
+            "median":            round(median, 2),
+            "avg_days_to_20pct": avg_days,
         }
 
     # Score buckets
@@ -1018,35 +1045,36 @@ def get_sizing_stats() -> dict | None:
     # Daily gain buckets
     gain_buckets = {"20-40%": [], "10-20%": [], "40-100%": [], "<10%": []}
 
-    for score, rv, shares, today_ret, nd in rows:
+    for score, rv, shares, today_ret, nd, d20 in rows:
         if nd is None:
             continue
+        item = (nd, d20)
 
         # Score
-        if score >= 90:        score_buckets["90-100"].append(nd)
-        elif score >= 75:      score_buckets["75-89"].append(nd)
-        elif score >= 50:      score_buckets["50-74"].append(nd)
-        else:                  score_buckets["<50"].append(nd)
+        if score >= 90:        score_buckets["90-100"].append(item)
+        elif score >= 75:      score_buckets["75-89"].append(item)
+        elif score >= 50:      score_buckets["50-74"].append(item)
+        else:                  score_buckets["<50"].append(item)
 
         # Relative volume
         if rv is not None:
-            if rv >= 50:       rv_buckets[">=50x"].append(nd)
-            elif rv >= 25:     rv_buckets["25-50x"].append(nd)
-            elif rv >= 10:     rv_buckets["10-25x"].append(nd)
-            else:              rv_buckets["<10x"].append(nd)
+            if rv >= 50:       rv_buckets[">=50x"].append(item)
+            elif rv >= 25:     rv_buckets["25-50x"].append(item)
+            elif rv >= 10:     rv_buckets["10-25x"].append(item)
+            else:              rv_buckets["<10x"].append(item)
 
         # Float
         if shares is not None:
-            if shares < 10_000_000:    float_buckets["<10M"].append(nd)
-            elif shares < 30_000_000:  float_buckets["10-30M"].append(nd)
-            else:                      float_buckets["30M+"].append(nd)
+            if shares < 10_000_000:    float_buckets["<10M"].append(item)
+            elif shares < 30_000_000:  float_buckets["10-30M"].append(item)
+            else:                      float_buckets["30M+"].append(item)
 
         # Daily gain
         if today_ret is not None:
-            if 20 <= today_ret <= 40:      gain_buckets["20-40%"].append(nd)
-            elif 10 <= today_ret < 20:     gain_buckets["10-20%"].append(nd)
-            elif 40 < today_ret <= 100:    gain_buckets["40-100%"].append(nd)
-            elif today_ret < 10:           gain_buckets["<10%"].append(nd)
+            if 20 <= today_ret <= 40:      gain_buckets["20-40%"].append(item)
+            elif 10 <= today_ret < 20:     gain_buckets["10-20%"].append(item)
+            elif 40 < today_ret <= 100:    gain_buckets["40-100%"].append(item)
+            elif today_ret < 10:           gain_buckets["<10%"].append(item)
 
     result = {
         "total": len(rows),

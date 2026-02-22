@@ -225,8 +225,8 @@
     <!-- SCORE BUCKET TABLE -->
     <div class="section-title">Score Bucket Performance</div>
     <p style="color:#6b7280; font-size:13px; margin:-8px 0 16px;">
-        <strong>Hit 20%+</strong> = % of setups that spiked ≥20% next day (take-profit target).
-        This is the primary signal quality metric.
+        <strong>Hit 20%+</strong> = % of setups that spiked ≥20% within 7 trading days (take-profit target).
+        <strong>Avg Days</strong> = how fast it hit — lower is better (faster = stronger signal).
     </p>
 
     <table>
@@ -237,6 +237,7 @@
                 <th>Avg Return</th>
                 <th>Any Gain %</th>
                 <th style="color:#0f766e;">Hit 20%+ ★</th>
+                <th style="color:#0f766e;">Avg Days to 20%+</th>
             </tr>
         </thead>
         <tbody>
@@ -252,6 +253,9 @@
                 </td>
                 <td style="font-weight:600; color:{% if data.hit_20pct >= 30 %}#0f766e{% elif data.hit_20pct >= 15 %}#92400e{% else %}#6b7280{% endif %};">
                     {% if data.trades > 0 %}{{ data.hit_20pct }}%{% else %}—{% endif %}
+                </td>
+                <td style="font-weight:600; color:{% if data.avg_days_to_20pct is not none and data.avg_days_to_20pct <= 2 %}#0f766e{% elif data.avg_days_to_20pct is not none and data.avg_days_to_20pct <= 4 %}#92400e{% else %}#6b7280{% endif %};">
+                    {% if data.avg_days_to_20pct is not none %}{{ data.avg_days_to_20pct }}d{% else %}—{% endif %}
                 </td>
             </tr>
         {% endfor %}
