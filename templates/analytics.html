@@ -394,6 +394,51 @@
         {% endif %}
     </div>
 
+    <!-- HISTORICAL TRAINING DATA -->
+    <div class="section-title" style="color:#7c3aed;">Historical Training Data</div>
+
+    <div class="chart-card" style="margin-bottom:40px; border-left:4px solid #7c3aed;">
+        <p style="color:#6b7280; font-size:14px; margin-top:0; margin-bottom:16px;">
+            Scans 2 years of OHLCV data for known momentum tickers plus every symbol
+            you've already scanned. Finds days matching live criteria (price&nbsp;&lt;&nbsp;$5,
+            daily gain 10–100%, relative volume&nbsp;≥&nbsp;10) and records the next-day return
+            as a labeled example. These are automatically included in optimizer data.
+        </p>
+
+        {% if historical_count > 0 %}
+        <div style="margin-bottom:16px; padding:12px 16px; background:#f5f3ff;
+                    border-radius:8px; border:1px solid #c4b5fd; font-size:14px;">
+            <strong style="color:#6d28d9;">{{ historical_count }}</strong>
+            historical labeled examples in the training set.
+        </div>
+        {% endif %}
+
+        <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+            <form method="post" action="/backfill-history">
+                <button type="submit"
+                        style="background:#7c3aed; color:white; border:none;
+                               padding:10px 22px; border-radius:8px; cursor:pointer;
+                               font-size:14px; font-weight:600;">
+                    {% if backfill_status.status == 'running' %}
+                        Running… ({{ backfill_status.processed }}/{{ backfill_status.total }})
+                    {% else %}
+                        Generate Historical Training Data
+                    {% endif %}
+                </button>
+            </form>
+
+            <div id="backfillStatus" style="font-size:13px; color:#6b7280;">
+                {% if backfill_status.status == 'running' %}
+                    Processing {{ backfill_status.processed }}/{{ backfill_status.total }} tickers
+                    &nbsp;·&nbsp; {{ backfill_status.saved }} examples found so far…
+                {% elif backfill_status.status == 'complete' %}
+                    Last run: {{ backfill_status.saved }} examples saved from
+                    {{ backfill_status.total }} tickers.
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
     <!-- EQUITY CURVE -->
     <div class="section-title">Equity Curve (compounded, $10k start)</div>
 
@@ -444,6 +489,32 @@ new Chart(document.getElementById('equityChart'), {
         }
     }
 });
+</script>
+{% endif %}
+
+{% if backfill_status.status == 'running' %}
+<script>
+(function pollBackfill() {
+    const el = document.getElementById('backfillStatus');
+    if (!el) return;
+    setTimeout(function tick() {
+        fetch('/api/backfill-status')
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'running') {
+                    el.textContent =
+                        'Processing ' + data.processed + '/' + data.total +
+                        ' tickers · ' + data.saved + ' examples found so far…';
+                    setTimeout(tick, 4000);
+                } else if (data.status === 'complete') {
+                    el.textContent =
+                        'Done! ' + data.saved + ' examples saved from ' +
+                        data.total + ' tickers. Reload to see updated counts.';
+                }
+            })
+            .catch(() => setTimeout(tick, 8000));
+    }, 4000);
+})();
 </script>
 {% endif %}
 

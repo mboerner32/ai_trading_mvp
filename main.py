@@ -1,6 +1,7 @@
 # ai_trading_mvp/main.py
 
 import asyncio
+import threading
 import pytz
 import yfinance as yf
 
@@ -14,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.scanner import run_scan
+from app.backfill import build_historical_dataset
 from app.ai_agent import (
     recommend_position_size,
     analyze_and_optimize_weights,
@@ -54,6 +56,10 @@ from app.database import (
     remove_from_watchlist,
     get_watchlist,
     get_risk_metrics,
+    save_historical_scans,
+    set_backfill_status,
+    get_backfill_status,
+    get_historical_count,
 )
 
 app = FastAPI()
@@ -220,7 +226,9 @@ def analytics(request: Request):
             "equity_curve": get_equity_curve(),
             "weight_changelog": get_weight_changelog(),
             "risk_metrics": get_risk_metrics(),
-            "user": request.session["user"]
+            "historical_count": get_historical_count(),
+            "backfill_status": get_backfill_status(),
+            "user": request.session["user"],
         }
     )
 
@@ -589,6 +597,36 @@ def watchlist_remove(request: Request, symbol: str):
         return RedirectResponse("/login", status_code=303)
     remove_from_watchlist(symbol)
     return RedirectResponse("/trades", status_code=303)
+
+
+# ---------------- HISTORICAL BACKFILL ----------------
+@app.post("/backfill-history")
+def start_backfill(request: Request):
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+
+    status = get_backfill_status()
+    if status.get("status") == "running":
+        return RedirectResponse("/analytics?backfill=already_running", status_code=303)
+
+    weights_data = get_squeeze_weights()
+    weights = weights_data["weights"] if weights_data else None
+
+    t = threading.Thread(
+        target=build_historical_dataset,
+        kwargs={"weights": weights},
+        daemon=True,
+    )
+    t.start()
+
+    return RedirectResponse("/analytics?backfill=started", status_code=303)
+
+
+@app.get("/api/backfill-status")
+def api_backfill_status(request: Request):
+    if "user" not in request.session:
+        return Response(status_code=401)
+    return get_backfill_status()
 
 
 # ---------------- LOGOUT ----------------

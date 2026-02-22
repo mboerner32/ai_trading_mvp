@@ -843,6 +843,79 @@ def get_watchlist() -> list:
     return [{"symbol": r[0], "added_at": r[1], "price_at_add": r[2]} for r in rows]
 
 
+# ---------------- HISTORICAL BACKFILL ----------------
+def save_historical_scans(examples: list) -> int:
+    """
+    Insert labeled historical scan examples (mode='historical').
+    Clears existing historical rows first to keep the table idempotent.
+    """
+    if not examples:
+        return 0
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM scans WHERE mode = 'historical'")
+    for ex in examples:
+        cursor.execute("""
+            INSERT INTO scans (
+                timestamp, symbol, score, recommendation, mode,
+                relative_volume, today_return, shares_outstanding,
+                news_recent, next_day_return, three_day_return
+            ) VALUES (?, ?, ?, ?, 'historical', ?, ?, ?, 0, ?, ?)
+        """, (
+            ex["timestamp"],
+            ex["symbol"],
+            ex["score"],
+            ex["recommendation"],
+            ex.get("relative_volume"),
+            ex.get("today_return"),
+            ex.get("shares_outstanding"),
+            ex.get("next_day_return"),
+            ex.get("three_day_return"),
+        ))
+    conn.commit()
+    conn.close()
+    return len(examples)
+
+
+def set_backfill_status(status: str, processed: int = 0,
+                        total: int = 0, saved: int = 0):
+    value = json.dumps({
+        "status": status,
+        "processed": processed,
+        "total": total,
+        "saved": saved,
+        "updated_at": datetime.utcnow().isoformat(),
+    })
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO settings (key, value, updated_at) VALUES ('backfill_status', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    """, (value, datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_backfill_status() -> dict:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = 'backfill_status'")
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return {"status": "idle", "processed": 0, "total": 0, "saved": 0}
+    return json.loads(row[0])
+
+
+def get_historical_count() -> int:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM scans WHERE mode = 'historical'")
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
 # ---------------- RISK METRICS ----------------
 def get_risk_metrics() -> dict:
     """Compute Sharpe ratio, max drawdown, and win rate from closed trades."""
