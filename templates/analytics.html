@@ -328,39 +328,10 @@
         {% endif %}
     </div>
 
-    <!-- WEIGHT OPTIMIZER -->
-    <div class="section-title">General AI Weight Optimizer (Read-Only Recommendations)</div>
+    <!-- COMPLEX + AI CHANGE LOG -->
+    <div class="section-title" style="color:#0f766e;">Complex + AI Model — Change Log</div>
 
-    <div class="chart-card" style="margin-bottom:40px;">
-        <p style="color:#6b7280; font-size:14px; margin-top:0; margin-bottom:16px;">
-            Analyzes your backtesting data and recommends scoring weight adjustments
-            to maximize the combination of win rate and average return.
-            Requires 5+ scans with known returns (filled in automatically after 3 trading days).
-        </p>
-
-        <form method="post" action="/optimize">
-            <button type="submit" style="background:#4f46e5; color:white; border:none;
-                    padding:10px 22px; border-radius:8px; cursor:pointer;
-                    font-size:14px; font-weight:600;">
-                Run Optimizer
-            </button>
-        </form>
-
-        {% if weight_analysis %}
-        <div style="margin-top:24px; padding:20px; background:#f8f9ff;
-                    border-radius:8px; border:1px solid #e0e7ff;">
-            <div style="font-size:13px; line-height:1.7; white-space:pre-wrap;
-                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
-                {{ weight_analysis }}
-            </div>
-        </div>
-        {% endif %}
-    </div>
-
-    <!-- WEIGHT CHANGELOG -->
-    <div class="section-title" style="color:#4f46e5;">Complex + AI Model — Change Log</div>
-
-    <div class="chart-card" style="margin-bottom:40px; border-left:4px solid #4f46e5;">
+    <div class="chart-card" style="margin-bottom:40px; border-left:4px solid #0f766e;">
         {% if weight_changelog %}
         <table style="margin-bottom:0;">
             <thead>
@@ -391,6 +362,35 @@
             No model updates logged yet. Use "Apply to Complex + AI Model" on the Feedback page
             or click "Re-optimize Now" above to log the first entry.
         </p>
+        {% endif %}
+    </div>
+
+    <!-- WEIGHT OPTIMIZER -->
+    <div class="section-title">General AI Weight Optimizer (Read-Only Recommendations)</div>
+
+    <div class="chart-card" style="margin-bottom:40px;">
+        <p style="color:#6b7280; font-size:14px; margin-top:0; margin-bottom:16px;">
+            Analyzes your backtesting data and recommends scoring weight adjustments
+            to maximize the combination of win rate and average return.
+            Requires 5+ scans with known returns (filled in automatically after 3 trading days).
+        </p>
+
+        <form method="post" action="/optimize">
+            <button type="submit" style="background:#4f46e5; color:white; border:none;
+                    padding:10px 22px; border-radius:8px; cursor:pointer;
+                    font-size:14px; font-weight:600;">
+                Run Optimizer
+            </button>
+        </form>
+
+        {% if weight_analysis %}
+        <div style="margin-top:24px; padding:20px; background:#f8f9ff;
+                    border-radius:8px; border:1px solid #e0e7ff;">
+            <div style="font-size:13px; line-height:1.7; white-space:pre-wrap;
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+                {{ weight_analysis }}
+            </div>
+        </div>
         {% endif %}
     </div>
 
