@@ -136,10 +136,19 @@ def get_fundamentals(symbol):
 # ---------------------------------------------------
 def prepare_dataframe(df):
 
-    # Newer yfinance versions return MultiIndex columns like ('Close', 'AAPL').
-    # Flatten to single-level so downstream code can access 'close', 'volume', etc.
+    # Newer yfinance versions return MultiIndex columns.
+    # The level order varies: (Price, Ticker) or (Ticker, Price) depending on version.
+    # Detect which level contains standard price field names and use that.
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+        _price_fields = {'Open', 'High', 'Low', 'Close', 'Volume', 'Adj Close'}
+        lvl0 = set(df.columns.get_level_values(0))
+        if lvl0 & _price_fields:
+            df.columns = df.columns.get_level_values(0)
+        else:
+            df.columns = df.columns.get_level_values(-1)
+
+    # Drop any duplicate column names (keep first occurrence)
+    df = df.loc[:, ~df.columns.duplicated()]
 
     df = df.rename(columns={
         "Open": "open",

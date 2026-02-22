@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 jinja2
-yfinance
+yfinance>=0.2.54
 pandas
 passlib[argon2]
 python-multipart
