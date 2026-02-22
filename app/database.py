@@ -968,6 +968,95 @@ def get_historical_examples(limit: int = 20) -> list:
     ]
 
 
+# ---------------- SIZING CALIBRATION STATS ----------------
+def get_sizing_stats() -> dict | None:
+    """
+    Returns historical performance stats grouped by score bucket for use
+    as quantitative calibration in position sizing decisions.
+    Covers all labeled scans (historical + live with known returns).
+    Returns None if fewer than 10 labeled rows exist.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT score, relative_volume, shares_outstanding,
+               today_return, next_day_return
+        FROM scans
+        WHERE next_day_return IS NOT NULL
+        ORDER BY id DESC LIMIT 1000
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    if len(rows) < 10:
+        return None
+
+    def bucket_stats(returns):
+        if not returns:
+            return None
+        wins = sum(1 for r in returns if r > 0)
+        sorted_r = sorted(returns)
+        median = sorted_r[len(sorted_r) // 2]
+        return {
+            "count":      len(returns),
+            "win_rate":   round(wins / len(returns) * 100, 1),
+            "avg_return": round(sum(returns) / len(returns), 2),
+            "median":     round(median, 2),
+        }
+
+    # Score buckets
+    score_buckets = {"90-100": [], "75-89": [], "50-74": [], "<50": []}
+    # Relative volume buckets
+    rv_buckets = {">=50x": [], "25-50x": [], "10-25x": [], "<10x": []}
+    # Float buckets
+    float_buckets = {"<10M": [], "10-30M": [], "30M+": []}
+    # Daily gain buckets
+    gain_buckets = {"20-40%": [], "10-20%": [], "40-100%": [], "<10%": []}
+
+    for score, rv, shares, today_ret, nd in rows:
+        if nd is None:
+            continue
+
+        # Score
+        if score >= 90:        score_buckets["90-100"].append(nd)
+        elif score >= 75:      score_buckets["75-89"].append(nd)
+        elif score >= 50:      score_buckets["50-74"].append(nd)
+        else:                  score_buckets["<50"].append(nd)
+
+        # Relative volume
+        if rv is not None:
+            if rv >= 50:       rv_buckets[">=50x"].append(nd)
+            elif rv >= 25:     rv_buckets["25-50x"].append(nd)
+            elif rv >= 10:     rv_buckets["10-25x"].append(nd)
+            else:              rv_buckets["<10x"].append(nd)
+
+        # Float
+        if shares is not None:
+            if shares < 10_000_000:    float_buckets["<10M"].append(nd)
+            elif shares < 30_000_000:  float_buckets["10-30M"].append(nd)
+            else:                      float_buckets["30M+"].append(nd)
+
+        # Daily gain
+        if today_ret is not None:
+            if 20 <= today_ret <= 40:      gain_buckets["20-40%"].append(nd)
+            elif 10 <= today_ret < 20:     gain_buckets["10-20%"].append(nd)
+            elif 40 < today_ret <= 100:    gain_buckets["40-100%"].append(nd)
+            elif today_ret < 10:           gain_buckets["<10%"].append(nd)
+
+    result = {
+        "total": len(rows),
+        "by_score":    {k: bucket_stats(v) for k, v in score_buckets.items() if v},
+        "by_relvol":   {k: bucket_stats(v) for k, v in rv_buckets.items() if v},
+        "by_float":    {k: bucket_stats(v) for k, v in float_buckets.items() if v},
+        "by_gain":     {k: bucket_stats(v) for k, v in gain_buckets.items() if v},
+    }
+
+    # Only return if at least one bucket has data
+    if not any(result[k] for k in ("by_score", "by_relvol", "by_float", "by_gain")):
+        return None
+    return result
+
+
 # ---------------- RISK METRICS ----------------
 def get_risk_metrics() -> dict:
     """Compute Sharpe ratio, max drawdown, and win rate from closed trades."""

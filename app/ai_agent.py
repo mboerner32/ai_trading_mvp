@@ -11,27 +11,45 @@ client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from environment autom
 
 
 def recommend_position_size(stock: dict, available_cash: float,
-                            hypothesis: str = None) -> dict:
+                            hypothesis: str = None,
+                            sizing_stats: dict = None) -> dict:
     """
     Calls Claude to recommend a position size for a given stock.
     Returns {"amount": int, "rationale": str}.
     Falls back to {"amount": 1000, "rationale": ""} on any error.
 
-    hypothesis: synthesized pattern hypotheses from accumulated user feedback.
-                If provided, injected as learned context to inform sizing.
+    hypothesis:    synthesized pattern hypotheses from accumulated user feedback.
+    sizing_stats:  quantitative historical performance stats from get_sizing_stats().
+                   When provided, the model uses actual win rates/returns to calibrate size.
     """
     checklist = stock.get("checklist", {})
 
     shares_outstanding = checklist.get("shares_outstanding")
     shares_str = f"{shares_outstanding:,}" if shares_outstanding else "N/A"
 
-    # Inject synthesized hypothesis context (concise — first 500 chars)
+    # ---- Historical calibration section ----
+    calibration_section = ""
+    if sizing_stats and sizing_stats.get("total", 0) >= 10:
+        lines = [f"\nHistorical calibration from {sizing_stats['total']} labeled scans:"]
+
+        for label, key in [("Score", "by_score"), ("Rel Vol", "by_relvol"),
+                           ("Float", "by_float"), ("Daily gain", "by_gain")]:
+            buckets = sizing_stats.get(key, {})
+            if buckets:
+                parts = []
+                for bkt, s in buckets.items():
+                    parts.append(f"{bkt}→{s['win_rate']}%win/{s['avg_return']:+.1f}%avg({s['count']})")
+                lines.append(f"  {label}: {' | '.join(parts)}")
+
+        lines.append("Use these stats to calibrate size: higher win rate + positive avg return → larger size.")
+        calibration_section = "\n".join(lines)
+
+    # ---- Qualitative hypothesis section ----
     feedback_section = ""
     if hypothesis:
-        summary = hypothesis[:500].strip()
+        summary = hypothesis[:400].strip()
         feedback_section = (
-            f"\n\nHypotheses derived from user-submitted winning trade patterns:\n{summary}"
-            "\nUse these hypotheses to adjust sizing confidence."
+            f"\n\nLearned patterns from winning trades:\n{summary}"
         )
 
     prompt = f"""You are a trading risk manager for a paper trading simulator.
@@ -44,19 +62,16 @@ Available cash: ${available_cash:.0f}
 
 Checklist signals:
 - Relative Volume: {checklist.get('relative_volume')}
-- Small Float (<5M shares): {checklist.get('small_float')} ({shares_str} shares)
-- High Cash per Share: {checklist.get('high_cash')}
-- Sweet Spot (10-40% today): {checklist.get('sweet_spot_10_40')}
-- Overheated (>100% today): {checklist.get('over_100_percent')}
+- Shares Outstanding: {shares_str}
+- Daily gain today: {checklist.get('five_day_return_pct', 'N/A')}%  (squeeze sweet spot: 20-40%)
 - Sideways Compression: {checklist.get('sideways_chop')}
 - Yesterday Green: {checklist.get('yesterday_green')}
-- Recent Decline: {checklist.get('recent_decline')}
-- 5-Day Return: {checklist.get('five_day_return_pct')}%
 - Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'}
-- No News Catalyst (organic move): {checklist.get('no_news_catalyst')}{feedback_section}
+- No News Catalyst (organic move): {checklist.get('no_news_catalyst')}{calibration_section}{feedback_section}
 
 Recommend a position size in dollars. Choose from: $250, $500, $750, $1000, $1500, $2000.
 Never recommend more than ${available_cash:.0f} available cash.
+Base your sizing primarily on the historical calibration stats above — match this stock's score and signals to the buckets showing the best edge.
 
 Respond in exactly this format (no other text):
 AMOUNT: <dollar amount>

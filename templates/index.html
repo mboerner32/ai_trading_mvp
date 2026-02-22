@@ -244,6 +244,20 @@
                     Each feedback submission automatically re-trains and applies new scoring weights.
                 </div>
             {% endif %}
+            <!-- Position sizing calibration status -->
+            <div style="margin-top: 8px; font-size: 12px;
+                        padding: 5px 10px; border-radius: 5px; display: inline-block;
+                        {% if sizing_calibrated %}
+                        background: rgba(255,255,255,0.15); opacity: 0.95;
+                        {% else %}
+                        background: rgba(255,255,255,0.08); opacity: 0.7;
+                        {% endif %}">
+                {% if sizing_calibrated %}
+                    📊 Position sizing calibrated from {{ sizing_total }} historical examples
+                {% else %}
+                    📊 Position sizing using defaults — run Historical Backfill to calibrate
+                {% endif %}
+            </div>
         </div>
         <a href="/analytics" style="color: white; text-decoration: none; font-size: 13px;
                                     padding: 7px 14px; border: 1px solid rgba(255,255,255,0.45);

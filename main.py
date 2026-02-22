@@ -65,6 +65,7 @@ from app.database import (
     get_backfill_status,
     get_historical_count,
     get_historical_examples,
+    get_sizing_stats,
 )
 
 app = FastAPI()
@@ -193,10 +194,13 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
     available_cash = get_portfolio_summary()["cash"]
     hypothesis_data = get_hypothesis()
     hypothesis_text = hypothesis_data["content"] if hypothesis_data else None
+    sizing_stats    = get_sizing_stats()
 
-    # Parallel AI position sizing
+    # Parallel AI position sizing — each stock gets historical calibration injected
     def _size(stock):
-        stock["ai_rec"] = recommend_position_size(stock, available_cash, hypothesis_text)
+        stock["ai_rec"] = recommend_position_size(
+            stock, available_cash, hypothesis_text, sizing_stats
+        )
 
     with ThreadPoolExecutor(max_workers=5) as executor:
         list(executor.map(_size, scan_data["results"]))
@@ -214,6 +218,8 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
             "user": request.session["user"],
             "ai_weights_info": ai_weights_info,
             "cache_age": cache_age,
+            "sizing_calibrated": sizing_stats is not None,
+            "sizing_total": sizing_stats["total"] if sizing_stats else 0,
         }
     )
 
