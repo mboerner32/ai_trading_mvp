@@ -280,7 +280,7 @@
 
         <div class="card">
             <h3>Mode</h3>
-            <p>{{ mode | capitalize }}</p>
+            <p>{% if mode == 'squeeze' %}Complex + AI{% elif mode == 'strict' %}Complex{% else %}Standard{% endif %}</p>
         </div>
     </div>
 
