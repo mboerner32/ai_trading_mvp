@@ -9,14 +9,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import yfinance as yf
 
-
-class _TimeoutSession(requests.Session):
-    """Requests session that enforces a default timeout on every request."""
-    def request(self, method, url, **kwargs):
-        kwargs.setdefault("timeout", 15)
-        return super().request(method, url, **kwargs)
-
-_SESSION = _TimeoutSession()
+# Use curl_cffi browser impersonation to bypass Yahoo Finance bot detection.
+# Falls back to a plain requests.Session with a hard timeout if unavailable.
+try:
+    from curl_cffi import requests as _curl
+    _SESSION = _curl.Session(impersonate="chrome120")
+except Exception:
+    class _TimeoutSession(requests.Session):
+        def request(self, method, url, **kwargs):
+            kwargs.setdefault("timeout", 15)
+            return super().request(method, url, **kwargs)
+    _SESSION = _TimeoutSession()
 
 from app.database import DB_NAME
 from app.scanner import prepare_dataframe
