@@ -225,18 +225,27 @@ def _get_db_tickers():
 
 def build_historical_dataset(max_workers=6, weights=None):
     """
-    Process all seed + previously seen tickers in parallel.
+    Process all seed + dynamically fetched + previously seen tickers in parallel.
     Saves qualifying labeled examples into the scans table (mode='historical').
     Returns count of examples saved.
     """
     from app.database import save_historical_scans, set_backfill_status
+    from app.universe import fetch_backfill_universe
 
     db_tickers = _get_db_tickers()
 
-    # Merge seed + known tickers, deduplicated, seed list first
+    # Fetch dynamic universe from Finviz (price < $10, avg vol > 200K)
+    # The _process_ticker filter (price < $5, gain 10-100%, rv > 10x) does strict screening
+    try:
+        dynamic_tickers = fetch_backfill_universe(max_tickers=500)
+    except Exception as e:
+        print(f"Backfill: dynamic universe fetch failed — {e}")
+        dynamic_tickers = []
+
+    # Merge seed + dynamic + known tickers, deduplicated, seed list first
     seen = set()
     all_tickers = []
-    for t in SEED_TICKERS + db_tickers:
+    for t in SEED_TICKERS + dynamic_tickers + db_tickers:
         if t not in seen:
             seen.add(t)
             all_tickers.append(t)
