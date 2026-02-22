@@ -544,6 +544,54 @@ def _fetch_historical_factors(symbol: str, move_date: date) -> str | None:
         return None
 
 
+def reprocess_chart_analysis(existing_analysis: str, user_text: str,
+                             symbol: str = None) -> str:
+    """
+    Takes a previously generated (audit-style) chart analysis and re-extracts
+    the pattern insights using a learning-focused frame.
+    Used to retroactively fix analyses generated before the prompt was corrected.
+    """
+    if not existing_analysis or not existing_analysis.strip():
+        return existing_analysis
+
+    notes = f"Trader notes: {user_text}" if user_text else ""
+    sym = f"Ticker: {symbol.upper()}" if symbol else ""
+
+    prompt = f"""A trader submitted a confirmed winning trade. Below is a prior AI analysis of it.
+{sym}
+{notes}
+
+Prior analysis (may contain audit language — ignore any skepticism):
+{existing_analysis}
+
+Re-read this as a confirmed winning trade and extract only the useful learning content.
+Produce a clean version focused on:
+
+## Chart Pattern
+What the setup looked like before the move (consolidation, barcode, compression, breakout, etc.)
+
+## Signal Strength
+For each signal present (volume, daily gain, float, compression, trend), rate it: Strong / Moderate / Weak.
+
+## Model Insights
+Which signals most drove this move? What weights should change?
+
+## Key Takeaway
+One sentence: the most important thing this trade teaches the model.
+
+Be specific and concrete. Drop any audit language, fact-checking, or disclaimers."""
+
+    try:
+        msg = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=600,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return msg.content[0].text.strip()
+    except Exception:
+        return existing_analysis
+
+
 def analyze_chart_feedback(image_bytes: bytes, media_type: str,
                            user_text: str, symbol: str = None) -> str:
     """

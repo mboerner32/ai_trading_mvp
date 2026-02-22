@@ -181,6 +181,13 @@
         RR's Proprietary AI Algorithm will analyze the pattern and inject these learnings into future position sizing recommendations.
     </p>
 
+    {% if reanalyzing %}
+    <div style="background:#eff6ff; border:1px solid #93c5fd; color:#1e40af;
+                padding:14px 20px; border-radius:8px; margin-bottom:24px; font-weight:500;">
+        Re-analyzing all submissions with the updated model — reload in ~30 seconds to see updated analyses and a refreshed hypothesis.
+    </div>
+    {% endif %}
+
     {% if submitted %}
     <div class="success-banner">
         Feedback saved! Chart analyzed and hypotheses updated — AI agent will reflect this on the next dashboard load.
@@ -320,7 +327,18 @@
     </div>
 
     <!-- RECENT FEEDBACK -->
-    <div class="section-title">Recent Submissions</div>
+    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:16px;">
+        <div class="section-title" style="margin-bottom:0;">Recent Submissions</div>
+        {% if recent_feedback %}
+        <form method="post" action="/reanalyze-feedback">
+            <button type="submit"
+                    style="background:#4f46e5; color:white; border:none; padding:7px 16px;
+                           border-radius:8px; font-size:12px; font-weight:600; cursor:pointer;">
+                Re-analyze All with Updated Model
+            </button>
+        </form>
+        {% endif %}
+    </div>
 
     <div class="card">
         {% if recent_feedback %}

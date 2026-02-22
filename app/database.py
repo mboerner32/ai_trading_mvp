@@ -606,6 +606,17 @@ def save_feedback(symbol: str, user_text: str, chart_analysis: str):
     conn.close()
 
 
+def update_feedback_analysis(feedback_id: int, new_analysis: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE feedback SET chart_analysis = ? WHERE id = ?",
+        (new_analysis, feedback_id)
+    )
+    conn.commit()
+    conn.close()
+
+
 def get_recent_feedback(limit: int = 10):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()

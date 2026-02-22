@@ -20,6 +20,7 @@ from app.ai_agent import (
     recommend_position_size,
     analyze_and_optimize_weights,
     analyze_chart_feedback,
+    reprocess_chart_analysis,
     synthesize_feedback_hypotheses,
     synthesize_historical_hypothesis,
     optimize_complex_ai_weights,
@@ -43,6 +44,7 @@ from app.database import (
     get_portfolio_summary,
     get_optimization_data,
     save_feedback,
+    update_feedback_analysis,
     get_recent_feedback,
     get_all_feedback,
     save_hypothesis,
@@ -383,6 +385,7 @@ def feedback_page(request: Request):
             "hypothesis": get_hypothesis(),
             "weights_info": get_squeeze_weights(),
             "historical_count": get_historical_count(),
+            "reanalyzing": request.query_params.get("reanalyzing") == "1",
         }
     )
 
@@ -399,6 +402,33 @@ def synthesize_from_historical(request: Request):
     if text:
         save_hypothesis(text, hist_count)
     return RedirectResponse("/feedback", status_code=303)
+
+
+@app.post("/reanalyze-feedback")
+def reanalyze_feedback(request: Request, background_tasks: BackgroundTasks):
+    if "user" not in request.session:
+        return RedirectResponse("/login")
+
+    def _run():
+        entries = get_all_feedback()
+        for entry in entries:
+            if not entry.get("chart_analysis"):
+                continue
+            new_analysis = reprocess_chart_analysis(
+                entry["chart_analysis"],
+                entry.get("user_text", ""),
+                entry.get("symbol")
+            )
+            update_feedback_analysis(entry["id"], new_analysis)
+        # Re-synthesize hypothesis with updated analyses
+        all_feedback = get_all_feedback()
+        if all_feedback:
+            text = synthesize_feedback_hypotheses(all_feedback)
+            if text:
+                save_hypothesis(text, len(all_feedback))
+
+    background_tasks.add_task(_run)
+    return RedirectResponse("/feedback?reanalyzing=1", status_code=303)
 
 
 def _run_hypothesis_and_weights(all_feedback: list):
