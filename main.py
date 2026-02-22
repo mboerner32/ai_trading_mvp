@@ -75,6 +75,9 @@ app.add_middleware(
 init_db()
 seed_users()
 
+# In-process flag so the backfill guard is reliable even if DB status got stuck
+_backfill_running = False
+
 # ---------------- SCHEDULER ----------------
 def _scheduled_scan():
     """Auto-run all scan modes at 9:45am ET Mon–Fri and refresh cache."""
@@ -616,22 +619,25 @@ def watchlist_remove(request: Request, symbol: str):
 # ---------------- HISTORICAL BACKFILL ----------------
 @app.post("/backfill-history")
 def start_backfill(request: Request):
+    global _backfill_running
     if "user" not in request.session:
         return RedirectResponse("/login", status_code=303)
 
-    status = get_backfill_status()
-    if status.get("status") == "running":
+    if _backfill_running:
         return RedirectResponse("/analytics?backfill=already_running", status_code=303)
 
     weights_data = get_squeeze_weights()
     weights = weights_data["weights"] if weights_data else None
 
-    t = threading.Thread(
-        target=build_historical_dataset,
-        kwargs={"weights": weights},
-        daemon=True,
-    )
-    t.start()
+    def _run(**kwargs):
+        global _backfill_running
+        _backfill_running = True
+        try:
+            build_historical_dataset(**kwargs)
+        finally:
+            _backfill_running = False
+
+    threading.Thread(target=_run, kwargs={"weights": weights}, daemon=True).start()
 
     return RedirectResponse("/analytics?backfill=started", status_code=303)
 
