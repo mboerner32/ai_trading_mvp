@@ -42,6 +42,16 @@ SEED_TICKERS = [
     "CLSK", "MMAT", "LAZR", "AIXI", "CODA",
     "CTXR", "KAVL", "PALI", "MIGI", "COCH",
     "FFAI", "CRKN", "ONCO", "BTBT", "PRST",
+
+    # --- Pre-2022 penny/small-cap momentum (rich 5-year history) ---
+    "ZOM",  "BOXL", "AGRX", "PTE",  "CPHI",
+    "BHAT", "YCBD", "XBIO", "VVUS", "LPTX",
+    "SIGA", "CTIC", "NKTR", "CPRX", "ARCT",
+    "AGTC", "CRBP", "INVA", "XXII", "PIRS",
+    "OBSV", "ADMA", "GNPX", "VBLT", "GLYC",
+    "TPIC", "UAVS", "LAKE", "LXRX", "CDXS",
+    "NVAX", "SRNE", "INMD", "CODX", "TXMD",
+    "ABUS", "VXRT", "INO",  "OCUL", "ADAP",
 ]
 
 
@@ -107,14 +117,14 @@ def _score(relative_volume, daily_return, range_10d,
 
 def _process_ticker(symbol, weights=None):
     """
-    Download 2 years of OHLCV for `symbol`.
+    Download 5 years of OHLCV for `symbol`.
     Slide a window to find days matching live scan criteria:
         price < $5, daily gain 10–100%, relative volume ≥ 10.
     Returns a list of labeled example dicts with next_day_return filled in.
     """
     try:
         df = yf.download(
-            symbol, period="2y", interval="1d",
+            symbol, period="5y", interval="1d",
             progress=False, auto_adjust=False
         )
         if df.empty or len(df) < 70:
