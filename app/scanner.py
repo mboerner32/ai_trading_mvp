@@ -28,17 +28,29 @@ BASE_URL = (
 # ---------------------------------------------------
 # GET FINVIZ TICKERS (FAST TS BLOCK PARSER)
 # ---------------------------------------------------
-def get_finviz_tickers():
+def get_finviz_tickers(premarket: bool = False):
+    """
+    Fetch tickers from Finviz screener.
+    premarket=True uses relaxed filters (lower vol/rv/gain) for pre-market scanning.
+    """
+    if premarket:
+        base = (
+            "https://finviz.com/screener.ashx?"
+            "v=111&f=geo_usa,sh_curvol_o500,"
+            "sh_price_u5,sh_relvol_o5,ta_perf_d5o"
+        )
+    else:
+        base = BASE_URL
 
     headers = {"User-Agent": "Mozilla/5.0"}
     tickers = []
     page = 1
 
-    print("Pulling FinViz candidates...")
+    print(f"Pulling FinViz candidates{'  (pre-market)' if premarket else ''}...")
 
     while True:
 
-        url = f"{BASE_URL}&r={(page-1)*20+1}"
+        url = f"{base}&r={(page-1)*20+1}"
         response = requests.get(url, headers=headers)
 
         if response.status_code != 200:
@@ -183,9 +195,9 @@ def prepare_dataframe(df):
 # ---------------------------------------------------
 # RUN SCAN (SHOW ALL FINVIZ STOCKS)
 # ---------------------------------------------------
-def run_scan(mode="standard"):
+def run_scan(mode="standard", premarket: bool = False):
 
-    tickers = get_finviz_tickers()
+    tickers = get_finviz_tickers(premarket=premarket)
 
     results = []
     summary = {

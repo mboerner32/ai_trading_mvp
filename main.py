@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.scanner import run_scan
+from app.alerts import send_scan_alert, send_take_profit_alert
 from app.backfill import build_historical_dataset
 from app.ai_agent import (
     recommend_position_size,
@@ -84,6 +85,28 @@ seed_users()
 _backfill_running = False
 
 # ---------------- SCHEDULER ----------------
+def _autoclose_take_profit() -> list:
+    """Close open positions that have hit the 20% take-profit target."""
+    positions = get_open_positions()
+    closed = []
+    for pos in positions:
+        price = _fetch_current_price(pos["symbol"], pos["entry_price"])
+        pnl_pct = (price - pos["entry_price"]) / pos["entry_price"] * 100
+        if pnl_pct >= 20:
+            result = close_trade(pos["trade_id"], price)
+            if result:
+                closed.append({
+                    "symbol":       pos["symbol"],
+                    "entry_price":  pos["entry_price"],
+                    "exit_price":   round(price, 4),
+                    "realized_pnl": result["realized_pnl"],
+                    "pnl_pct":      round(pnl_pct, 1),
+                })
+    if closed:
+        send_take_profit_alert(closed)
+    return closed
+
+
 def _scheduled_scan():
     """Auto-run all scan modes at 9:45am ET Mon–Fri and refresh cache."""
     print("SCHEDULER: Running scheduled morning scan...")
@@ -93,12 +116,29 @@ def _scheduled_scan():
             save_scan(data["results"], mode)
             save_scan_cache(mode, data["results"], data["summary"])
             print(f"SCHEDULER: {mode} scan complete ({len(data['results'])} results)")
+            if mode == "squeeze":
+                send_scan_alert(data["results"], "Complex + AI")
         except Exception as e:
             print(f"SCHEDULER: {mode} scan failed — {e}")
+    _autoclose_take_profit()
     update_returns()
+
+
+def _premarket_scan():
+    """Pre-market scan at 8:30am ET — squeeze mode with relaxed Finviz filters."""
+    print("SCHEDULER: Running pre-market scan...")
+    try:
+        data = run_scan(mode="squeeze", premarket=True)
+        save_scan_cache("squeeze", data["results"], data["summary"])
+        send_scan_alert(data["results"], "Complex + AI (pre-market)")
+        print(f"SCHEDULER: pre-market scan complete ({len(data['results'])} results)")
+    except Exception as e:
+        print(f"SCHEDULER: pre-market scan failed — {e}")
+
 
 _scheduler = BackgroundScheduler(timezone=pytz.timezone("America/New_York"))
 _scheduler.add_job(_scheduled_scan, "cron", day_of_week="mon-fri", hour=9, minute=45)
+_scheduler.add_job(_premarket_scan,  "cron", day_of_week="mon-fri", hour=8, minute=30)
 _scheduler.start()
 
 # Log API key status at startup so it's visible in Render logs

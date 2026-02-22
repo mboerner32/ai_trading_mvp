@@ -231,7 +231,7 @@
         </thead>
         <tbody>
         {% for pos in positions %}
-            <tr>
+            <tr style="{{ 'background:#f0fdf4;' if pos.to_target_pct <= 0 else '' }}">
                 <td><strong>{{ pos.symbol }}</strong></td>
                 <td>${{ pos.entry_price }}</td>
                 <td style="color:#0f766e; font-weight:600;">${{ pos.target_price }}</td>
@@ -255,7 +255,16 @@
                 </td>
                 <td>
                     <form method="post" action="/trade/sell/{{ pos.trade_id }}">
+                        {% if pos.to_target_pct <= 0 %}
+                        <button type="submit"
+                                style="background:#0f766e; color:white; border:none;
+                                       padding:7px 14px; border-radius:6px; cursor:pointer;
+                                       font-size:13px; font-weight:600;">
+                            🎯 Take Profit
+                        </button>
+                        {% else %}
                         <button type="submit" class="sell-btn">Sell</button>
+                        {% endif %}
                     </form>
                 </td>
             </tr>
