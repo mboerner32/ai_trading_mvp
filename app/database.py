@@ -927,6 +927,34 @@ def get_historical_count() -> int:
     return row[0] if row else 0
 
 
+def get_historical_examples(limit: int = 20) -> list:
+    """Fetches top historical scan examples for display on the Feedback tab."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT symbol, score, today_return, relative_volume, shares_outstanding,
+               next_day_return, timestamp
+        FROM scans
+        WHERE mode = 'historical' AND next_day_return IS NOT NULL
+        ORDER BY score DESC
+        LIMIT ?
+    """, (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "symbol":             r[0],
+            "score":              r[1],
+            "today_return":       round(r[2], 1) if r[2] is not None else None,
+            "relative_volume":    round(r[3], 1) if r[3] is not None else None,
+            "shares_outstanding": r[4],
+            "next_day_return":    round(r[5], 2) if r[5] is not None else None,
+            "timestamp":          (r[6] or "")[:10],
+        }
+        for r in rows
+    ]
+
+
 # ---------------- RISK METRICS ----------------
 def get_risk_metrics() -> dict:
     """Compute Sharpe ratio, max drawdown, and win rate from closed trades."""

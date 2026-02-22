@@ -96,6 +96,99 @@ RATIONALE: <one sentence, 15 words or less>"""
         return {"amount": 1000, "rationale": ""}
 
 
+def synthesize_combined_hypothesis(feedback_entries: list,
+                                   opt_data: dict,
+                                   historical_count: int) -> str:
+    """
+    Unified synthesis combining qualitative manual feedback AND quantitative
+    historical scan data. Produces a single hypothesis for both sources.
+    """
+    has_feedback   = bool(feedback_entries)
+    has_historical = bool(opt_data and historical_count > 0)
+    if not has_feedback and not has_historical:
+        return ""
+
+    # Build feedback section
+    if has_feedback:
+        entries_text = ""
+        for i, fb in enumerate(feedback_entries, 1):
+            sym = fb.get("symbol") or "Unknown"
+            user_text = (fb.get("user_text") or "").strip()
+            chart_analysis = (fb.get("chart_analysis") or "").strip()
+            date = (fb.get("created_at") or "")[:10]
+            entries_text += f"\n--- Entry {i} ({date}) — {sym} ---\n"
+            if user_text:
+                entries_text += f"User notes: {user_text}\n"
+            if chart_analysis:
+                entries_text += f"Chart analysis: {chart_analysis[:400]}\n"
+        feedback_section = (
+            f"## Manual Submissions ({len(feedback_entries)} winning trades)\n"
+            + entries_text
+        )
+    else:
+        feedback_section = "## Manual Submissions\nNone submitted yet."
+
+    # Build historical section
+    if has_historical:
+        def fmt_bucket(name, stats):
+            if stats["count"] == 0:
+                return None
+            return (f"  {name}: {stats['count']} trades, "
+                    f"{stats['win_rate']}% win rate, "
+                    f"{stats['avg_return']:+.1f}% avg next-day return")
+
+        relvol_lines = [fmt_bucket(k, v) for k, v in opt_data.get("relative_volume", {}).items()]
+        gain_lines   = [fmt_bucket(k, v) for k, v in opt_data.get("daily_gain", {}).items()]
+        shares_lines = [fmt_bucket(k, v) for k, v in opt_data.get("shares_outstanding", {}).items()]
+
+        relvol_text  = "\n".join(l for l in relvol_lines  if l) or "  No data"
+        gain_text    = "\n".join(l for l in gain_lines    if l) or "  No data"
+        shares_text  = "\n".join(l for l in shares_lines  if l) or "  No data"
+
+        historical_section = (
+            f"## Historical Scan Data ({historical_count} labeled examples)\n"
+            f"Relative Volume buckets:\n{relvol_text}\n\n"
+            f"Daily gain buckets:\n{gain_text}\n\n"
+            f"Shares outstanding buckets:\n{shares_text}"
+        )
+    else:
+        historical_section = "## Historical Scan Data\nNone available."
+
+    prompt = f"""You are synthesizing trading pattern hypotheses from two sources:
+1. {len(feedback_entries)} manually submitted winning trades (qualitative: chart screenshots + trader notes)
+2. {historical_count} labeled historical scan examples (quantitative: next-day return statistics)
+
+{feedback_section}
+
+{historical_section}
+
+Identify patterns supported by either or both sources. For each hypothesis:
+- State what the pattern is
+- Note whether evidence is from manual submissions, historical stats, or both
+- Rate confidence: HIGH (strong evidence), EMERGING (moderate), PRELIMINARY (limited)
+- State how it should influence position sizing (size up, size down, no effect)
+
+Then write an AGENT CONTEXT section: a compact 3-4 sentence summary of the highest-confidence hypotheses for injection into a trading AI agent.
+
+Format exactly:
+## Hypotheses
+
+[numbered list]
+
+## Agent Context
+[compact paragraph]"""
+
+    try:
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=900,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return message.content[0].text.strip()
+    except Exception as e:
+        return f"Synthesis unavailable: {str(e)}"
+
+
 def synthesize_feedback_hypotheses(feedback_entries: list) -> str:
     """
     Reads all accumulated user feedback and synthesizes cross-entry patterns

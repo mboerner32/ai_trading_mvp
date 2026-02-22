@@ -23,6 +23,7 @@ from app.ai_agent import (
     reprocess_chart_analysis,
     synthesize_feedback_hypotheses,
     synthesize_historical_hypothesis,
+    synthesize_combined_hypothesis,
     optimize_complex_ai_weights,
 )
 from app.scoring_engine import DEFAULT_SQUEEZE_WEIGHTS
@@ -63,6 +64,7 @@ from app.database import (
     set_backfill_status,
     get_backfill_status,
     get_historical_count,
+    get_historical_examples,
 )
 
 app = FastAPI()
@@ -376,6 +378,8 @@ def feedback_page(request: Request):
     if "user" not in request.session:
         return RedirectResponse("/login")
 
+    manual_count = len(get_all_feedback())
+    hist_count   = get_historical_count()
     return templates.TemplateResponse(
         "feedback.html",
         {
@@ -384,24 +388,34 @@ def feedback_page(request: Request):
             "recent_feedback": get_recent_feedback(limit=10),
             "hypothesis": get_hypothesis(),
             "weights_info": get_squeeze_weights(),
-            "historical_count": get_historical_count(),
+            "historical_count": hist_count,
+            "manual_count": manual_count,
+            "historical_examples": get_historical_examples(limit=20),
             "reanalyzing": request.query_params.get("reanalyzing") == "1",
+            "syncing": request.query_params.get("syncing") == "1",
         }
     )
 
 
 
 
-@app.post("/synthesize-historical-hypothesis")
-def synthesize_from_historical(request: Request):
+@app.post("/sync-all-sources")
+def sync_all_sources(request: Request, background_tasks: BackgroundTasks):
+    """Synthesize hypothesis from both manual submissions and historical scan data."""
     if "user" not in request.session:
         return RedirectResponse("/login")
-    opt_data = get_optimization_data()
-    hist_count = get_historical_count()
-    text = synthesize_historical_hypothesis(opt_data, hist_count)
-    if text:
-        save_hypothesis(text, hist_count)
-    return RedirectResponse("/feedback", status_code=303)
+
+    def _run():
+        all_feedback = get_all_feedback()
+        opt_data = get_optimization_data()
+        hist_count = get_historical_count()
+        text = synthesize_combined_hypothesis(all_feedback, opt_data, hist_count)
+        total = len(all_feedback) + hist_count
+        if text:
+            save_hypothesis(text, total)
+
+    background_tasks.add_task(_run)
+    return RedirectResponse("/feedback?syncing=1", status_code=303)
 
 
 @app.post("/reanalyze-feedback")
@@ -432,15 +446,16 @@ def reanalyze_feedback(request: Request, background_tasks: BackgroundTasks):
 
 
 def _run_hypothesis_and_weights(all_feedback: list):
-    """Background task: synthesize hypothesis from all feedback then optimize weights."""
+    """Background task: synthesize combined hypothesis from all sources then optimize weights."""
     try:
-        hypothesis_text = synthesize_feedback_hypotheses(all_feedback)
+        opt_data = get_optimization_data()
+        hist_count = get_historical_count()
+        hypothesis_text = synthesize_combined_hypothesis(all_feedback, opt_data, hist_count)
         hypothesis_content = None
         if hypothesis_text:
-            save_hypothesis(hypothesis_text, len(all_feedback))
+            save_hypothesis(hypothesis_text, len(all_feedback) + hist_count)
             hypothesis_content = hypothesis_text
 
-        opt_data = get_optimization_data()
         weights_data = get_squeeze_weights()
         current_weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS.copy()
         opt_result = optimize_complex_ai_weights(opt_data, all_feedback, current_weights, hypothesis_content)
@@ -510,6 +525,8 @@ async def submit_feedback(
 
     hypothesis_data = get_hypothesis()
 
+    manual_count = len(all_feedback)
+    hist_count   = get_historical_count()
     return templates.TemplateResponse(
         "feedback.html",
         {
@@ -518,6 +535,9 @@ async def submit_feedback(
             "recent_feedback": get_recent_feedback(limit=10),
             "hypothesis": hypothesis_data,
             "weights_info": get_squeeze_weights(),
+            "historical_count": hist_count,
+            "manual_count": manual_count,
+            "historical_examples": get_historical_examples(limit=20),
             "submitted": True,
             "chart_analysis": chart_analysis,
         }

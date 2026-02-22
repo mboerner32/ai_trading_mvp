@@ -34,7 +34,7 @@
 
         .container {
             padding: 40px;
-            max-width: 900px;
+            max-width: 960px;
             margin: auto;
         }
 
@@ -43,7 +43,7 @@
             padding: 28px;
             border-radius: 10px;
             box-shadow: 0 4px 14px rgba(0,0,0,0.05);
-            margin-bottom: 30px;
+            margin-bottom: 24px;
         }
 
         label {
@@ -67,10 +67,6 @@
 
         textarea { resize: vertical; min-height: 80px; }
 
-        input[type="file"] {
-            font-size: 14px;
-        }
-
         .submit-btn {
             background: #4f46e5;
             color: white;
@@ -89,7 +85,17 @@
             color: #166534;
             padding: 14px 20px;
             border-radius: 8px;
-            margin-bottom: 24px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+
+        .info-banner {
+            background: #eff6ff;
+            border: 1px solid #93c5fd;
+            color: #1e40af;
+            padding: 14px 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
             font-weight: 500;
         }
 
@@ -106,11 +112,84 @@
         }
 
         .section-title {
-            font-size: 18px;
+            font-size: 16px;
             font-weight: 600;
-            margin-bottom: 16px;
+            margin-bottom: 14px;
+            color: #111827;
         }
 
+        /* Hypothesis card */
+        .hyp-card {
+            border-left: 4px solid #0f766e;
+        }
+
+        .hyp-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 12px;
+        }
+
+        .hyp-title {
+            font-weight: 700;
+            font-size: 15px;
+            color: #0f766e;
+        }
+
+        .hyp-meta {
+            font-size: 12px;
+            color: #9ca3af;
+        }
+
+        .hyp-body {
+            font-size: 13px;
+            line-height: 1.75;
+            white-space: pre-wrap;
+            color: #1f2937;
+        }
+
+        /* Sync button */
+        .sync-btn {
+            background: #0f766e;
+            color: white;
+            border: none;
+            padding: 9px 20px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        /* Historical table */
+        .hist-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        .hist-table th {
+            background: #f9fafb;
+            text-align: left;
+            padding: 8px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #6b7280;
+            text-transform: uppercase;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .hist-table td {
+            padding: 7px 10px;
+            border-bottom: 1px solid #f3f4f6;
+            color: #374151;
+        }
+
+        .hist-table tr:last-child td { border-bottom: none; }
+
+        .ret-pos { color: #059669; font-weight: 600; }
+        .ret-neg { color: #dc2626; font-weight: 600; }
+
+        /* Recent feedback */
         .feedback-entry {
             border-bottom: 1px solid #f1f5f9;
             padding: 16px 0;
@@ -163,9 +242,7 @@
     </div>
 
     <div class="nav-links">
-        <span style="margin-right:20px; color:#6b7280;">
-            Logged in as {{ user }}
-        </span>
+        <span style="margin-right:20px; color:#6b7280;">Logged in as {{ user }}</span>
         <a href="/dashboard">Dashboard</a>
         <a href="/analytics">Analytics</a>
         <a href="/feedback">Feedback</a>
@@ -175,65 +252,75 @@
 
 <div class="container">
 
-    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
         <h2 style="margin:0;">Trade Feedback</h2>
-        <form method="post" action="/reanalyze-feedback">
-            <button type="submit"
-                    style="background:#4f46e5; color:white; border:none; padding:8px 16px;
-                           border-radius:8px; font-size:12px; font-weight:600; cursor:pointer;">
-                Re-analyze All with Updated Model
-            </button>
-        </form>
+        <div style="display:flex; gap:10px; align-items:center;">
+            <!-- Sync All Sources -->
+            <form method="post" action="/sync-all-sources">
+                <button type="submit" class="sync-btn">
+                    Sync All Sources
+                    {% if manual_count or historical_count %}
+                    <span style="font-weight:400; font-size:11px; opacity:0.85;">
+                        ({{ manual_count or 0 }} manual + {{ historical_count or 0 }} historical)
+                    </span>
+                    {% endif %}
+                </button>
+            </form>
+            <!-- Re-analyze existing charts -->
+            <form method="post" action="/reanalyze-feedback">
+                <button type="submit"
+                        style="background:#f3f4f6; border:1px solid #d1d5db; color:#374151;
+                               padding:8px 14px; border-radius:8px; font-size:12px;
+                               font-weight:500; cursor:pointer;">
+                    Re-analyze Charts
+                </button>
+            </form>
+        </div>
     </div>
-    <p style="color:#6b7280; font-size:14px; margin-bottom:28px;">
-        Upload a screenshot of a winning chart setup and describe what worked.
-        RR's Proprietary AI Algorithm will analyze the pattern and inject these learnings into future position sizing recommendations.
+
+    <p style="color:#6b7280; font-size:14px; margin-bottom:24px;">
+        Upload screenshots of winning setups. The AI analyzes patterns and injects learnings into future position sizing.
+        <strong>Sync All Sources</strong> combines your manual submissions with historical scan data into a unified hypothesis.
     </p>
 
+    {% if syncing %}
+    <div class="info-banner">
+        Syncing all sources — hypothesis will update in ~15 seconds. Reload to see the result.
+    </div>
+    {% endif %}
+
     {% if reanalyzing %}
-    <div style="background:#eff6ff; border:1px solid #93c5fd; color:#1e40af;
-                padding:14px 20px; border-radius:8px; margin-bottom:24px; font-weight:500;">
-        Re-analyzing all submissions with the updated model — reload in ~30 seconds to see updated analyses and a refreshed hypothesis.
+    <div class="info-banner">
+        Re-analyzing all chart submissions with the updated model — reload in ~30 seconds.
     </div>
     {% endif %}
 
     {% if submitted %}
     <div class="success-banner">
-        Feedback saved! Chart analyzed and hypotheses updated — AI agent will reflect this on the next dashboard load.
+        Submission saved and analyzed. Hypothesis updating in the background — reload in ~15 seconds.
     </div>
-
     {% if chart_analysis %}
     <div class="card" style="border-left:4px solid #4f46e5;">
-        <div style="font-weight:600; margin-bottom:8px; color:#4f46e5;">RR's Proprietary AI Analysis</div>
+        <div style="font-weight:600; margin-bottom:8px; color:#4f46e5;">AI Chart Analysis</div>
         <div class="analysis-box">{{ chart_analysis }}</div>
     </div>
     {% endif %}
     {% endif %}
 
-    <!-- CURRENT HYPOTHESES -->
+
+    <!-- ===== ACTIVE HYPOTHESES ===== -->
     {% if hypothesis %}
-    <div class="card" style="border-left:4px solid #0f766e; margin-bottom:28px;">
-        <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px;">
-            <div style="font-weight:700; font-size:15px; color:#0f766e;">
-                Active Hypotheses
-            </div>
-            <div style="font-size:12px; color:#9ca3af;">
-                Based on {{ hypothesis.feedback_count }} submission{{ 's' if hypothesis.feedback_count != 1 else '' }}
+    <div class="card hyp-card">
+        <div class="hyp-header">
+            <div class="hyp-title">Active Hypotheses</div>
+            <div class="hyp-meta">
+                Based on {{ hypothesis.feedback_count }} source{{ 's' if hypothesis.feedback_count != 1 else '' }}
                 &nbsp;·&nbsp; Updated {{ hypothesis.updated_at[:10] }}
             </div>
         </div>
-        <div style="font-size:13px; line-height:1.75; white-space:pre-wrap; color:#1f2937;">{{ hypothesis.content }}</div>
-        <div style="margin-top:12px; font-size:12px; color:#6b7280; font-style:italic; display:flex; justify-content:space-between; align-items:center;">
-            <span>Automatically injected into every position sizing recommendation.</span>
-            {% if historical_count and historical_count > 0 %}
-            <form method="post" action="/synthesize-historical-hypothesis" style="margin:0;">
-                <button type="submit"
-                        style="background:none; border:1px solid #d1d5db; color:#6b7280;
-                               padding:4px 10px; border-radius:6px; font-size:11px; cursor:pointer;">
-                    Refresh from {{ historical_count }} historical examples
-                </button>
-            </form>
-            {% endif %}
+        <div class="hyp-body">{{ hypothesis.content }}</div>
+        <div style="margin-top:10px; font-size:12px; color:#6b7280; font-style:italic;">
+            Automatically injected into every position sizing recommendation.
         </div>
 
         {% if weights_info and weights_info.suggestions %}
@@ -257,7 +344,6 @@
                 <strong>Why:</strong> {{ weights_info.rationale }}
             </div>
             {% endif %}
-
             <form method="post" action="/apply-model-update" style="margin-top:14px;">
                 <button type="submit"
                         style="background:#0f766e; color:white; border:none; padding:9px 20px;
@@ -271,28 +357,83 @@
         </div>
         {% endif %}
     </div>
+
     {% else %}
     <div style="background:#fffbeb; border:1px solid #fde68a; color:#92400e;
                 padding:12px 18px; border-radius:8px; font-size:13px; margin-bottom:16px;">
-        No hypotheses yet — submit your first winning trade to start building pattern memory.
+        No hypothesis yet — click <strong>Sync All Sources</strong> to generate one from your data.
     </div>
-    {% if historical_count and historical_count > 0 %}
-    <form method="post" action="/synthesize-historical-hypothesis" style="margin-bottom:24px;">
-        <button type="submit"
-                style="background:#7c3aed; color:white; border:none; padding:9px 20px;
-                       border-radius:8px; font-size:13px; font-weight:600; cursor:pointer;">
-            Generate Hypothesis from {{ historical_count }} Historical Examples
-        </button>
-        <span style="font-size:12px; color:#9ca3af; margin-left:10px;">
-            Uses backfill data to derive trading patterns (~10 sec)
-        </span>
-    </form>
-    {% endif %}
     {% endif %}
 
-    <!-- SUBMISSION FORM -->
+
+    <!-- ===== HISTORICAL EXAMPLES TABLE ===== -->
+    {% if historical_examples %}
     <div class="card">
-        <div class="section-title" style="font-size:16px; margin-bottom:20px;">Submit Winning Trade</div>
+        <div class="section-title">
+            Historical Training Examples
+            <span style="font-weight:400; font-size:13px; color:#6b7280;">
+                — top {{ historical_examples|length }} of {{ historical_count }} labeled scans (by score)
+            </span>
+        </div>
+        <table class="hist-table">
+            <thead>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Date</th>
+                    <th>Score</th>
+                    <th>Today %</th>
+                    <th>Rel Vol</th>
+                    <th>Shares</th>
+                    <th>Next-Day %</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for ex in historical_examples %}
+                <tr>
+                    <td style="font-weight:600; color:#4f46e5;">{{ ex.symbol }}</td>
+                    <td>{{ ex.timestamp }}</td>
+                    <td>{{ ex.score }}</td>
+                    <td>
+                        {% if ex.today_return is not none %}
+                            <span class="{{ 'ret-pos' if ex.today_return > 0 else 'ret-neg' }}">
+                                {{ '%+.1f'|format(ex.today_return) }}%
+                            </span>
+                        {% else %}—{% endif %}
+                    </td>
+                    <td>
+                        {% if ex.relative_volume is not none %}{{ ex.relative_volume }}x{% else %}—{% endif %}
+                    </td>
+                    <td>
+                        {% if ex.shares_outstanding %}
+                            {{ (ex.shares_outstanding / 1_000_000)|round(1) }}M
+                        {% else %}—{% endif %}
+                    </td>
+                    <td>
+                        {% if ex.next_day_return is not none %}
+                            <span class="{{ 'ret-pos' if ex.next_day_return > 0 else 'ret-neg' }}">
+                                {{ '%+.2f'|format(ex.next_day_return) }}%
+                            </span>
+                        {% else %}—{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% elif historical_count == 0 %}
+    <div style="background:#f9fafb; border:1px solid #e5e7eb; color:#6b7280;
+                padding:14px 18px; border-radius:8px; font-size:13px; margin-bottom:24px;">
+        No historical training data yet.
+        <a href="/analytics" style="color:#4f46e5; text-decoration:none; font-weight:500;">
+            Run Historical Backfill on the Analytics page
+        </a> to load labeled examples.
+    </div>
+    {% endif %}
+
+
+    <!-- ===== SUBMIT WINNING TRADE ===== -->
+    <div class="card">
+        <div class="section-title">Submit Winning Trade</div>
 
         <form method="post" action="/feedback" enctype="multipart/form-data">
 
@@ -304,11 +445,9 @@
                 <div>
                     <label>Chart Screenshots</label>
 
-                    <!-- Hidden real input submitted with the form -->
                     <input type="file" id="chartsInput" name="charts"
                            accept=".png,.jpg,.jpeg,.webp,.gif" multiple style="display:none">
 
-                    <!-- Ephemeral picker (not submitted, resets each use) -->
                     <input type="file" id="chartsPicker"
                            accept=".png,.jpg,.jpeg,.webp,.gif" multiple style="display:none">
 
@@ -321,21 +460,22 @@
                     <div id="fileList" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;"></div>
 
                     <div style="font-size:12px; color:#9ca3af; margin-top:6px;">
-                        Click to keep adding files one at a time — each batch adds to the list.
+                        Click to add files — each batch adds to the list.
                     </div>
                 </div>
             </div>
 
             <div style="margin-bottom:4px;">
-                <label>What made this a good setup? (describe the pattern, catalyst, or signals you noticed)</label>
-                <textarea name="user_text" placeholder="e.g. Tight barcoding for 3 days then massive volume spike. Float was only 2M shares. Relative volume was 40x before the move..."></textarea>
+                <label>What made this a good setup? (pattern, catalyst, signals)</label>
+                <textarea name="user_text" placeholder="e.g. Tight barcoding for 3 days then massive volume spike. Float was only 2M shares. Relative volume was 40x..."></textarea>
             </div>
 
-            <button type="submit" class="submit-btn">Submit & Analyze</button>
+            <button type="submit" class="submit-btn">Submit &amp; Analyze</button>
         </form>
     </div>
 
-    <!-- RECENT FEEDBACK -->
+
+    <!-- ===== RECENT MANUAL SUBMISSIONS ===== -->
     <div class="section-title">Recent Submissions</div>
 
     <div class="card">
@@ -377,7 +517,7 @@
     picker.addEventListener('change', function () {
         Array.from(this.files).forEach(file => accumulator.items.add(file));
         realInput.files = accumulator.files;
-        this.value = '';   // reset picker so same file can be added again
+        this.value = '';
         renderList();
     });
 
