@@ -6,7 +6,17 @@ to generate labeled training examples (qualifying scan day → next-day return).
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import requests
 import yfinance as yf
+
+
+class _TimeoutSession(requests.Session):
+    """Requests session that enforces a default timeout on every request."""
+    def request(self, method, url, **kwargs):
+        kwargs.setdefault("timeout", 15)
+        return super().request(method, url, **kwargs)
+
+_SESSION = _TimeoutSession()
 
 from app.database import DB_NAME
 from app.scanner import prepare_dataframe
@@ -100,7 +110,8 @@ def _process_ticker(symbol, weights=None):
     try:
         df = yf.download(
             symbol, period="2y", interval="1d",
-            progress=False, auto_adjust=False
+            progress=False, auto_adjust=False,
+            session=_SESSION
         )
         if df.empty or len(df) < 70:
             return []
@@ -110,7 +121,7 @@ def _process_ticker(symbol, weights=None):
         # Fetch current shares outstanding (best available proxy for historical)
         shares_outstanding = None
         try:
-            shares_outstanding = yf.Ticker(symbol).info.get("sharesOutstanding")
+            shares_outstanding = yf.Ticker(symbol, session=_SESSION).info.get("sharesOutstanding")
         except Exception:
             pass
 
@@ -230,7 +241,10 @@ def build_historical_dataset(max_workers=6, weights=None):
         }
         for future in as_completed(futures):
             processed += 1
-            result = future.result()
+            try:
+                result = future.result(timeout=30)
+            except Exception:
+                result = []
             if result:
                 all_examples.extend(result)
             if processed % 10 == 0 or processed == total:
