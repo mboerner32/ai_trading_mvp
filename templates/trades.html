@@ -127,14 +127,35 @@
 
         /* ---- Mobile ---- */
         @media (max-width: 640px) {
-            .navbar { padding: 12px 16px; flex-wrap: wrap; gap: 8px; }
-            .navbar h2 { font-size: 15px; }
-            .nav-links a { margin-left: 10px; font-size: 13px; }
-            .container { padding: 16px; }
-            .kpi-grid { grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px; }
-            .card p { font-size: 22px; }
+            /* Navbar */
+            .navbar { padding: 10px 14px; flex-wrap: wrap; gap: 6px; }
+            .navbar h2 { font-size: 14px; }
+            .nav-user { display: none; }
+            .nav-links { display: flex; flex-wrap: wrap; gap: 4px; width: 100%; }
+            .nav-links a { margin-left: 0; padding: 5px 10px; font-size: 12px;
+                           background: #f3f4f6; border-radius: 5px; }
+            .nav-links .logout { background: #fee2e2; }
+
+            /* Layout */
+            .container { padding: 14px; }
+            .kpi-grid { grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+            .card { padding: 16px; }
+            .card p { font-size: 20px; }
+
+            /* Tables */
             table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-            th, td { padding: 10px 10px; font-size: 12px; white-space: nowrap; }
+            th, td { padding: 9px 10px; font-size: 12px; white-space: nowrap; }
+            .hide-mobile { display: none; }
+
+            /* Sticky symbol column */
+            th:first-child, td:first-child {
+                position: sticky; left: 0; z-index: 1;
+                background: white; box-shadow: 2px 0 4px rgba(0,0,0,0.06);
+            }
+            tr:nth-child(even) td:first-child { background: inherit; }
+
+            /* Bigger action buttons */
+            .sell-btn { min-height: 40px; padding: 10px 14px; font-size: 14px; }
         }
     </style>
 </head>
@@ -148,7 +169,7 @@
     </div>
 
     <div class="nav-links">
-        <span style="margin-right:20px; color:#6b7280;">
+        <span class="nav-user" style="margin-right:20px; color:#6b7280;">
             Logged in as {{ user }}
         </span>
         <a href="/dashboard">Dashboard</a>
@@ -216,16 +237,16 @@
         <thead>
             <tr>
                 <th>Symbol</th>
-                <th>Entry Price</th>
-                <th>Target</th>
+                <th class="hide-mobile">Entry Price</th>
+                <th class="hide-mobile">Target</th>
                 <th>Current Price</th>
                 <th>To Target</th>
-                <th>Shares</th>
-                <th>Current Value</th>
-                <th>Unrealized P&amp;L</th>
+                <th class="hide-mobile">Shares</th>
+                <th class="hide-mobile">Current Value</th>
+                <th class="hide-mobile">Unrealized P&amp;L</th>
                 <th>P&amp;L %</th>
-                <th>Opened</th>
-                <th>Notes</th>
+                <th class="hide-mobile">Opened</th>
+                <th class="hide-mobile">Notes</th>
                 <th>Action</th>
             </tr>
         </thead>
@@ -233,8 +254,8 @@
         {% for pos in positions %}
             <tr style="{{ 'background:#f0fdf4;' if pos.to_target_pct <= 0 else '' }}">
                 <td><strong>{{ pos.symbol }}</strong></td>
-                <td>${{ pos.entry_price }}</td>
-                <td style="color:#0f766e; font-weight:600;">
+                <td class="hide-mobile">${{ pos.entry_price }}</td>
+                <td class="hide-mobile" style="color:#0f766e; font-weight:600;">
                     ${{ pos.target_price }}
                     <span style="font-size:11px; color:#6b7280; font-weight:400;">(+{{ pos.take_profit_pct|int }}%)</span>
                 </td>
@@ -242,27 +263,25 @@
                 <td id="totarget-{{ pos.trade_id }}" style="font-size:13px; color:{{ '#16a34a' if pos.to_target_pct <= 5 else '#6b7280' }};">
                     {% if pos.to_target_pct <= 0 %}🎯 At target{% else %}+{{ pos.to_target_pct }}% away{% endif %}
                 </td>
-                <td>{{ pos.shares | round(2) }}</td>
-                <td id="value-{{ pos.trade_id }}">${{ "{:,.2f}".format(pos.current_value) }}</td>
-                <td id="upnl-{{ pos.trade_id }}" class="{{ 'good' if pos.unrealized_pnl >= 0 else 'bad' }}">
+                <td class="hide-mobile">{{ pos.shares | round(2) }}</td>
+                <td class="hide-mobile" id="value-{{ pos.trade_id }}">${{ "{:,.2f}".format(pos.current_value) }}</td>
+                <td class="hide-mobile" id="upnl-{{ pos.trade_id }}" class="{{ 'good' if pos.unrealized_pnl >= 0 else 'bad' }}">
                     {{ "+" if pos.unrealized_pnl >= 0 else "" }}${{ "{:,.2f}".format(pos.unrealized_pnl) }}
                 </td>
                 <td id="pnlpct-{{ pos.trade_id }}" class="{{ 'good' if pos.pnl_pct >= 0 else 'bad' }}">
                     {{ "+" if pos.pnl_pct >= 0 else "" }}{{ pos.pnl_pct }}%
                 </td>
-                <td style="font-size:12px; color:#6b7280;">
+                <td class="hide-mobile" style="font-size:12px; color:#6b7280;">
                     {{ pos.opened_at[:16].replace("T", " ") }}
                 </td>
-                <td style="font-size:12px; color:#4b5563; max-width:160px;">
+                <td class="hide-mobile" style="font-size:12px; color:#4b5563; max-width:160px;">
                     {{ pos.notes if pos.notes else "—" }}
                 </td>
                 <td>
                     <form method="post" action="/trade/sell/{{ pos.trade_id }}">
                         {% if pos.to_target_pct <= 0 %}
-                        <button type="submit"
-                                style="background:#0f766e; color:white; border:none;
-                                       padding:7px 14px; border-radius:6px; cursor:pointer;
-                                       font-size:13px; font-weight:600;">
+                        <button type="submit" class="sell-btn"
+                                style="background:#0f766e; font-weight:600;">
                             🎯 Take Profit
                         </button>
                         {% else %}
@@ -286,36 +305,36 @@
         <thead>
             <tr>
                 <th>Symbol</th>
-                <th>Entry Price</th>
+                <th class="hide-mobile">Entry Price</th>
                 <th>Exit Price</th>
-                <th>Shares</th>
+                <th class="hide-mobile">Shares</th>
                 <th>Realized P&amp;L</th>
                 <th>P&amp;L %</th>
-                <th>Opened</th>
+                <th class="hide-mobile">Opened</th>
                 <th>Closed</th>
-                <th>Notes</th>
+                <th class="hide-mobile">Notes</th>
             </tr>
         </thead>
         <tbody>
         {% for trade in history %}
             <tr>
                 <td><strong>{{ trade.symbol }}</strong></td>
-                <td>${{ trade.entry_price }}</td>
+                <td class="hide-mobile">${{ trade.entry_price }}</td>
                 <td>${{ trade.exit_price }}</td>
-                <td>{{ trade.shares }}</td>
+                <td class="hide-mobile">{{ trade.shares }}</td>
                 <td class="{{ 'good' if trade.realized_pnl >= 0 else 'bad' }}">
                     {{ "+" if trade.realized_pnl >= 0 else "" }}${{ "{:,.2f}".format(trade.realized_pnl) }}
                 </td>
                 <td class="{{ 'good' if trade.pnl_pct >= 0 else 'bad' }}">
                     {{ "+" if trade.pnl_pct >= 0 else "" }}{{ trade.pnl_pct }}%
                 </td>
-                <td style="font-size:12px; color:#6b7280;">
+                <td class="hide-mobile" style="font-size:12px; color:#6b7280;">
                     {{ trade.opened_at[:16].replace("T", " ") }}
                 </td>
                 <td style="font-size:12px; color:#6b7280;">
                     {{ trade.closed_at[:16].replace("T", " ") }}
                 </td>
-                <td style="font-size:12px; color:#4b5563; max-width:160px;">
+                <td class="hide-mobile" style="font-size:12px; color:#4b5563; max-width:160px;">
                     {{ trade.notes if trade.notes else "—" }}
                 </td>
             </tr>
@@ -334,10 +353,10 @@
         <thead>
             <tr>
                 <th>Symbol</th>
-                <th>Price When Added</th>
+                <th class="hide-mobile">Price When Added</th>
                 <th>Current Price</th>
                 <th>Change</th>
-                <th>Added</th>
+                <th class="hide-mobile">Added</th>
                 <th>Action</th>
             </tr>
         </thead>
@@ -345,14 +364,14 @@
         {% for w in watchlist %}
             <tr>
                 <td><strong>{{ w.symbol }}</strong></td>
-                <td>${{ "{:.4f}".format(w.price_at_add) if w.price_at_add else "—" }}</td>
+                <td class="hide-mobile">${{ "{:.4f}".format(w.price_at_add) if w.price_at_add else "—" }}</td>
                 <td id="wl-price-{{ w.symbol }}">—</td>
                 <td id="wl-chg-{{ w.symbol }}" style="font-size:13px;">—</td>
-                <td style="font-size:12px; color:#6b7280;">{{ w.added_at[:10] }}</td>
+                <td class="hide-mobile" style="font-size:12px; color:#6b7280;">{{ w.added_at[:10] }}</td>
                 <td>
                     <form method="post" action="/watchlist/remove/{{ w.symbol }}" style="display:inline;">
-                        <button type="submit" style="background:#6b7280; color:white; border:none;
-                                padding:5px 12px; border-radius:6px; cursor:pointer; font-size:12px;">
+                        <button type="submit" class="sell-btn"
+                                style="background:#6b7280; font-size:12px;">
                             Remove
                         </button>
                     </form>

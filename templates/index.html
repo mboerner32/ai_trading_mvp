@@ -139,16 +139,38 @@
 
         /* ---- Mobile ---- */
         @media (max-width: 640px) {
-            .navbar { padding: 12px 16px; flex-wrap: wrap; gap: 8px; }
-            .navbar h2 { font-size: 15px; }
-            .nav-links a { margin-left: 10px; font-size: 13px; }
-            .container { padding: 16px; }
-            .mode-toggle { gap: 6px; }
-            .mode-toggle a { padding: 8px 10px; font-size: 12px; margin-right: 0; }
-            .kpi-grid { grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px; }
-            .card p { font-size: 22px; }
+            /* Navbar */
+            .navbar { padding: 10px 14px; flex-wrap: wrap; gap: 6px; }
+            .navbar h2 { font-size: 14px; }
+            .nav-user { display: none; }
+            .nav-links { display: flex; flex-wrap: wrap; gap: 4px; width: 100%; }
+            .nav-links a { margin-left: 0; padding: 5px 10px; font-size: 12px;
+                           background: #f3f4f6; border-radius: 5px; }
+            .nav-links .logout { background: #fee2e2; }
+
+            /* Layout */
+            .container { padding: 14px; }
+            .mode-toggle { gap: 5px; }
+            .mode-toggle a { padding: 7px 10px; font-size: 12px; margin-right: 0; }
+            .kpi-grid { grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+            .card { padding: 16px; }
+            .card p { font-size: 20px; }
+
+            /* Tables */
             table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
             th, td { padding: 10px 10px; font-size: 13px; }
+            .hide-mobile { display: none; }
+
+            /* Buy form — stack vertically on mobile */
+            .buy-form-inline { flex-direction: column !important;
+                               align-items: stretch !important; gap: 6px !important; }
+            .buy-form-inline input[type="number"] { width: 100% !important;
+                               box-sizing: border-box !important;
+                               font-size: 16px !important; padding: 10px !important; }
+            .buy-form-inline button[type="submit"] { width: 100% !important;
+                               padding: 12px !important; font-size: 15px !important; }
+            .buy-form-notes { font-size: 16px !important; padding: 10px 12px !important; }
+            .buy-form-inline .buy-form-label { display: none; }
         }
     </style>
 </head>
@@ -162,7 +184,7 @@
     </div>
 
     <div class="nav-links">
-        <span style="margin-right:20px; color:#6b7280;">
+        <span class="nav-user" style="margin-right:20px; color:#6b7280;">
             Logged in as {{ user }}
         </span>
         <a href="/dashboard">Dashboard</a>
@@ -299,8 +321,8 @@
                 <th>Symbol</th>
                 <th>Score</th>
                 <th>Recommendation</th>
-                <th>Price</th>
-                <th>Pos. Size</th>
+                <th class="hide-mobile">Price</th>
+                <th class="hide-mobile">Pos. Size</th>
                 <th>AI Target</th>
                 <th>Action</th>
             </tr>
@@ -321,8 +343,8 @@
                 ">
                     {{ stock.recommendation }}
                 </td>
-                <td>${{ stock.price }}</td>
-                <td style="font-size:13px; color:#6b7280;">
+                <td class="hide-mobile">${{ stock.price }}</td>
+                <td class="hide-mobile" style="font-size:13px; color:#6b7280;">
                     ${{ stock.ai_rec.amount }}
                 </td>
                 <td style="font-size:13px;
@@ -339,8 +361,8 @@
                         <form method="post" action="/trade/buy">
                             <input type="hidden" name="symbol" value="{{ stock.symbol }}">
                             <input type="hidden" name="price" value="{{ stock.price }}">
-                            <div style="display:flex; align-items:center; gap:5px; margin-bottom:4px;">
-                                <span style="font-size:13px; color:#6b7280;">$</span>
+                            <div class="buy-form-inline" style="display:flex; align-items:center; gap:5px; margin-bottom:4px;">
+                                <span class="buy-form-label" style="font-size:13px; color:#6b7280;">$</span>
                                 <input type="number" name="position_size"
                                        value="{{ stock.ai_rec.amount }}"
                                        min="1" step="1"
@@ -353,7 +375,7 @@
                                        title="Take-profit target %"
                                        style="width:52px; padding:5px 6px; border:1px solid #d1d5db;
                                               border-radius:6px; font-size:13px; text-align:right;">
-                                <span style="font-size:12px; color:#6b7280;">%</span>
+                                <span class="buy-form-label" style="font-size:12px; color:#6b7280;">%</span>
                                 <button type="submit" style="background:#4f46e5; color:white; border:none;
                                         padding:6px 14px; border-radius:6px; cursor:pointer;
                                         font-size:13px; font-weight:500;">
@@ -361,8 +383,9 @@
                                 </button>
                             </div>
                             <input type="text" name="notes" placeholder="Why? (optional)"
+                                   class="buy-form-notes"
                                    style="width:100%; padding:4px 8px; border:1px solid #e5e7eb;
-                                          border-radius:6px; font-size:12px; color:#374151;
+                                          border-radius:6px; font-size:14px; color:#374151;
                                           background:#fafafa;">
                         </form>
                         <form method="post" action="/watchlist/add" style="align-self:flex-start; margin-top:2px;">

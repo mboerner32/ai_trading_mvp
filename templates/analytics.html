@@ -119,13 +119,21 @@
 
         /* ---- Mobile ---- */
         @media (max-width: 640px) {
-            .navbar { padding: 12px 16px; flex-wrap: wrap; gap: 8px; }
-            .navbar h2 { font-size: 15px; }
-            .nav-links a { margin-left: 10px; font-size: 13px; }
-            .container { padding: 16px; }
-            .chart-card { padding: 16px; }
+            .navbar { padding: 10px 14px; flex-wrap: wrap; gap: 6px; }
+            .navbar h2 { font-size: 14px; }
+            .nav-user { display: none; }
+            .nav-links { display: flex; flex-wrap: wrap; gap: 4px; width: 100%; }
+            .nav-links a { margin-left: 0; padding: 5px 10px; font-size: 12px;
+                           background: #f3f4f6; border-radius: 5px; }
+            .nav-links .logout { background: #fee2e2; }
+            .container { padding: 14px; }
+            .chart-card { padding: 14px; }
             table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-            th, td { padding: 10px 10px; font-size: 13px; white-space: nowrap; }
+            th, td { padding: 9px 10px; font-size: 12px; white-space: nowrap; }
+            th:first-child, td:first-child {
+                position: sticky; left: 0; z-index: 1;
+                background: white; box-shadow: 2px 0 4px rgba(0,0,0,0.06);
+            }
         }
     </style>
 </head>
@@ -139,7 +147,7 @@
     </div>
 
     <div class="nav-links">
-        <span style="margin-right:20px; color:#6b7280;">
+        <span class="nav-user" style="margin-right:20px; color:#6b7280;">
             Logged in as {{ user }}
         </span>
         <a href="/dashboard">Dashboard</a>
