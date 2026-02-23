@@ -19,6 +19,7 @@ from app.alerts import send_scan_alert, send_take_profit_alert
 from app.backfill import build_historical_dataset
 from app.ai_agent import (
     recommend_position_size,
+    predict_price_target,
     analyze_and_optimize_weights,
     analyze_chart_feedback,
     reprocess_chart_analysis,
@@ -86,13 +87,14 @@ _backfill_running = False
 
 # ---------------- SCHEDULER ----------------
 def _autoclose_take_profit() -> list:
-    """Close open positions that have hit the 20% take-profit target."""
+    """Close open positions that have hit their per-trade take-profit target."""
     positions = get_open_positions()
     closed = []
     for pos in positions:
         price = _fetch_current_price(pos["symbol"], pos["entry_price"])
         pnl_pct = (price - pos["entry_price"]) / pos["entry_price"] * 100
-        if pnl_pct >= 20:
+        take_profit_target = pos.get("take_profit_pct", 20.0)
+        if pnl_pct >= take_profit_target:
             result = close_trade(pos["trade_id"], price)
             if result:
                 closed.append({
@@ -236,14 +238,18 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
     hypothesis_text = hypothesis_data["content"] if hypothesis_data else None
     sizing_stats    = get_sizing_stats()
 
-    # Parallel AI position sizing — each stock gets historical calibration injected
-    def _size(stock):
+    # Parallel AI enrichment — position sizing + price target prediction (score >= 75)
+    def _ai_enrich(stock):
         stock["ai_rec"] = recommend_position_size(
             stock, available_cash, hypothesis_text, sizing_stats
         )
+        if stock["score"] >= 75:
+            stock["ai_target"] = predict_price_target(stock, sizing_stats, hypothesis_text)
+        else:
+            stock["ai_target"] = {"target_pct": 20, "rationale": ""}
 
     with ThreadPoolExecutor(max_workers=5) as executor:
-        list(executor.map(_size, scan_data["results"]))
+        list(executor.map(_ai_enrich, scan_data["results"]))
 
     ai_weights_info = get_squeeze_weights() if mode == "squeeze" else None
 
@@ -297,10 +303,11 @@ def trades_page(request: Request):
     if "user" not in request.session:
         return RedirectResponse("/login")
 
-    # --- Auto-close any positions that have hit the 20% target ---
+    # --- Auto-close any positions that have hit their per-trade take-profit target ---
     auto_closed = []
     for pos in get_open_positions():
-        target_price = pos["entry_price"] * (1 + TARGET_GAIN)
+        take_profit_target = pos.get("take_profit_pct", 20.0)
+        target_price = pos["entry_price"] * (1 + take_profit_target / 100)
         current_price = _fetch_current_price(pos["symbol"], pos["entry_price"])
         if current_price >= target_price:
             result = close_trade(pos["trade_id"], current_price)
@@ -323,8 +330,10 @@ def trades_page(request: Request):
         current_value = current_price * pos["shares"]
         open_value += current_value
 
+        take_profit_pct = pos.get("take_profit_pct", 20.0)
         pos["current_price"] = round(current_price, 4)
-        pos["target_price"] = round(pos["entry_price"] * (1 + TARGET_GAIN), 4)
+        pos["target_price"] = round(pos["entry_price"] * (1 + take_profit_pct / 100), 4)
+        pos["take_profit_pct"] = take_profit_pct
         pos["unrealized_pnl"] = round(unrealized_pnl, 2)
         pos["current_value"] = round(current_value, 2)
         pos["pnl_pct"] = round(
@@ -362,11 +371,12 @@ def trade_buy(
     price: float = Form(...),
     position_size: float = Form(1000.0),
     notes: str = Form(""),
+    take_profit_pct: float = Form(20.0),
 ):
     if "user" not in request.session:
         return RedirectResponse("/login", status_code=303)
 
-    result = open_trade(symbol, price, position_size, notes)
+    result = open_trade(symbol, price, position_size, notes, take_profit_pct)
 
     if result is None:
         return RedirectResponse("/dashboard?trade_error=insufficient_funds", status_code=303)
@@ -683,14 +693,14 @@ def api_position_prices(request: Request):
     if "user" not in request.session:
         return Response(status_code=401)
     positions = get_open_positions()
-    TARGET_GAIN = 0.20
     data = {}
     for pos in positions:
         current = _fetch_current_price(pos["symbol"], pos["entry_price"])
         unrealized = round((current - pos["entry_price"]) * pos["shares"], 2)
         current_value = round(current * pos["shares"], 2)
         pnl_pct = round((current - pos["entry_price"]) / pos["entry_price"] * 100, 2)
-        target = round(pos["entry_price"] * (1 + TARGET_GAIN), 4)
+        take_profit_pct = pos.get("take_profit_pct", 20.0)
+        target = round(pos["entry_price"] * (1 + take_profit_pct / 100), 4)
         to_target_pct = round((target - current) / current * 100, 2)
         data[pos["trade_id"]] = {
             "current_price":  round(current, 4),

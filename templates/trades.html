@@ -217,7 +217,7 @@
             <tr>
                 <th>Symbol</th>
                 <th>Entry Price</th>
-                <th>Target (+20%)</th>
+                <th>Target</th>
                 <th>Current Price</th>
                 <th>To Target</th>
                 <th>Shares</th>
@@ -234,7 +234,10 @@
             <tr style="{{ 'background:#f0fdf4;' if pos.to_target_pct <= 0 else '' }}">
                 <td><strong>{{ pos.symbol }}</strong></td>
                 <td>${{ pos.entry_price }}</td>
-                <td style="color:#0f766e; font-weight:600;">${{ pos.target_price }}</td>
+                <td style="color:#0f766e; font-weight:600;">
+                    ${{ pos.target_price }}
+                    <span style="font-size:11px; color:#6b7280; font-weight:400;">(+{{ pos.take_profit_pct|int }}%)</span>
+                </td>
                 <td id="price-{{ pos.trade_id }}">${{ pos.current_price }}</td>
                 <td id="totarget-{{ pos.trade_id }}" style="font-size:13px; color:{{ '#16a34a' if pos.to_target_pct <= 5 else '#6b7280' }};">
                     {% if pos.to_target_pct <= 0 %}🎯 At target{% else %}+{{ pos.to_target_pct }}% away{% endif %}

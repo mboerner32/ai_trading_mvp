@@ -112,6 +112,81 @@ RATIONALE: <one sentence, 15 words or less>"""
         return {"amount": 1000, "rationale": ""}
 
 
+def predict_price_target(stock: dict, sizing_stats: dict = None,
+                         hypothesis: str = None) -> dict:
+    """
+    Predicts a take-profit % target for high-scoring stocks (called for score >= 75).
+    Returns {"target_pct": int, "rationale": str}.
+    Falls back to {"target_pct": 20, "rationale": ""} on any error.
+    """
+    checklist = stock.get("checklist", {})
+    shares_outstanding = checklist.get("shares_outstanding")
+    shares_str = f"{shares_outstanding:,}" if shares_outstanding else "N/A"
+
+    calibration_section = ""
+    if sizing_stats and sizing_stats.get("total", 0) >= 10:
+        lines = [f"\nHistorical calibration ({sizing_stats['total']} labeled scans):"]
+        for label, key in [("Score", "by_score"), ("Rel Vol", "by_relvol"),
+                           ("Float", "by_float"), ("Daily gain", "by_gain")]:
+            buckets = sizing_stats.get(key, {})
+            if buckets:
+                parts = [
+                    f"{bkt}→{s['win_rate']}%hit20pct/{s['avg_return']:+.1f}%avg({s['count']})"
+                    for bkt, s in buckets.items()
+                ]
+                lines.append(f"  {label}: {' | '.join(parts)}")
+        calibration_section = "\n".join(lines)
+
+    hypothesis_section = ""
+    if hypothesis:
+        hypothesis_section = (
+            f"\n\nLearned patterns from winning trades:\n{hypothesis[:300].strip()}"
+        )
+
+    prompt = f"""You are a momentum trading analyst for a paper trading simulator.
+Strategy: buy low-float stocks spiking on unusual volume and hold for a 1-2 day pump.
+
+Stock: {stock['symbol']}
+Score: {stock['score']}/100
+Recommendation: {stock['recommendation']}
+Price: ${stock['price']}
+Relative Volume: {checklist.get('relative_volume')}
+Shares Outstanding: {shares_str}
+Daily gain today: {stock.get('daily_return_pct', 'N/A')}%
+Sideways Compression: {checklist.get('sideways_chop')}
+Relvol Tier: {checklist.get('relvol_tier', 'N/A')}
+Float Tier: {checklist.get('float_tier', 'N/A')}{calibration_section}{hypothesis_section}
+
+Predict the best take-profit target for this trade.
+Higher relative volume + smaller float + barcoded compression = more room to run.
+Choose one from: 20%, 25%, 30%, 35%, 40%, 50%
+
+Respond in exactly this format (no other text):
+TARGET: <number only>
+RATIONALE: <one sentence, 15 words or less>"""
+
+    try:
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=80,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = message.content[0].text.strip()
+        target_line    = next((l for l in text.split('\n') if l.startswith('TARGET:')), None)
+        rationale_line = next((l for l in text.split('\n') if l.startswith('RATIONALE:')), None)
+        if not target_line:
+            return {"target_pct": 20, "rationale": ""}
+        target_pct = int(
+            target_line.replace('TARGET:', '').strip().replace('%', '').replace(',', '')
+        )
+        rationale = rationale_line.replace('RATIONALE:', '').strip() if rationale_line else ""
+        valid = [20, 25, 30, 35, 40, 50]
+        target_pct = min(valid, key=lambda x: abs(x - target_pct))
+        return {"target_pct": target_pct, "rationale": rationale}
+    except Exception:
+        return {"target_pct": 20, "rationale": ""}
+
+
 def synthesize_combined_hypothesis(feedback_entries: list,
                                    opt_data: dict,
                                    historical_count: int) -> str:

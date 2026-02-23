@@ -139,6 +139,13 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # column already exists
 
+    # Migration: per-trade take-profit target (default 20%)
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN take_profit_pct REAL DEFAULT 20.0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
     conn.close()
 
 
@@ -395,7 +402,7 @@ POSITION_SIZE = 1000.0
 
 
 def open_trade(symbol: str, price: float, position_size: float = POSITION_SIZE,
-               notes: str = ""):
+               notes: str = "", take_profit_pct: float = 20.0):
     if price <= 0 or position_size <= 0:
         return None
 
@@ -418,9 +425,11 @@ def open_trade(symbol: str, price: float, position_size: float = POSITION_SIZE,
         (position_size,)
     )
     cursor.execute("""
-        INSERT INTO trades (symbol, entry_price, shares, position_size, status, opened_at, notes)
-        VALUES (?, ?, ?, ?, 'open', ?, ?)
-    """, (symbol, round(price, 4), round(shares, 6), position_size, opened_at, notes or ""))
+        INSERT INTO trades (symbol, entry_price, shares, position_size, status,
+                            opened_at, notes, take_profit_pct)
+        VALUES (?, ?, ?, ?, 'open', ?, ?, ?)
+    """, (symbol, round(price, 4), round(shares, 6), position_size,
+          opened_at, notes or "", take_profit_pct))
 
     trade_id = cursor.lastrowid
     conn.commit()
@@ -481,7 +490,7 @@ def get_open_positions():
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, symbol, entry_price, shares, position_size, opened_at,
-               COALESCE(notes, '')
+               COALESCE(notes, ''), COALESCE(take_profit_pct, 20.0)
         FROM trades WHERE status = 'open'
         ORDER BY opened_at DESC
     """)
@@ -490,7 +499,7 @@ def get_open_positions():
 
     positions = []
     for row in rows:
-        trade_id, symbol, entry_price, shares, position_size, opened_at, notes = row
+        trade_id, symbol, entry_price, shares, position_size, opened_at, notes, take_profit_pct = row
         positions.append({
             "trade_id": trade_id,
             "symbol": symbol,
@@ -499,6 +508,7 @@ def get_open_positions():
             "position_size": position_size,
             "opened_at": opened_at,
             "notes": notes,
+            "take_profit_pct": take_profit_pct,
         })
     return positions
 
