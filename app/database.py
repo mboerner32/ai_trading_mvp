@@ -1100,6 +1100,42 @@ def get_sizing_stats() -> dict | None:
     return result
 
 
+# ---------------- VALIDATION REPORTS ----------------
+def save_validation_report(report: dict):
+    """Persist a validation report. Keeps the last 50 runs."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    now = datetime.utcnow().isoformat()
+
+    # Load existing list
+    cursor.execute("SELECT value FROM settings WHERE key = 'validation_reports'")
+    row = cursor.fetchone()
+    reports = json.loads(row[0]) if row else []
+
+    reports.insert(0, report)      # newest first
+    reports = reports[:50]          # cap at 50
+
+    cursor.execute("""
+        INSERT INTO settings (key, value, updated_at) VALUES ('validation_reports', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    """, (json.dumps(reports), now))
+    conn.commit()
+    conn.close()
+
+
+def get_validation_reports(limit: int = 10) -> list:
+    """Return the most recent validation reports."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = 'validation_reports'")
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return []
+    reports = json.loads(row[0])
+    return reports[:limit]
+
+
 # ---------------- RISK METRICS ----------------
 def get_risk_metrics() -> dict:
     """Compute Sharpe ratio, max drawdown, and win rate from closed trades."""

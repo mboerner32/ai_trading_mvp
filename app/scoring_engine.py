@@ -26,6 +26,10 @@ def score_stock(symbol: str, df, fundamentals=None):
     return_5d = safe_float(latest.get("return_5d"))
     range_10d = safe_float(latest.get("range_10d"))
 
+    # Prefer FinViz's own Rel Volume (accurate, time-of-day adjusted)
+    if fundamentals and fundamentals.get("finviz_relvol"):
+        relative_volume = fundamentals["finviz_relvol"]
+
     # If price is missing, we cannot score
     if price is None:
         return None
@@ -154,6 +158,7 @@ def score_stock(symbol: str, df, fundamentals=None):
         "daily_return_pct": round(daily_return * 100, 2) if daily_return else None,
         "score": score,
         "recommendation": recommendation,
+        "news_headlines": (fundamentals or {}).get("news_headlines", []),
         "checklist": {
             "relative_volume": round(relative_volume, 2) if relative_volume else None,
 
@@ -227,6 +232,10 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
     relative_volume = safe_float(latest.get("relative_volume"))
     daily_return   = safe_float(latest.get("daily_return"))
     range_10d      = safe_float(latest.get("range_10d"))
+
+    # Prefer FinViz's own Rel Volume (accurate, time-of-day adjusted)
+    if fundamentals and fundamentals.get("finviz_relvol"):
+        relative_volume = fundamentals["finviz_relvol"]
 
     if price is None:
         return None
@@ -336,6 +345,7 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
         "daily_return_pct": round(daily_return * 100, 2) if daily_return else None,
         "score": score,
         "recommendation": recommendation,
+        "news_headlines": (fundamentals or {}).get("news_headlines", []),
         "checklist": {
             "relative_volume": round(relative_volume, 2) if relative_volume else None,
             "relvol_tier": relvol_tier,

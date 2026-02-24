@@ -1,6 +1,7 @@
 # ai_trading_mvp/main.py
 
 import asyncio
+import datetime
 import threading
 import pytz
 import yfinance as yf
@@ -15,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.scanner import run_scan
+from app.validator import validate_scan_results
 from app.alerts import send_scan_alert, send_take_profit_alert
 from app.backfill import build_historical_dataset
 from app.ai_agent import (
@@ -68,6 +70,8 @@ from app.database import (
     get_historical_count,
     get_historical_examples,
     get_sizing_stats,
+    save_validation_report,
+    get_validation_reports,
 )
 
 app = FastAPI()
@@ -90,7 +94,15 @@ def _autoclose_take_profit() -> list:
     """Close open positions that have hit their per-trade take-profit target."""
     positions = get_open_positions()
     closed = []
+    now = datetime.datetime.now()
     for pos in positions:
+        # Grace period: never auto-close a trade opened less than 5 minutes ago
+        try:
+            opened_dt = datetime.datetime.fromisoformat(pos["opened_at"].replace(" ", "T"))
+            if (now - opened_dt).total_seconds() < 300:
+                continue
+        except Exception:
+            pass
         price = _fetch_current_price(pos["symbol"], pos["entry_price"])
         pnl_pct = (price - pos["entry_price"]) / pos["entry_price"] * 100
         take_profit_target = pos.get("take_profit_pct", 20.0)
@@ -138,9 +150,39 @@ def _premarket_scan():
         print(f"SCHEDULER: pre-market scan failed — {e}")
 
 
+def _run_validation():
+    """
+    Validate that our scanner data matches FinViz live quote pages.
+    Runs before market open (9:00 AM ET) and every 15 min in the last
+    hour before close (3:00–3:45 PM ET).  Any discrepancy is flagged.
+    """
+    print("VALIDATOR: Starting data validation run...")
+    try:
+        # Use the squeeze scan cache (most recent scan) as the source of truth
+        # for what our system currently shows.
+        cached = get_scan_cache("squeeze", max_age_minutes=120)
+        if not cached or not cached.get("results"):
+            print("VALIDATOR: No recent scan cache found — skipping.")
+            return
+        report = validate_scan_results(cached["results"], max_symbols=15)
+        save_validation_report(report)
+        print(
+            f"VALIDATOR: Done — {report['warn_count']} mismatches "
+            f"out of {report['symbols_checked']} symbols."
+        )
+    except Exception as e:
+        print(f"VALIDATOR: run failed — {e}")
+
+
 _scheduler = BackgroundScheduler(timezone=pytz.timezone("America/New_York"))
-_scheduler.add_job(_scheduled_scan, "cron", day_of_week="mon-fri", hour=9, minute=45)
-_scheduler.add_job(_premarket_scan,  "cron", day_of_week="mon-fri", hour=8, minute=30)
+_scheduler.add_job(_scheduled_scan,  "cron", day_of_week="mon-fri", hour=9,  minute=45)
+_scheduler.add_job(_premarket_scan,  "cron", day_of_week="mon-fri", hour=8,  minute=30)
+# Validation: 9:00 AM ET (before market open) and every 15 min 3:00–3:45 PM ET
+_scheduler.add_job(_run_validation,  "cron", day_of_week="mon-fri", hour=9,  minute=0)
+_scheduler.add_job(_run_validation,  "cron", day_of_week="mon-fri", hour=15, minute=0)
+_scheduler.add_job(_run_validation,  "cron", day_of_week="mon-fri", hour=15, minute=15)
+_scheduler.add_job(_run_validation,  "cron", day_of_week="mon-fri", hour=15, minute=30)
+_scheduler.add_job(_run_validation,  "cron", day_of_week="mon-fri", hour=15, minute=45)
 _scheduler.start()
 
 # Log API key status at startup so it's visible in Render logs
@@ -305,7 +347,15 @@ def trades_page(request: Request):
 
     # --- Auto-close any positions that have hit their per-trade take-profit target ---
     auto_closed = []
+    now = datetime.datetime.now()
     for pos in get_open_positions():
+        # Grace period: never auto-close a trade opened less than 5 minutes ago
+        try:
+            opened_dt = datetime.datetime.fromisoformat(pos["opened_at"].replace(" ", "T"))
+            if (now - opened_dt).total_seconds() < 300:
+                continue
+        except Exception:
+            pass
         take_profit_target = pos.get("take_profit_pct", 20.0)
         target_price = pos["entry_price"] * (1 + take_profit_target / 100)
         current_price = _fetch_current_price(pos["symbol"], pos["entry_price"])
@@ -376,7 +426,11 @@ def trade_buy(
     if "user" not in request.session:
         return RedirectResponse("/login", status_code=303)
 
-    result = open_trade(symbol, price, position_size, notes, take_profit_pct)
+    # Always use the live market price as entry — the form price comes from
+    # a potentially stale scan cache and would cause immediate auto-closes.
+    entry_price = _fetch_current_price(symbol, price)
+
+    result = open_trade(symbol, entry_price, position_size, notes, take_profit_pct)
 
     if result is None:
         return RedirectResponse("/dashboard?trade_error=insufficient_funds", status_code=303)
@@ -760,6 +814,30 @@ def api_backfill_status(request: Request):
     if "user" not in request.session:
         return Response(status_code=401)
     return get_backfill_status()
+
+
+# ---------------- VALIDATION ----------------
+@app.get("/validation", response_class=HTMLResponse)
+def validation_page(request: Request):
+    if "user" not in request.session:
+        return RedirectResponse("/login")
+    return templates.TemplateResponse(
+        "validation.html",
+        {
+            "request": request,
+            "user": request.session["user"],
+            "reports": get_validation_reports(limit=10),
+        }
+    )
+
+
+@app.post("/validation/run")
+def validation_run_now(request: Request, background_tasks: BackgroundTasks):
+    """Manually trigger a validation run against live FinViz data."""
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    background_tasks.add_task(_run_validation)
+    return RedirectResponse("/validation?running=1", status_code=303)
 
 
 # ---------------- LOGOUT ----------------

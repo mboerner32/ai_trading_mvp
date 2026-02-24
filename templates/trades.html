@@ -147,12 +147,12 @@
             th, td { padding: 9px 10px; font-size: 12px; white-space: nowrap; }
             .hide-mobile { display: none; }
 
-            /* Sticky symbol column */
+            /* Sticky symbol column — inherit row bg so green rows stay green */
             th:first-child, td:first-child {
                 position: sticky; left: 0; z-index: 1;
-                background: white; box-shadow: 2px 0 4px rgba(0,0,0,0.06);
+                background: inherit; box-shadow: 2px 0 4px rgba(0,0,0,0.06);
             }
-            tr:nth-child(even) td:first-child { background: inherit; }
+            thead th:first-child { background: #f3f4f6; }
 
             /* Bigger action buttons */
             .sell-btn { min-height: 40px; padding: 10px 14px; font-size: 14px; }
@@ -175,6 +175,7 @@
         <a href="/dashboard">Dashboard</a>
         <a href="/analytics">Analytics</a>
         <a href="/trades">Trades</a>
+        <a href="/validation">Validation</a>
         <a href="/logout" class="logout">Logout</a>
     </div>
 </div>
@@ -265,7 +266,7 @@
                 </td>
                 <td class="hide-mobile">{{ pos.shares | round(2) }}</td>
                 <td class="hide-mobile" id="value-{{ pos.trade_id }}">${{ "{:,.2f}".format(pos.current_value) }}</td>
-                <td class="hide-mobile" id="upnl-{{ pos.trade_id }}" class="{{ 'good' if pos.unrealized_pnl >= 0 else 'bad' }}">
+                <td class="hide-mobile {{ 'good' if pos.unrealized_pnl >= 0 else 'bad' }}" id="upnl-{{ pos.trade_id }}">
                     {{ "+" if pos.unrealized_pnl >= 0 else "" }}${{ "{:,.2f}".format(pos.unrealized_pnl) }}
                 </td>
                 <td id="pnlpct-{{ pos.trade_id }}" class="{{ 'good' if pos.pnl_pct >= 0 else 'bad' }}">

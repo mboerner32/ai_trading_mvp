@@ -137,6 +137,9 @@
             margin-bottom: 15px;
         }
 
+        /* Mobile scan cards — hidden on desktop */
+        .mobile-scan-cards { display: none; }
+
         /* ---- Mobile ---- */
         @media (max-width: 640px) {
             /* Navbar */
@@ -149,28 +152,23 @@
             .nav-links .logout { background: #fee2e2; }
 
             /* Layout */
-            .container { padding: 14px; }
-            .mode-toggle { gap: 5px; }
+            .container { padding: 12px; }
+            .mode-toggle { gap: 5px; flex-wrap: wrap; }
             .mode-toggle a { padding: 7px 10px; font-size: 12px; margin-right: 0; }
-            .kpi-grid { grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
-            .card { padding: 16px; }
+            .kpi-grid { grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+            .card { padding: 14px; }
             .card p { font-size: 20px; }
 
-            /* Tables */
-            table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-            th, td { padding: 10px 10px; font-size: 13px; }
-            .hide-mobile { display: none; }
-
-            /* Buy form — stack vertically on mobile */
-            .buy-form-inline { flex-direction: column !important;
-                               align-items: stretch !important; gap: 6px !important; }
-            .buy-form-inline input[type="number"] { width: 100% !important;
-                               box-sizing: border-box !important;
-                               font-size: 16px !important; padding: 10px !important; }
-            .buy-form-inline button[type="submit"] { width: 100% !important;
-                               padding: 12px !important; font-size: 15px !important; }
-            .buy-form-notes { font-size: 16px !important; padding: 10px 12px !important; }
-            .buy-form-inline .buy-form-label { display: none; }
+            /* Swap: hide the scan results table, show cards instead */
+            .scan-table-desktop { display: none !important; }
+            .mobile-scan-cards  { display: block; }
+            .scan-card-mobile {
+                background: white;
+                border-radius: 10px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+                padding: 16px;
+                margin-bottom: 12px;
+            }
         }
     </style>
 </head>
@@ -191,6 +189,7 @@
         <a href="/analytics">Analytics</a>
         <a href="/trades">Trades</a>
         <a href="/feedback">Feedback</a>
+        <a href="/validation">Validation</a>
         <a href="/logout" class="logout">Logout</a>
     </div>
 </div>
@@ -315,7 +314,7 @@
 
     <h3 style="margin-bottom:15px;">Scan Results</h3>
 
-    <table>
+    <table class="scan-table-desktop">
         <thead>
             <tr>
                 <th>Symbol</th>
@@ -601,6 +600,25 @@
                             </div>
                             {% endif %}
 
+                            {% if stock.news_headlines %}
+                            <div style="grid-column: 1 / -1; margin-top:10px; padding-top:10px;
+                                        border-top:1px solid #e5e7eb;">
+                                <div style="font-size:12px; font-weight:600; color:#6b7280;
+                                            text-transform:uppercase; letter-spacing:0.04em;
+                                            margin-bottom:6px;">Recent News</div>
+                                {% for h in stock.news_headlines %}
+                                <div style="font-size:13px; color:#1f2937; margin-bottom:5px;
+                                            display:flex; gap:8px; align-items:baseline;">
+                                    {% if h.when %}
+                                    <span style="color:#9ca3af; font-size:11px; white-space:nowrap;
+                                                 flex-shrink:0;">{{ h.when }}</span>
+                                    {% endif %}
+                                    <span>{{ h.title }}</span>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+
                         </div>
                     </div>
                 </td>
@@ -609,6 +627,110 @@
         {% endfor %}
         </tbody>
     </table>
+
+    <!-- ===== Mobile card view (replaces table on small screens) ===== -->
+    <div class="mobile-scan-cards">
+        {% for stock in results %}
+        <div class="scan-card-mobile">
+
+            <!-- Header: Symbol + Score + Recommendation -->
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <div>
+                    <strong style="font-size:18px;">{{ stock.symbol }}</strong>
+                    <span style="background:#f3f4f6; border-radius:12px;
+                                 padding:2px 9px; font-size:13px; margin-left:8px;
+                                 font-weight:600; color:#374151;">{{ stock.score }}</span>
+                </div>
+                <span class="{% if stock.recommendation == 'TRADE' %}good{% elif stock.recommendation == 'WATCH' %}hold{% else %}bad{% endif %}"
+                      style="font-size:14px;">
+                    {{ stock.recommendation }}
+                </span>
+            </div>
+
+            <!-- Meta row: price · pos size · AI target -->
+            <div style="font-size:13px; color:#6b7280; margin-bottom:10px;
+                        display:flex; gap:14px; flex-wrap:wrap;">
+                <span>${{ stock.price }}</span>
+                <span>Suggested: ${{ stock.ai_rec.amount }}</span>
+                {% if stock.score >= 75 %}
+                <span style="color:#0f766e; font-weight:600;">
+                    AI Target: {{ stock.ai_target.target_pct }}%
+                </span>
+                {% endif %}
+            </div>
+
+            {% if stock.news_headlines %}
+            <div style="margin-bottom:12px; padding:10px 12px; background:#f9fafb;
+                        border-radius:7px; border-left:3px solid #e5e7eb;">
+                {% set h = stock.news_headlines[0] %}
+                {% if h.when %}
+                <div style="font-size:11px; color:#9ca3af; margin-bottom:3px;">{{ h.when }}</div>
+                {% endif %}
+                <div style="font-size:13px; color:#374151; line-height:1.4;">{{ h.title }}</div>
+                {% if stock.news_headlines|length > 1 %}
+                <div style="font-size:11px; color:#9ca3af; margin-top:4px;">
+                    +{{ stock.news_headlines|length - 1 }} more
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            <!-- Buy form -->
+            <form method="post" action="/trade/buy">
+                <input type="hidden" name="symbol" value="{{ stock.symbol }}">
+                <input type="hidden" name="price"  value="{{ stock.price }}">
+
+                <div style="display:flex; gap:8px; margin-bottom:8px;">
+                    <div style="flex:1;">
+                        <div style="font-size:11px; color:#6b7280; margin-bottom:4px; font-weight:500;">
+                            Position $
+                        </div>
+                        <input type="number" name="position_size"
+                               value="{{ stock.ai_rec.amount }}" min="1" step="1"
+                               style="width:100%; padding:11px; border:1px solid #d1d5db;
+                                      border-radius:7px; font-size:16px; box-sizing:border-box;">
+                    </div>
+                    <div style="width:80px;">
+                        <div style="font-size:11px; color:#6b7280; margin-bottom:4px; font-weight:500;">
+                            Target %
+                        </div>
+                        <input type="number" name="take_profit_pct"
+                               value="{{ stock.ai_target.target_pct }}"
+                               min="10" max="200" step="5"
+                               style="width:100%; padding:11px; border:1px solid #d1d5db;
+                                      border-radius:7px; font-size:16px; box-sizing:border-box;">
+                    </div>
+                </div>
+
+                <input type="text" name="notes" placeholder="Why? (optional)"
+                       style="width:100%; padding:11px; border:1px solid #e5e7eb;
+                              border-radius:7px; font-size:16px; color:#374151;
+                              background:#fafafa; box-sizing:border-box; margin-bottom:10px;">
+
+                <button type="submit"
+                        style="width:100%; background:#4f46e5; color:white; border:none;
+                               padding:14px; border-radius:8px; cursor:pointer;
+                               font-size:16px; font-weight:600;">
+                    Buy {{ stock.symbol }}
+                </button>
+            </form>
+
+            <!-- Watch form -->
+            <form method="post" action="/watchlist/add" style="margin-top:8px;">
+                <input type="hidden" name="symbol" value="{{ stock.symbol }}">
+                <input type="hidden" name="price"  value="{{ stock.price }}">
+                <button type="submit"
+                        style="width:100%; background:#f9fafb; color:#374151;
+                               border:1px solid #d1d5db; padding:11px; border-radius:8px;
+                               cursor:pointer; font-size:14px; font-weight:500;">
+                    + Watch
+                </button>
+            </form>
+
+        </div>
+        {% endfor %}
+    </div>
+    <!-- ===== End mobile cards ===== -->
 
 </div>
 

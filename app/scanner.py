@@ -3,90 +3,137 @@
 import requests
 import re
 import time
+import datetime
 import yfinance as yf
 import pandas as pd
+from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.scoring_engine import score_stock, score_stock_squeeze, DEFAULT_SQUEEZE_WEIGHTS
 from app.database import get_squeeze_weights
 
 
 # ---------------------------------------------------
-# FINVIZ FILTER (Exact Replica)
-# geo:usa
-# current volume > 5M
-# price < $5
-# relative volume > 10
-# performance today > 10%
+# FINVIZ FILTERS
+# v=161 = Performance view — includes Rel Volume column
+# geo:usa, current volume > 5M, price < $5, relvol > 10, today > +10%
 # ---------------------------------------------------
 BASE_URL = (
     "https://finviz.com/screener.ashx?"
-    "v=111&f=geo_usa,sh_curvol_o5000,"
+    "v=161&f=geo_usa,sh_curvol_o5000,"
     "sh_price_u5,sh_relvol_o10,ta_perf_d10o"
 )
+BASE_URL_PREMARKET = (
+    "https://finviz.com/screener.ashx?"
+    "v=161&f=geo_usa,sh_curvol_o500,"
+    "sh_price_u5,sh_relvol_o5,ta_perf_d5o"
+)
+
+_FV_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+}
 
 
 # ---------------------------------------------------
-# GET FINVIZ TICKERS (FAST TS BLOCK PARSER)
+# GET FINVIZ TICKERS + RELATIVE VOLUMES
+# Uses v=161 (Performance view) to pull FinViz's own Rel Volume value.
+# Returns (tickers_list, relvol_dict  {symbol: float})
 # ---------------------------------------------------
 def get_finviz_tickers(premarket: bool = False):
     """
-    Fetch tickers from Finviz screener.
-    premarket=True uses relaxed filters (lower vol/rv/gain) for pre-market scanning.
+    Fetch tickers + FinViz Rel Volume from the Performance screener view.
+    Falls back to ticker-only if HTML parsing fails.
     """
-    if premarket:
-        base = (
-            "https://finviz.com/screener.ashx?"
-            "v=111&f=geo_usa,sh_curvol_o500,"
-            "sh_price_u5,sh_relvol_o5,ta_perf_d5o"
-        )
-    else:
-        base = BASE_URL
+    base = BASE_URL_PREMARKET if premarket else BASE_URL
 
-    headers = {"User-Agent": "Mozilla/5.0"}
-    tickers = []
-    page = 1
+    tickers  = []
+    relvol   = {}
+    page     = 1
 
     print(f"Pulling FinViz candidates{'  (pre-market)' if premarket else ''}...")
 
     while True:
-
-        url = f"{base}&r={(page-1)*20+1}"
-        response = requests.get(url, headers=headers)
+        url      = f"{base}&r={(page - 1) * 20 + 1}"
+        response = requests.get(url, headers=_FV_HEADERS, timeout=15)
 
         if response.status_code != 200:
             break
 
         html = response.text
-
-        match = re.search(r"<!-- TS(.*?)TE -->", html, re.DOTALL)
-
-        if not match:
-            break
-
-        block = match.group(1).strip()
-        lines = block.split("\n")
-
-        page_tickers = []
-
-        for line in lines:
-            parts = line.strip().split("|")
-            if len(parts) >= 1:
-                ticker = parts[0].strip()
-                if ticker:
-                    page_tickers.append(ticker)
+        page_tickers, page_relvol = _parse_finviz_page(html)
 
         if not page_tickers:
             break
 
         tickers.extend(page_tickers)
+        relvol.update(page_relvol)
 
         if len(page_tickers) < 20:
             break
 
         page += 1
 
-    print(f"Found {len(tickers)} FinViz stocks")
-    return tickers
+    print(f"Found {len(tickers)} FinViz stocks "
+          f"({len(relvol)} with Rel Volume)")
+    return tickers, relvol
+
+
+def _parse_finviz_page(html: str):
+    """
+    Parse one page of FinViz screener HTML (v=161).
+    Returns (tickers, relvol_dict) — relvol_dict may be empty if parsing fails.
+    """
+    tickers   = []
+    relvol    = {}
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    # The screener results live in a table whose first header row contains "Ticker"
+    table = None
+    for t in soup.find_all("table"):
+        headers = [th.get_text(strip=True) for th in t.find_all("th")]
+        if "Ticker" in headers:
+            table = t
+            break
+
+    if table is None:
+        # Fallback: extract tickers only via TS block
+        match = re.search(r"<!-- TS(.*?)TE -->", html, re.DOTALL)
+        if match:
+            for line in match.group(1).strip().split("\n"):
+                parts = line.strip().split("|")
+                if parts and parts[0].strip():
+                    tickers.append(parts[0].strip())
+        return tickers, relvol
+
+    # Locate column indices from the header row
+    header_row  = table.find("tr")
+    all_headers = [th.get_text(strip=True) for th in header_row.find_all("th")]
+    ticker_idx  = next((i for i, h in enumerate(all_headers) if h == "Ticker"),  None)
+    rv_idx      = next((i for i, h in enumerate(all_headers)
+                        if h in ("Rel Volume", "Rel Vol")), None)
+
+    if ticker_idx is None:
+        return tickers, relvol
+
+    for row in table.find_all("tr")[1:]:        # skip header
+        cells = row.find_all("td")
+        if len(cells) <= ticker_idx:
+            continue
+        ticker = cells[ticker_idx].get_text(strip=True)
+        if not ticker:
+            continue
+        tickers.append(ticker)
+        if rv_idx is not None and len(cells) > rv_idx:
+            try:
+                relvol[ticker] = float(cells[rv_idx].get_text(strip=True))
+            except (ValueError, AttributeError):
+                pass
+
+    return tickers, relvol
 
 
 # ---------------------------------------------------
@@ -100,6 +147,7 @@ def get_fundamentals(symbol):
 
         # Check for recent news (last 3 days) — news-driven moves are less clean
         recent_news_present = False
+        news_headlines = []
         try:
             news = ticker.news
             if news:
@@ -108,6 +156,46 @@ def get_fundamentals(symbol):
                     a.get("providerPublishTime", 0) > cutoff_ts
                     for a in news[:5]
                 )
+                # Extract top 3 headlines with human-readable timestamps
+                for item in news[:5]:
+                    # Handle both old flat format and newer nested content format
+                    title = (item.get("title")
+                             or item.get("content", {}).get("title"))
+                    ts = item.get("providerPublishTime") or 0
+                    if not ts:
+                        pub_date = item.get("content", {}).get("pubDate", "")
+                        if pub_date:
+                            try:
+                                ts = int(datetime.datetime.fromisoformat(
+                                    pub_date.replace("Z", "+00:00")
+                                ).timestamp())
+                            except Exception:
+                                pass
+                    if not title:
+                        continue
+                    # Format relative time like FinViz: "Today, 8:58 AM"
+                    time_label = ""
+                    if ts:
+                        try:
+                            dt = datetime.datetime.fromtimestamp(ts)
+                            now = datetime.datetime.now()
+                            delta_days = (now.date() - dt.date()).days
+                            hour = dt.strftime("%I").lstrip("0") or "12"
+                            mins = dt.strftime("%M")
+                            ampm = dt.strftime("%p")
+                            if delta_days == 0:
+                                time_label = f"Today, {hour}:{mins} {ampm}"
+                            elif delta_days == 1:
+                                time_label = "Yesterday"
+                            elif delta_days < 7:
+                                time_label = f"{delta_days} days ago"
+                            else:
+                                time_label = dt.strftime("%b %-d")
+                        except Exception:
+                            pass
+                    news_headlines.append({"title": title, "when": time_label})
+                    if len(news_headlines) >= 3:
+                        break
         except Exception:
             pass
 
@@ -137,6 +225,7 @@ def get_fundamentals(symbol):
             "total_cash": info.get("totalCash"),
             "institution_pct": institution_pct,
             "recent_news_present": recent_news_present,
+            "news_headlines": news_headlines,
         }
 
     except Exception:
@@ -197,7 +286,7 @@ def prepare_dataframe(df):
 # ---------------------------------------------------
 def run_scan(mode="standard", premarket: bool = False):
 
-    tickers = get_finviz_tickers(premarket=premarket)
+    tickers, fv_relvol = get_finviz_tickers(premarket=premarket)
 
     results = []
     summary = {
@@ -227,6 +316,11 @@ def run_scan(mode="standard", premarket: bool = False):
                 return None
             df = prepare_dataframe(df)
             fundamentals = get_fundamentals(symbol)
+            # Inject FinViz's own Rel Volume so scorers use the accurate value
+            if fundamentals is None:
+                fundamentals = {}
+            if symbol in fv_relvol:
+                fundamentals["finviz_relvol"] = fv_relvol[symbol]
             return scorer(symbol, df, fundamentals=fundamentals)
         except Exception as e:
             print(f"Error scanning {symbol}: {e}")
