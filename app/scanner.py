@@ -83,55 +83,72 @@ def get_finviz_tickers(premarket: bool = False):
 
 def _parse_finviz_page(html: str):
     """
-    Parse one page of FinViz screener HTML (v=161).
-    Returns (tickers, relvol_dict) — relvol_dict may be empty if parsing fails.
-    """
-    tickers   = []
-    relvol    = {}
+    Parse one page of FinViz screener HTML.
+    Returns (tickers, relvol_dict) — relvol_dict may be empty if Rel Volume
+    column is not present in the current view.
 
+    Strategy:
+      1. PRIMARY — TS block (always present, always reliable for tickers).
+      2. SECONDARY — find the results table that actually contains stock data
+         rows (identified by having a numeric "No." cell in the first column)
+         and extract Rel Volume from it if the column exists.
+    """
+    tickers = []
+    relvol  = {}
+
+    # --- Step 1: tickers from TS block -----------------------------------
+    match = re.search(r"<!-- TS(.*?)TE -->", html, re.DOTALL)
+    if match:
+        for line in match.group(1).strip().split("\n"):
+            parts = line.strip().split("|")
+            if parts and parts[0].strip():
+                tickers.append(parts[0].strip())
+
+    if not tickers:
+        return tickers, relvol
+
+    # --- Step 2: Rel Volume from the results table -----------------------
+    # The real results table has rows whose first <td> is a row number ("1", "2", …)
+    # and whose <th> row includes "Ticker". Several UI tables on the page also
+    # have "Ticker" in their <th> cells (filter dropdowns etc.) — we skip those
+    # by requiring that at least one data row starts with a numeric cell.
     soup = BeautifulSoup(html, "html.parser")
 
-    # The screener results live in a table whose first header row contains "Ticker"
-    table = None
     for t in soup.find_all("table"):
         headers = [th.get_text(strip=True) for th in t.find_all("th")]
-        if "Ticker" in headers:
-            table = t
-            break
-
-    if table is None:
-        # Fallback: extract tickers only via TS block
-        match = re.search(r"<!-- TS(.*?)TE -->", html, re.DOTALL)
-        if match:
-            for line in match.group(1).strip().split("\n"):
-                parts = line.strip().split("|")
-                if parts and parts[0].strip():
-                    tickers.append(parts[0].strip())
-        return tickers, relvol
-
-    # Locate column indices from the header row
-    header_row  = table.find("tr")
-    all_headers = [th.get_text(strip=True) for th in header_row.find_all("th")]
-    ticker_idx  = next((i for i, h in enumerate(all_headers) if h == "Ticker"),  None)
-    rv_idx      = next((i for i, h in enumerate(all_headers)
-                        if h in ("Rel Volume", "Rel Vol")), None)
-
-    if ticker_idx is None:
-        return tickers, relvol
-
-    for row in table.find_all("tr")[1:]:        # skip header
-        cells = row.find_all("td")
-        if len(cells) <= ticker_idx:
+        if "Ticker" not in headers:
             continue
-        ticker = cells[ticker_idx].get_text(strip=True)
-        if not ticker:
+
+        # Verify this is a data table (first non-header row starts with a digit)
+        data_rows = t.find_all("tr")[1:]
+        is_results_table = False
+        for row in data_rows:
+            cells = row.find_all("td")
+            if cells and cells[0].get_text(strip=True).isdigit():
+                is_results_table = True
+                break
+        if not is_results_table:
             continue
-        tickers.append(ticker)
-        if rv_idx is not None and len(cells) > rv_idx:
+
+        ticker_idx = next((i for i, h in enumerate(headers) if h == "Ticker"), None)
+        rv_idx     = next((i for i, h in enumerate(headers)
+                           if h in ("Rel Volume", "Rel Vol")), None)
+
+        if ticker_idx is None or rv_idx is None:
+            break   # found the results table but no Rel Volume column
+
+        for row in data_rows:
+            cells = row.find_all("td")
+            if len(cells) <= max(ticker_idx, rv_idx):
+                continue
+            ticker = cells[ticker_idx].get_text(strip=True)
+            if not ticker or ticker not in tickers:
+                continue
             try:
                 relvol[ticker] = float(cells[rv_idx].get_text(strip=True))
             except (ValueError, AttributeError):
                 pass
+        break   # stop after the first valid results table
 
     return tickers, relvol
 
