@@ -493,6 +493,15 @@
                             </div>
 
                             <div>
+                                <strong>High Cash / Share:</strong>
+                                {% if stock.checklist.high_cash %}
+                                    <span class="good">✅ ${{ stock.checklist.cash_per_share }}/sh</span>
+                                {% else %}
+                                    <span style="color:#9ca3af;">{{ "$" + stock.checklist.cash_per_share|string + "/sh" if stock.checklist.cash_per_share else "N/A" }}</span>
+                                {% endif %}
+                            </div>
+
+                            <div>
                                 <strong>No News Catalyst:</strong>
                                 {% if stock.checklist.no_news_catalyst %}
                                     <span class="good">✅ Organic move</span>
@@ -819,6 +828,15 @@
                             {% endif %}
                         {% else %}
                             <span style="color:#9ca3af;">N/A</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>High Cash / Share:</strong>
+                        {% if stock.checklist.high_cash %}
+                            <span class="good">✅ ${{ stock.checklist.cash_per_share }}/sh</span>
+                        {% else %}
+                            <span style="color:#9ca3af;">{{ "$" + stock.checklist.cash_per_share|string + "/sh" if stock.checklist.cash_per_share else "N/A" }}</span>
                         {% endif %}
                     </div>
 
