@@ -184,6 +184,109 @@ def _parse_finviz_page(html: str):
 
 
 # ---------------------------------------------------
+# LIVE QUOTES FROM FINVIZ QUOTE PAGES
+# Pulls all available live metrics in a single request per ticker.
+# ---------------------------------------------------
+def get_finviz_quotes(tickers: list, max_workers: int = 5) -> dict:
+    """
+    Scrapes individual FinViz quote pages to get live metrics for each ticker.
+    Returns {symbol: dict} where each dict contains:
+        price, change_pct, rel_volume, volume,
+        shares_outstanding, float_shares, institution_pct
+    Only keys with non-None values are included.
+    """
+
+    def _parse_float(s):
+        if not s or s in ("-", "N/A", ""):
+            return None
+        try:
+            return float(s.replace(",", "").replace("%", "").strip())
+        except Exception:
+            return None
+
+    def _parse_shorthand(s):
+        """Convert FinViz shorthand like '2.45M', '150K', '1.2B' to int."""
+        if not s or s in ("-", "N/A", ""):
+            return None
+        s = s.strip()
+        for suffix, mult in (("B", 1_000_000_000), ("M", 1_000_000), ("K", 1_000)):
+            if s.upper().endswith(suffix):
+                try:
+                    return int(float(s[:-1]) * mult)
+                except Exception:
+                    return None
+        try:
+            return int(float(s.replace(",", "")))
+        except Exception:
+            return None
+
+    def _fetch_one(symbol):
+        url = f"https://finviz.com/quote.ashx?t={symbol}&p=d"
+        try:
+            resp = requests.get(url, headers=_FV_HEADERS, timeout=12)
+            if resp.status_code != 200:
+                return symbol, None
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Build label→value dict from alternating td cells across all tables
+            data = {}
+            for table in soup.find_all("table"):
+                cells = table.find_all("td")
+                for i in range(len(cells) - 1):
+                    label = cells[i].get_text(strip=True)
+                    value = cells[i + 1].get_text(strip=True)
+                    if label and value:
+                        data[label] = value
+
+            result = {}
+
+            price = _parse_float(data.get("Price"))
+            if price is not None:
+                result["price"] = price
+
+            # "Change" is like "+12.34%" — store as percentage (12.34)
+            change_pct = _parse_float(data.get("Change"))
+            if change_pct is not None:
+                result["change_pct"] = change_pct
+
+            rel_vol = _parse_float(data.get("Rel Volume"))
+            if rel_vol is not None:
+                result["rel_volume"] = rel_vol
+
+            volume = _parse_shorthand(data.get("Volume"))
+            if volume is not None:
+                result["volume"] = volume
+
+            shares = _parse_shorthand(data.get("Shs Outstand"))
+            if shares is not None:
+                result["shares_outstanding"] = shares
+
+            float_sh = _parse_shorthand(data.get("Shs Float"))
+            if float_sh is not None:
+                result["float_shares"] = float_sh
+
+            # "Inst Own" shown as "63.10%" — store as ratio (0.631)
+            inst_own = _parse_float(data.get("Inst Own"))
+            if inst_own is not None:
+                result["institution_pct"] = inst_own / 100
+
+            return symbol, result if result else None
+        except Exception as e:
+            print(f"FinViz quote fetch error for {symbol}: {e}")
+            return symbol, None
+
+    print(f"Fetching live quotes from FinViz for {len(tickers)} symbol(s)...")
+    quotes = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for sym, q in executor.map(_fetch_one, tickers):
+            if q:
+                quotes[sym] = q
+
+    print(f"Got FinViz quotes for {len(quotes)}/{len(tickers)} symbols")
+    return quotes
+
+
+# ---------------------------------------------------
 # FUNDAMENTALS (Numeric Values)
 # ---------------------------------------------------
 def get_fundamentals(symbol):
@@ -339,7 +442,10 @@ def prepare_dataframe(df):
 # ---------------------------------------------------
 def run_scan(mode="standard", premarket: bool = False):
 
-    tickers, fv_relvol = get_finviz_tickers(premarket=premarket)
+    tickers, _ = get_finviz_tickers(premarket=premarket)
+
+    # Fetch all live metrics from individual FinViz quote pages
+    live_quotes = get_finviz_quotes(tickers)
 
     results = []
     summary = {"total_scanned": 0, "qualified": 0}
@@ -405,8 +511,23 @@ def run_scan(mode="standard", premarket: bool = False):
         try:
             df = prepare_dataframe(dfs[symbol])
             fundamentals = fundamentals_map.get(symbol) or {}
-            if symbol in fv_relvol:
-                fundamentals["finviz_relvol"] = fv_relvol[symbol]
+            # Inject live FinViz values — these override yfinance-calculated metrics
+            if symbol in live_quotes:
+                q = live_quotes[symbol]
+                if q.get("rel_volume") is not None:
+                    fundamentals["finviz_relvol"] = q["rel_volume"]
+                if q.get("price") is not None:
+                    fundamentals["finviz_price"] = q["price"]
+                if q.get("change_pct") is not None:
+                    fundamentals["finviz_change_pct"] = q["change_pct"]
+                if q.get("volume") is not None:
+                    fundamentals["finviz_volume"] = q["volume"]
+                if q.get("shares_outstanding") is not None:
+                    fundamentals["shares_outstanding"] = q["shares_outstanding"]
+                if q.get("float_shares") is not None:
+                    fundamentals["float_shares"] = q["float_shares"]
+                if q.get("institution_pct") is not None:
+                    fundamentals["institution_pct"] = q["institution_pct"]
             result = scorer(symbol, df, fundamentals=fundamentals)
             if result:
                 results.append(result)

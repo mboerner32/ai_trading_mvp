@@ -26,9 +26,17 @@ def score_stock(symbol: str, df, fundamentals=None):
     return_5d = safe_float(latest.get("return_5d"))
     range_10d = safe_float(latest.get("range_10d"))
 
-    # Prefer FinViz's own Rel Volume (accurate, time-of-day adjusted)
-    if fundamentals and fundamentals.get("finviz_relvol"):
-        relative_volume = fundamentals["finviz_relvol"]
+    # Prefer live FinViz values over yfinance-calculated ones where available
+    if fundamentals:
+        if fundamentals.get("finviz_price") is not None:
+            price = fundamentals["finviz_price"]
+        if fundamentals.get("finviz_volume") is not None:
+            volume = float(fundamentals["finviz_volume"])
+        # FinViz change_pct is a percentage (12.34); convert to ratio (0.1234)
+        if fundamentals.get("finviz_change_pct") is not None:
+            daily_return = fundamentals["finviz_change_pct"] / 100
+        if fundamentals.get("finviz_relvol") is not None:
+            relative_volume = fundamentals["finviz_relvol"]
 
     # If price is missing, we cannot score
     if price is None:
@@ -233,9 +241,17 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
     daily_return   = safe_float(latest.get("daily_return"))
     range_10d      = safe_float(latest.get("range_10d"))
 
-    # Prefer FinViz's own Rel Volume (accurate, time-of-day adjusted)
-    if fundamentals and fundamentals.get("finviz_relvol"):
-        relative_volume = fundamentals["finviz_relvol"]
+    # Prefer live FinViz values over yfinance-calculated ones where available
+    if fundamentals:
+        if fundamentals.get("finviz_price") is not None:
+            price = fundamentals["finviz_price"]
+        if fundamentals.get("finviz_volume") is not None:
+            volume = float(fundamentals["finviz_volume"])
+        # FinViz change_pct is a percentage (12.34); convert to ratio (0.1234)
+        if fundamentals.get("finviz_change_pct") is not None:
+            daily_return = fundamentals["finviz_change_pct"] / 100
+        if fundamentals.get("finviz_relvol") is not None:
+            relative_volume = fundamentals["finviz_relvol"]
 
     if price is None:
         return None
