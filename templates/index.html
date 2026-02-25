@@ -727,6 +727,221 @@
                 </button>
             </form>
 
+            <!-- Score breakdown toggle -->
+            <button onclick="toggleMobileBreakdown('{{ stock.symbol }}')"
+                    style="width:100%; margin-top:8px; background:none; border:1px solid #e5e7eb;
+                           border-radius:8px; padding:10px; font-size:13px; color:#6b7280;
+                           cursor:pointer; text-align:center;">
+                ▼ Score Breakdown
+            </button>
+
+            <div id="mobile-breakdown-{{ stock.symbol }}"
+                 style="display:none; margin-top:10px; padding:14px;
+                        background:#f9fafb; border-radius:8px; font-size:13px;">
+
+                {% if mode == 'squeeze' %}
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Relative Volume:</strong>
+                        {% set rv = stock.checklist.relative_volume %}
+                        {% if rv and rv >= 50 %}
+                            <span class="good">✅ {{ rv }}x — Exceptional</span>
+                        {% elif rv and rv >= 25 %}
+                            <span class="good">✅ {{ rv }}x — Ideal</span>
+                        {% elif rv and rv >= 10 %}
+                            <span class="hold">{{ rv }}x — Minimum</span>
+                        {% else %}
+                            <span class="bad">❌ {{ rv }}x</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Shares Outstanding:</strong>
+                        {% set so = stock.checklist.shares_outstanding %}
+                        {% if so %}
+                            {% if so < 10000000 %}
+                                <span class="good">✅ {{ "{:,.0f}".format(so) }} — Ideal</span>
+                            {% elif so < 30000000 %}
+                                <span class="hold">{{ "{:,.0f}".format(so) }} — Acceptable</span>
+                            {% elif so < 100000000 %}
+                                <span style="color:#6b7280;">{{ "{:,.0f}".format(so) }} — Large</span>
+                            {% else %}
+                                <span class="bad">❌ {{ "{:,.0f}".format(so) }} — Avoid</span>
+                            {% endif %}
+                        {% else %}
+                            <span style="color:#9ca3af;">N/A</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Daily Gain:</strong>
+                        {% set dp = stock.daily_return_pct %}
+                        {% if dp is not none %}
+                            {% if 20 <= dp <= 40 %}
+                                <span class="good">✅ {{ dp }}% — Sweet Spot</span>
+                            {% elif dp > 40 %}
+                                <span class="hold">{{ dp }}% — Extended</span>
+                            {% else %}
+                                <span style="color:#6b7280;">{{ dp }}%</span>
+                            {% endif %}
+                        {% else %}
+                            <span style="color:#9ca3af;">N/A</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Barcoding / Consolidation:</strong>
+                        {% if stock.checklist.sideways_chop %}
+                            <span class="good">✅ Tight range</span>
+                        {% else %}
+                            <span class="bad">❌ No consolidation</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Yesterday Green:</strong>
+                        {% if stock.checklist.yesterday_green %}
+                            <span class="good">✅</span>
+                        {% else %}
+                            <span class="bad">❌</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Institutional Ownership:</strong>
+                        {% if stock.checklist.institution_pct is not none %}
+                            {% if stock.checklist.institution_pct >= 50 %}
+                                <span class="good">✅ {{ stock.checklist.institution_pct }}%</span>
+                            {% elif stock.checklist.institution_pct >= 20 %}
+                                <span class="hold">{{ stock.checklist.institution_pct }}%</span>
+                            {% else %}
+                                <span style="color:#6b7280;">{{ stock.checklist.institution_pct }}%</span>
+                            {% endif %}
+                        {% else %}
+                            <span style="color:#9ca3af;">N/A</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>No News Catalyst:</strong>
+                        {% if stock.checklist.no_news_catalyst %}
+                            <span class="good">✅ Organic move</span>
+                        {% else %}
+                            <span class="hold">⚠️ News present</span>
+                        {% endif %}
+                    </div>
+
+                {% else %}
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Relative Volume:</strong> {{ stock.checklist.relative_volume }}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Small Float:</strong>
+                        {% if stock.checklist.small_float %}
+                            <span class="good">✅ {{ "{:,.0f}".format(stock.checklist.shares_outstanding) }}</span>
+                        {% else %}
+                            <span class="bad">❌ {{ "{:,.0f}".format(stock.checklist.shares_outstanding) if stock.checklist.shares_outstanding else "N/A" }}</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>High Cash:</strong>
+                        {% if stock.checklist.high_cash %}
+                            <span class="good">✅ ${{ stock.checklist.cash_per_share }}/sh</span>
+                        {% else %}
+                            <span class="bad">❌ {{ "$" + stock.checklist.cash_per_share|string + "/sh" if stock.checklist.cash_per_share else "N/A" }}</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>5 Day Return:</strong> {{ stock.checklist.five_day_return_pct }}%
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Sideways Chop:</strong>
+                        {% if stock.checklist.sideways_chop %}
+                            <span class="good">✅</span>
+                        {% else %}
+                            <span class="bad">❌</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Yesterday Green:</strong>
+                        {% if stock.checklist.yesterday_green %}
+                            <span class="good">✅</span>
+                        {% else %}
+                            <span class="bad">❌</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Recent Decline:</strong>
+                        {% if stock.checklist.recent_decline %}
+                            <span class="bad">❌ Significant</span>
+                        {% else %}
+                            <span class="good">✅ Stable</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Institutional Ownership:</strong>
+                        {% if stock.checklist.institution_pct is not none %}
+                            {% if stock.checklist.institution_pct >= 50 %}
+                                <span class="good">✅ {{ stock.checklist.institution_pct }}%</span>
+                            {% elif stock.checklist.institution_pct >= 20 %}
+                                <span class="hold">{{ stock.checklist.institution_pct }}%</span>
+                            {% else %}
+                                <span class="bad">❌ {{ stock.checklist.institution_pct }}%</span>
+                            {% endif %}
+                        {% else %}
+                            <span style="color:#9ca3af;">N/A</span>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>No News Catalyst:</strong>
+                        {% if stock.checklist.no_news_catalyst %}
+                            <span class="good">✅ Organic move</span>
+                        {% else %}
+                            <span class="hold">⚠️ News present</span>
+                        {% endif %}
+                    </div>
+
+                {% endif %}
+
+                {% if stock.ai_rec.rationale %}
+                <div style="margin-top:8px; padding-top:8px; border-top:1px solid #e5e7eb;
+                            color:#4f46e5; font-size:13px;">
+                    <strong>AI Sizing:</strong> ${{ stock.ai_rec.amount }} — {{ stock.ai_rec.rationale }}
+                </div>
+                {% endif %}
+
+                {% if stock.ai_target.rationale %}
+                <div style="margin-top:4px; color:#0f766e; font-size:13px;">
+                    <strong>AI Target:</strong> {{ stock.ai_target.target_pct }}% — {{ stock.ai_target.rationale }}
+                </div>
+                {% endif %}
+
+                {% if stock.news_headlines %}
+                <div style="margin-top:10px; padding-top:10px; border-top:1px solid #e5e7eb;">
+                    <div style="font-size:11px; font-weight:600; color:#6b7280;
+                                text-transform:uppercase; letter-spacing:0.04em; margin-bottom:6px;">
+                        Recent News
+                    </div>
+                    {% for h in stock.news_headlines %}
+                    <div style="font-size:13px; color:#1f2937; margin-bottom:5px;">
+                        {% if h.when %}<span style="color:#9ca3af; font-size:11px;">{{ h.when }} </span>{% endif %}
+                        {{ h.title }}
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+            </div>
+
         </div>
         {% endfor %}
     </div>
@@ -738,11 +953,19 @@
 function toggleRow(symbol) {
     const row = document.getElementById("details-" + symbol);
     if (!row) return;
-
     row.style.display =
         row.style.display === "none" || row.style.display === ""
         ? "table-row"
         : "none";
+}
+
+function toggleMobileBreakdown(symbol) {
+    const panel = document.getElementById("mobile-breakdown-" + symbol);
+    const btn = panel && panel.previousElementSibling;
+    if (!panel) return;
+    const open = panel.style.display === "block";
+    panel.style.display = open ? "none" : "block";
+    if (btn) btn.textContent = open ? "▼ Score Breakdown" : "▲ Score Breakdown";
 }
 </script>
 
