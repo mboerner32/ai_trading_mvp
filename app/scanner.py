@@ -4,12 +4,42 @@ import requests
 import re
 import time
 import datetime
+import pytz
 import yfinance as yf
 import pandas as pd
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.scoring_engine import score_stock, score_stock_squeeze, DEFAULT_SQUEEZE_WEIGHTS
 from app.database import get_squeeze_weights
+
+
+def _tod_factor() -> float:
+    """
+    Returns the factor that projects partial-day volume to end-of-day,
+    matching FinViz's time-of-day-adjusted Rel Volume calculation.
+
+    Example: if 30% of the trading session has elapsed, the current
+    volume is ~30% of the final volume, so factor = 1 / 0.30 ≈ 3.33.
+    Returns 1.0 before market open or after close (volume is final).
+    """
+    et = pytz.timezone("America/New_York")
+    now = datetime.datetime.now(et)
+
+    # NYSE regular session: 9:30 AM – 4:00 PM ET, Mon–Fri
+    if now.weekday() >= 5:
+        return 1.0
+
+    market_open  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=16, minute=0,  second=0, microsecond=0)
+
+    if now <= market_open or now >= market_close:
+        return 1.0   # before open or after close — full-day volume already in
+
+    total_secs   = (market_close - market_open).total_seconds()   # 23,400 s
+    elapsed_secs = (now - market_open).total_seconds()
+    fraction     = elapsed_secs / total_secs
+
+    return 1.0 / fraction if fraction > 0 else 1.0
 
 
 # ---------------------------------------------------
@@ -290,10 +320,16 @@ def prepare_dataframe(df):
         / df["close"]
     )
 
-    # 63-day relative volume (FinViz accurate)
-    df["relative_volume"] = (
-        df["volume"] / df["volume"].rolling(63).mean()
-    )
+    # 63-day relative volume — time-of-day adjusted to match FinViz.
+    # FinViz projects today's partial volume to end-of-day before dividing
+    # by the 63-day average.  We apply the same factor to the latest bar only.
+    rolling_mean = df["volume"].rolling(63).mean()
+    df["relative_volume"] = df["volume"] / rolling_mean
+    factor = _tod_factor()
+    if factor != 1.0:
+        df.loc[df.index[-1], "relative_volume"] = (
+            df["volume"].iloc[-1] * factor / rolling_mean.iloc[-1]
+        )
 
     return df
 
