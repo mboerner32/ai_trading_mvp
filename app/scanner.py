@@ -306,10 +306,10 @@ def run_scan(mode="standard", premarket: bool = False):
     tickers, fv_relvol = get_finviz_tickers(premarket=premarket)
 
     results = []
-    summary = {
-        "total_scanned": 0,
-        "qualified": 0
-    }
+    summary = {"total_scanned": 0, "qualified": 0}
+
+    if not tickers:
+        return {"results": results, "summary": summary}
 
     if mode == "squeeze":
         weights_data = get_squeeze_weights()
@@ -320,41 +320,64 @@ def run_scan(mode="standard", premarket: bool = False):
     else:
         scorer = score_stock
 
-    def _scan_one(symbol):
+    # --- Step 1: batch-download all symbols in a single call ----------------
+    # Calling yf.download() concurrently from multiple threads corrupts its
+    # internal state in yfinance 1.x — all threads end up with the same data.
+    # One batch call is safe and also faster (single HTTP round-trip).
+    print(f"Downloading price data for {len(tickers)} symbol(s)...")
+    try:
+        raw = yf.download(
+            tickers if len(tickers) > 1 else tickers[0],
+            period="6mo",
+            interval="1d",
+            progress=False,
+            auto_adjust=False,
+            group_by="ticker",
+        )
+    except Exception as e:
+        print(f"Batch download failed: {e}")
+        return {"results": results, "summary": summary}
+
+    # Extract a clean per-symbol DataFrame from the batch result
+    dfs = {}
+    if len(tickers) == 1:
+        if not raw.empty:
+            dfs[tickers[0]] = raw.copy()
+    else:
+        for sym in tickers:
+            try:
+                sym_df = raw[sym].copy()
+                if not sym_df.empty:
+                    dfs[sym] = sym_df
+            except Exception:
+                pass
+
+    # --- Step 2: fetch fundamentals in parallel (yfinance Ticker.info, safe) -
+    def _fetch_fund(symbol):
+        return symbol, get_fundamentals(symbol)
+
+    fundamentals_map = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        for sym, fund in executor.map(_fetch_fund, tickers):
+            fundamentals_map[sym] = fund
+
+    # --- Step 3: score each symbol sequentially (pure CPU, no I/O) ----------
+    for symbol in tickers:
+        summary["total_scanned"] += 1
+        if symbol not in dfs:
+            continue
         try:
-            df = yf.download(
-                symbol,
-                period="6mo",
-                interval="1d",
-                progress=False,
-                auto_adjust=False
-            )
-            if df.empty:
-                return None
-            df = prepare_dataframe(df)
-            fundamentals = get_fundamentals(symbol)
-            # Inject FinViz's own Rel Volume so scorers use the accurate value
-            if fundamentals is None:
-                fundamentals = {}
+            df = prepare_dataframe(dfs[symbol])
+            fundamentals = fundamentals_map.get(symbol) or {}
             if symbol in fv_relvol:
                 fundamentals["finviz_relvol"] = fv_relvol[symbol]
-            return scorer(symbol, df, fundamentals=fundamentals)
-        except Exception as e:
-            print(f"Error scanning {symbol}: {e}")
-            return None
-
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(_scan_one, sym): sym for sym in tickers}
-        for future in as_completed(futures):
-            summary["total_scanned"] += 1
-            result = future.result()
+            result = scorer(symbol, df, fundamentals=fundamentals)
             if result:
                 results.append(result)
                 summary["qualified"] += 1
+        except Exception as e:
+            print(f"Error scanning {symbol}: {e}")
 
     results = sorted(results, key=lambda x: x["score"], reverse=True)
 
-    return {
-        "results": results,
-        "summary": summary
-    }
+    return {"results": results, "summary": summary}
