@@ -319,6 +319,8 @@ def analytics(request: Request):
     if "user" not in request.session:
         return RedirectResponse("/login")
 
+    hypothesis_data = get_hypothesis()
+
     return templates.TemplateResponse(
         "analytics.html",
         {
@@ -331,6 +333,8 @@ def analytics(request: Request):
             "historical_count": get_historical_count(),
             "backfill_status": get_backfill_status(),
             "user": request.session["user"],
+            "complex_ai_weights": get_squeeze_weights(),
+            "hypothesis": hypothesis_data,
         }
     )
 
@@ -483,6 +487,8 @@ def optimize_weights(request: Request):
             "user": request.session["user"],
             "weight_analysis": analysis,
             "opt_data": opt_data,
+            "complex_ai_weights": get_squeeze_weights(),
+            "hypothesis": get_hypothesis(),
         }
     )
 
@@ -704,6 +710,7 @@ def optimize_complex(request: Request):
             "user": request.session["user"],
             "complex_ai_result": opt_result,
             "complex_ai_weights": get_squeeze_weights(),
+            "hypothesis": hypothesis_data,
         }
     )
 

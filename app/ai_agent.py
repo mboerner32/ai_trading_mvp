@@ -490,8 +490,11 @@ def optimize_complex_ai_weights(
     hypothesis: str = None,
 ) -> dict:
     """
-    Analyzes backtesting signal performance + trader feedback to produce
+    Analyzes backtesting signal performance + synthesized hypothesis to produce
     AI-optimized scoring weights for Complex + AI Mode.
+
+    The hypothesis (from synthesize_combined_hypothesis) is the PRIMARY driver:
+    weight changes should reflect patterns the hypothesis identified as predictive.
 
     Returns:
         {
@@ -505,11 +508,12 @@ def optimize_complex_ai_weights(
     import json
 
     REQUIRED_KEYS = [
-        "rel_vol_50x", "rel_vol_25x", "rel_vol_10x",
+        "rel_vol_50x", "rel_vol_25x", "rel_vol_10x", "rel_vol_5x",
         "daily_sweet_20_40", "daily_ok_10_20", "daily_ok_40_100",
         "sideways_chop", "yesterday_green",
-        "shares_lt10m", "shares_lt30m", "shares_gte100m_penalty",
-        "no_news_bonus",
+        "shares_lt10m", "shares_lt30m", "shares_lt100m",
+        "no_news_bonus", "high_cash_bonus",
+        "institution_moderate", "institution_strong",
     ]
 
     # ---- Format backtest section ----
@@ -529,7 +533,7 @@ def optimize_complex_ai_weights(
         dg = opt_data["daily_gain"]
         so = opt_data["shares_outstanding"]
 
-        backtest_section = f"""BACKTESTED SIGNAL PERFORMANCE ({opt_data['total_trades']} trades with known next-day returns):
+        backtest_section = f"""BACKTESTED SIGNAL PERFORMANCE ({opt_data['total_trades']} trades):
 Goal: predict which setups will spike 20%+ the next day.
 
 Relative Volume:
@@ -538,7 +542,7 @@ Relative Volume:
 - 10-25x:  {fmt(rv.get("10-25x"))}
 - <10x:    {fmt(rv.get("<10x"))}
 
-Daily Gain (today's move):
+Daily Gain:
 - 20-40%:  {fmt(dg.get("20-40%"))}
 - 10-20%:  {fmt(dg.get("10-20%"))}
 - 40-100%: {fmt(dg.get("40-100%"))}
@@ -553,12 +557,24 @@ Shares Outstanding:
     else:
         backtest_section = (
             "BACKTESTED SIGNAL PERFORMANCE: Insufficient data "
-            "(<5 trades with known outcomes). Base adjustments on feedback patterns."
+            "(<5 trades with known outcomes). Base adjustments on hypothesis patterns."
         )
 
-    # ---- Format feedback/hypothesis section ----
+    # ---- Format hypothesis / feedback section ----
     if hypothesis:
-        feedback_section = f"TRADER FEEDBACK & HYPOTHESES:\n{hypothesis[:800]}"
+        # Pull out Agent Context block for a compact summary if present
+        if "## Agent Context" in hypothesis:
+            agent_ctx = hypothesis.split("## Agent Context")[1].strip()[:500]
+            feedback_section = (
+                f"SYNTHESIZED HYPOTHESIS (PRIMARY — use this to drive weight changes):\n"
+                f"{hypothesis[:1000]}\n\n"
+                f"AGENT CONTEXT SUMMARY:\n{agent_ctx}"
+            )
+        else:
+            feedback_section = (
+                f"SYNTHESIZED HYPOTHESIS (PRIMARY — use this to drive weight changes):\n"
+                f"{hypothesis[:1400]}"
+            )
     elif all_feedback:
         lines = ""
         for fb in all_feedback[-6:]:
@@ -569,24 +585,36 @@ Shares Outstanding:
     else:
         feedback_section = "TRADER FEEDBACK: None submitted yet."
 
-    prompt = f"""You are optimizing the scoring weights for a Complex + AI stock scanner targeting short-squeeze momentum setups in low-float microcaps.
+    # Show current weights for context (only the required keys)
+    current_display = {k: current_weights.get(k, 0) for k in REQUIRED_KEYS}
 
-## Current Active Weights
-{json.dumps(current_weights, indent=2)}
+    prompt = f"""You are optimizing scoring weights for a Complex + AI stock scanner targeting short-squeeze momentum setups in low-float microcaps.
 
-Weight definitions:
-- rel_vol_50x:            points awarded when relative volume >= 50x
-- rel_vol_25x:            points awarded when relative volume >= 25x (exclusive)
-- rel_vol_10x:            points awarded when relative volume >= 10x (exclusive)
-- daily_sweet_20_40:      points for daily gain 20-40% (momentum sweet spot)
-- daily_ok_10_20:         points for daily gain 10-20% (early stage)
-- daily_ok_40_100:        points for daily gain 40-100% (extended but not blown off)
-- sideways_chop:          points for 10-day price range < 20% (tight consolidation)
-- yesterday_green:        points when previous trading day closed positive
-- shares_lt10m:           points when shares outstanding < 10M (ideal float)
-- shares_lt30m:           points when shares outstanding 10-30M (acceptable float)
-- shares_gte100m_penalty: points DEDUCTED when shares >= 100M (too diluted to squeeze)
-- no_news_bonus:          points awarded when no news catalyst detected (organic move preferred)
+## Current Active Weights (integer scale 0–50; the scorer normalises output to 0–100 automatically)
+{json.dumps(current_display, indent=2)}
+
+Weight definitions — tiered signals (only the highest matching tier scores per signal):
+Relative Volume tiers:
+  rel_vol_50x:   pts when rel vol >= 50x (current default: 30)
+  rel_vol_25x:   pts when rel vol >= 25x (current default: 22)
+  rel_vol_10x:   pts when rel vol >= 10x (current default: 15)
+  rel_vol_5x:    pts when rel vol >=  5x (current default: 7)
+Daily Gain tiers:
+  daily_sweet_20_40: pts for gain 20–40% sweet spot (default: 10)
+  daily_ok_10_20:    pts for gain 10–20%            (default: 5)
+  daily_ok_40_100:   pts for gain 40–100%           (default: 5)
+Consolidation / trend:
+  sideways_chop:   pts for 10-day range < 20% tight compression (default: 8)
+  yesterday_green: pts when prior day closed positive            (default: 7)
+Float / share count tiers:
+  shares_lt10m:  pts when shares < 10M  (default: 30)
+  shares_lt30m:  pts when shares 10–30M (default: 18)
+  shares_lt100m: pts when shares 30–100M (default: 8)
+Nice-to-have bonuses:
+  no_news_bonus:        pts when no news catalyst (organic move, default: 5)
+  high_cash_bonus:      pts when cash/share > price (default: 5)
+  institution_moderate: pts when institutional ownership >= 20% (default: 3)
+  institution_strong:   pts when institutional ownership >= 50% (default: 5)
 
 ## Evidence
 {backtest_section}
@@ -594,26 +622,33 @@ Weight definitions:
 {feedback_section}
 
 ## Task
-The goal is to predict which setups will spike 20%+ the next day (our take-profit target).
-Produce optimal integer weights (0-5 each) to maximize the "hit 20%+ target" rate for top-scored stocks.
-- Upweight signals where "hit 20%+ target" rate is highest — these are the true predictors
-- Zero-out or downweight signals that do not correlate with 20%+ next-day spikes
-- The penalty weight should reflect how strongly large floats suppress 20%+ moves
-- Upweight signals where "hit 20%+ target" rate is highest AND avg days-to-target is lowest (fast hits = best signal)
-- Also suggest 3-5 new criteria to track that could further improve 20%+ spike prediction speed and reliability (e.g. catalyst type, time of day, sector, gap size, prior-day volume trend)
+The goal is to predict which setups will spike 20%+ the next day (take-profit target).
+
+IMPORTANT: If a synthesized hypothesis is provided above, treat it as the PRIMARY driver:
+- Increase weights for signals the hypothesis identifies as strong 20%+ predictors
+- Decrease weights for signals the hypothesis identifies as weak or unreliable
+- Suggestions should include new metrics explicitly mentioned in the hypothesis
+
+Constraints:
+- All weights must be integers 0–50
+- Tier ordering must be preserved: rel_vol_50x >= rel_vol_25x >= rel_vol_10x >= rel_vol_5x
+- Tier ordering must be preserved: shares_lt10m >= shares_lt30m >= shares_lt100m
+- Upweight signals where hit-20%+ rate is highest AND avg-days-to-target is lowest
+
+Also suggest 3–5 new scoring criteria/metrics to add (drawn from hypothesis patterns or backtest gaps).
 
 Respond in EXACTLY this format with no other text:
 
 WEIGHTS_JSON:
-{{"rel_vol_50x": 0, "rel_vol_25x": 0, "rel_vol_10x": 0, "daily_sweet_20_40": 0, "daily_ok_10_20": 0, "daily_ok_40_100": 0, "sideways_chop": 0, "yesterday_green": 0, "shares_lt10m": 0, "shares_lt30m": 0, "shares_gte100m_penalty": 0, "no_news_bonus": 0}}
+{{"rel_vol_50x": 0, "rel_vol_25x": 0, "rel_vol_10x": 0, "rel_vol_5x": 0, "daily_sweet_20_40": 0, "daily_ok_10_20": 0, "daily_ok_40_100": 0, "sideways_chop": 0, "yesterday_green": 0, "shares_lt10m": 0, "shares_lt30m": 0, "shares_lt100m": 0, "no_news_bonus": 0, "high_cash_bonus": 0, "institution_moderate": 0, "institution_strong": 0}}
 
 RATIONALE:
-[2-3 sentences explaining the key weight changes and why]
+[2-3 sentences explaining key weight changes — explicitly reference which hypothesis patterns drove them]
 
 SUGGESTIONS:
-- [new signal idea 1]
-- [new signal idea 2]
-- [new signal idea 3]
+- [new scoring signal/metric idea 1]
+- [new scoring signal/metric idea 2]
+- [new scoring signal/metric idea 3]
 
 SUMMARY:
 [one sentence, max 20 words, for dashboard display]"""
@@ -621,7 +656,7 @@ SUMMARY:
     try:
         message = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=700,
+            max_tokens=800,
             messages=[{"role": "user", "content": prompt}]
         )
         text = message.content[0].text.strip()
@@ -632,9 +667,16 @@ SUMMARY:
         json_part = text.split("WEIGHTS_JSON:")[1].split("RATIONALE:")[0].strip()
         new_weights = json.loads(json_part)
 
-        # Validate and clamp all required keys to int 0-5
+        # Validate and clamp all required keys to int 0-50
         for key in REQUIRED_KEYS:
-            new_weights[key] = max(0, min(5, int(new_weights.get(key, current_weights.get(key, 1)))))
+            new_weights[key] = max(0, min(50, int(new_weights.get(key, current_weights.get(key, 5)))))
+
+        # Enforce tier ordering constraints
+        new_weights["rel_vol_25x"]  = min(new_weights["rel_vol_25x"],  new_weights["rel_vol_50x"])
+        new_weights["rel_vol_10x"]  = min(new_weights["rel_vol_10x"],  new_weights["rel_vol_25x"])
+        new_weights["rel_vol_5x"]   = min(new_weights["rel_vol_5x"],   new_weights["rel_vol_10x"])
+        new_weights["shares_lt30m"] = min(new_weights["shares_lt30m"], new_weights["shares_lt10m"])
+        new_weights["shares_lt100m"]= min(new_weights["shares_lt100m"],new_weights["shares_lt30m"])
 
         # Parse RATIONALE
         rationale = ""

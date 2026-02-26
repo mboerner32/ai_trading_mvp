@@ -271,6 +271,37 @@
         </tbody>
     </table>
 
+    <!-- CURRENT HYPOTHESIS -->
+    <div class="section-title" style="color:#7c3aed;">Current AI Hypothesis</div>
+
+    <div class="chart-card" style="margin-bottom:40px; border-left:4px solid #7c3aed;">
+        <p style="color:#6b7280; font-size:14px; margin-top:0; margin-bottom:16px;">
+            The synthesized hypothesis below is the <strong>primary driver</strong> of scoring
+            weight adjustments. When you run the optimizer, it reads this hypothesis and translates
+            the identified patterns into concrete weight changes and new metric suggestions.
+            Generate or update it on the <a href="/feedback" style="color:#7c3aed;">Feedback page</a>.
+        </p>
+
+        {% if hypothesis %}
+        <div style="margin-bottom:10px; font-size:12px; color:#9ca3af;">
+            Generated {{ hypothesis.updated_at[:10] }} &nbsp;·&nbsp;
+            {{ hypothesis.source_count }} source{{ 's' if hypothesis.source_count != 1 else '' }}
+        </div>
+        <div style="background:#faf5ff; border:1px solid #e9d5ff; border-radius:8px;
+                    padding:16px 18px; font-size:13px; line-height:1.7;
+                    white-space:pre-wrap; max-height:420px; overflow-y:auto;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+            {{ hypothesis.content }}
+        </div>
+        {% else %}
+        <p style="color:#6b7280; font-size:14px;">
+            No hypothesis generated yet. Submit winning trades on the
+            <a href="/feedback" style="color:#7c3aed;">Feedback page</a>
+            and click "Sync All Sources" to generate one.
+        </p>
+        {% endif %}
+    </div>
+
     <!-- COMPLEX + AI MODE LIVE OPTIMIZER -->
     <div class="section-title" style="color: #0f766e;">Complex + AI Mode — Live Weight Optimizer</div>
 
@@ -292,12 +323,13 @@
             </div>
 
             <!-- Weight grid -->
-            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr));
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(210px,1fr));
                         gap:6px 20px; font-size:13px; margin-bottom:12px;">
                 {% set w = complex_ai_weights.weights %}
                 <div><strong>Rel. Vol ≥50x:</strong> {{ w.rel_vol_50x }}</div>
                 <div><strong>Rel. Vol ≥25x:</strong> {{ w.rel_vol_25x }}</div>
                 <div><strong>Rel. Vol ≥10x:</strong> {{ w.rel_vol_10x }}</div>
+                <div><strong>Rel. Vol ≥5x:</strong> {{ w.rel_vol_5x }}</div>
                 <div><strong>Daily 20–40% (sweet spot):</strong> {{ w.daily_sweet_20_40 }}</div>
                 <div><strong>Daily 10–20%:</strong> {{ w.daily_ok_10_20 }}</div>
                 <div><strong>Daily 40–100%:</strong> {{ w.daily_ok_40_100 }}</div>
@@ -305,7 +337,11 @@
                 <div><strong>Yesterday Green:</strong> {{ w.yesterday_green }}</div>
                 <div><strong>Shares &lt;10M:</strong> {{ w.shares_lt10m }}</div>
                 <div><strong>Shares 10–30M:</strong> {{ w.shares_lt30m }}</div>
-                <div><strong>Shares ≥100M penalty:</strong> −{{ w.shares_gte100m_penalty }}</div>
+                <div><strong>Shares 30–100M:</strong> {{ w.shares_lt100m }}</div>
+                <div><strong>No News (organic):</strong> {{ w.no_news_bonus }}</div>
+                <div><strong>High Cash/Share:</strong> {{ w.high_cash_bonus }}</div>
+                <div><strong>Institution ≥20%:</strong> {{ w.institution_moderate }}</div>
+                <div><strong>Institution ≥50%:</strong> {{ w.institution_strong }}</div>
             </div>
 
             {% if complex_ai_weights.rationale %}
