@@ -166,9 +166,17 @@ def create_user(username: str, password: str):
 
 
 def seed_users():
-    """Ensure default users exist — safe to call on every startup."""
-    create_user("admin", "admin123")
-    create_user("BobbyAxelrod", "Billions")
+    """Ensure default users exist and passwords are current — safe to call on every startup."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    for username, password in [("admin", "Billions1!"), ("BobbyAxelrod", "Billions")]:
+        hashed = pwd_context.hash(password)
+        cursor.execute("""
+            INSERT INTO users (username, hashed_password) VALUES (?, ?)
+            ON CONFLICT(username) DO UPDATE SET hashed_password = excluded.hashed_password
+        """, (username, hashed))
+    conn.commit()
+    conn.close()
 
 
 def authenticate_user(username: str, password: str):
