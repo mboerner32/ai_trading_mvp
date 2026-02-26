@@ -193,6 +193,18 @@ def authenticate_user(username: str, password: str):
     return pwd_context.verify(password, row[0])
 
 
+def update_password(username: str, new_password: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    hashed = pwd_context.hash(new_password)
+    cursor.execute(
+        "UPDATE users SET hashed_password = ? WHERE username = ?",
+        (hashed, username)
+    )
+    conn.commit()
+    conn.close()
+
+
 # ---------------- HOLDING PERFORMANCE ----------------
 def get_holding_performance():
     conn = sqlite3.connect(DB_NAME)

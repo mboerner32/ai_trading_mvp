@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>My Account – Reno Robs Trading</title>
+    <link rel="icon" type="image/png" href="/static/logo.png">
+
+    <style>
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial;
+            background-color: #f7f9fc;
+            color: #1f2937;
+        }
+
+        .navbar {
+            background: white;
+            padding: 18px 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+
+        .navbar h2 { margin: 0; font-weight: 600; }
+
+        .nav-links a {
+            margin-left: 20px;
+            text-decoration: none;
+            font-weight: 500;
+            color: #4f46e5;
+        }
+
+        .logout { color: #dc2626; }
+
+        .container {
+            padding: 40px;
+            max-width: 560px;
+            margin: auto;
+        }
+
+        .card {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.05);
+            padding: 32px;
+            margin-bottom: 24px;
+        }
+
+        .card h3 {
+            margin: 0 0 20px;
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 5px;
+        }
+
+        input[type="password"] {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 7px;
+            font-size: 14px;
+            box-sizing: border-box;
+            margin-bottom: 16px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        input[type="password"]:focus {
+            border-color: #4f46e5;
+        }
+
+        button[type="submit"] {
+            background: #4f46e5;
+            color: white;
+            border: none;
+            padding: 10px 24px;
+            border-radius: 7px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+        }
+
+        button[type="submit"]:hover {
+            background: #4338ca;
+        }
+
+        .alert {
+            padding: 12px 16px;
+            border-radius: 7px;
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+
+        .alert-error {
+            background: #fef2f2;
+            border: 1px solid #fca5a5;
+            color: #b91c1c;
+        }
+
+        .alert-success {
+            background: #f0fdf4;
+            border: 1px solid #86efac;
+            color: #166534;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #f3f4f6;
+            font-size: 14px;
+        }
+
+        .info-row:last-child { border-bottom: none; }
+
+        .info-label { color: #6b7280; font-weight: 500; }
+        .info-value { font-weight: 600; }
+
+        @media (max-width: 640px) {
+            .navbar { padding: 10px 14px; flex-wrap: wrap; gap: 6px; }
+            .navbar h2 { font-size: 14px; }
+            .nav-user { display: none; }
+            .nav-links { display: flex; flex-wrap: wrap; gap: 4px; width: 100%; }
+            .nav-links a { margin-left: 0; padding: 5px 10px; font-size: 12px;
+                           background: #f3f4f6; border-radius: 5px; }
+            .nav-links .logout { background: #fee2e2; }
+            .container { padding: 14px; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="navbar">
+    <div style="display:flex; align-items:center; gap:12px;">
+        <img src="/static/logo.png" alt="Logo" style="height:44px; width:auto; border-radius:6px;">
+        <h2 style="margin:0;">Reno Robs Trading</h2>
+    </div>
+
+    <div class="nav-links">
+        <span class="nav-user" style="margin-right:20px; color:#6b7280;">
+            Logged in as {{ user }}
+        </span>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/analytics">Analytics</a>
+        <a href="/feedback">Feedback</a>
+        <a href="/validation">Validation</a>
+        <a href="/account" style="color:#1f2937; font-weight:700;">Account</a>
+        <a href="/logout" class="logout">Logout</a>
+    </div>
+</div>
+
+<div class="container">
+
+    <h2 style="margin-bottom:24px;">My Account</h2>
+
+    <!-- Account Info -->
+    <div class="card">
+        <h3>Account Details</h3>
+        <div class="info-row">
+            <span class="info-label">Username</span>
+            <span class="info-value">{{ user }}</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">Role</span>
+            <span class="info-value">{{ "Admin" if user == "admin" else "Trader" }}</span>
+        </div>
+    </div>
+
+    <!-- Change Password -->
+    <div class="card">
+        <h3>Change Password</h3>
+
+        {% if error %}
+        <div class="alert alert-error">{{ error }}</div>
+        {% endif %}
+
+        {% if success %}
+        <div class="alert alert-success">{{ success }}</div>
+        {% endif %}
+
+        <form method="post" action="/account/change-password">
+            <label for="current_password">Current Password</label>
+            <input type="password" id="current_password" name="current_password"
+                   placeholder="Enter current password" required>
+
+            <label for="new_password">New Password</label>
+            <input type="password" id="new_password" name="new_password"
+                   placeholder="At least 8 characters" required minlength="8">
+
+            <label for="confirm_password">Confirm New Password</label>
+            <input type="password" id="confirm_password" name="confirm_password"
+                   placeholder="Repeat new password" required minlength="8">
+
+            <button type="submit">Update Password</button>
+        </form>
+    </div>
+
+</div>
+</body>
+</html>

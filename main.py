@@ -54,6 +54,7 @@ from app.database import (
     get_all_feedback,
     save_hypothesis,
     get_hypothesis,
+    update_password,
     save_squeeze_weights,
     get_squeeze_weights,
     save_scan_cache,
@@ -845,6 +846,58 @@ def validation_run_now(request: Request, background_tasks: BackgroundTasks):
         return RedirectResponse("/login", status_code=303)
     background_tasks.add_task(_run_validation)
     return RedirectResponse("/validation?running=1", status_code=303)
+
+
+# ---------------- ACCOUNT ----------------
+@app.get("/account", response_class=HTMLResponse)
+def account_page(request: Request):
+    if "user" not in request.session:
+        return RedirectResponse("/login")
+    return templates.TemplateResponse(
+        "account.html",
+        {"request": request, "user": request.session["user"]}
+    )
+
+
+@app.post("/account/change-password", response_class=HTMLResponse)
+def change_password(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+):
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+
+    username = request.session["user"]
+
+    if not authenticate_user(username, current_password):
+        return templates.TemplateResponse(
+            "account.html",
+            {"request": request, "user": username,
+             "error": "Current password is incorrect."}
+        )
+
+    if new_password != confirm_password:
+        return templates.TemplateResponse(
+            "account.html",
+            {"request": request, "user": username,
+             "error": "New passwords do not match."}
+        )
+
+    if len(new_password) < 8:
+        return templates.TemplateResponse(
+            "account.html",
+            {"request": request, "user": username,
+             "error": "New password must be at least 8 characters."}
+        )
+
+    update_password(username, new_password)
+    return templates.TemplateResponse(
+        "account.html",
+        {"request": request, "user": username,
+         "success": "Password updated successfully."}
+    )
 
 
 # ---------------- LOGOUT ----------------
