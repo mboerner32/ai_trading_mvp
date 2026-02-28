@@ -324,6 +324,7 @@
                 <th class="hide-mobile">Price</th>
                 <th class="hide-mobile">Pos. Size</th>
                 <th>AI Target</th>
+                <th>AI Call</th>
                 <th>Action</th>
             </tr>
         </thead>
@@ -354,6 +355,18 @@
                         {{ stock.ai_target.target_pct }}%
                     {% else %}
                         <span style="color:#d1d5db;">—</span>
+                    {% endif %}
+                </td>
+                <td style="text-align:center;">
+                    {% if stock.ai_trade_call %}
+                        {% if stock.ai_trade_call.decision == 'TRADE' %}
+                            <span class="good" style="font-size:11px; padding:2px 8px; border-radius:4px; font-weight:600;">TRADE</span>
+                        {% else %}
+                            <span class="bad" style="font-size:11px; padding:2px 8px; border-radius:4px; font-weight:600;">NO TRADE</span>
+                        {% endif %}
+                        <div style="font-size:10px; color:#9ca3af; margin-top:2px;">{{ stock.ai_trade_call.confidence }}</div>
+                    {% else %}
+                        <span style="font-size:10px; color:#d1d5db;">—</span>
                     {% endif %}
                 </td>
                 <td onclick="event.stopPropagation()">
@@ -403,7 +416,7 @@
 
             <!-- Expand Row -->
             <tr id="details-{{ stock.symbol }}" class="details">
-                <td colspan="7">
+                <td colspan="8">
                     <div class="details-content">
                         <div class="section-title">Checklist Breakdown</div>
 
@@ -607,6 +620,16 @@
                             <div style="grid-column: 1 / -1; margin-top:4px; color:#0f766e; font-size:13px;">
                                 <strong>AI Target:</strong>
                                 {{ stock.ai_target.target_pct }}% — {{ stock.ai_target.rationale }}
+                            </div>
+                            {% endif %}
+
+                            {% if stock.ai_trade_call and stock.ai_trade_call.rationale %}
+                            <div style="grid-column: 1 / -1; margin-top:4px; font-size:13px;">
+                                <strong>AI Call:</strong>
+                                <span style="color:{{ '#0f766e' if stock.ai_trade_call.decision == 'TRADE' else '#dc2626' }}; font-weight:600;">
+                                    {{ stock.ai_trade_call.decision }} ({{ stock.ai_trade_call.confidence }})
+                                </span>
+                                — {{ stock.ai_trade_call.rationale }}
                             </div>
                             {% endif %}
 

@@ -187,6 +187,94 @@ RATIONALE: <one sentence, 15 words or less>"""
         return {"target_pct": 20, "rationale": ""}
 
 
+def recommend_trade(stock: dict, hypothesis: str = None,
+                    sizing_stats: dict = None,
+                    ticker_history: list = None) -> dict:
+    """
+    Makes TRADE/NO_TRADE call using all four context sources:
+    hypothesis, market context (day-of-week), ticker history, historical calibration.
+    Returns {"decision": "TRADE"|"NO_TRADE", "confidence": "HIGH"|"MEDIUM"|"LOW", "rationale": str}
+    Falls back to {"decision": "NO_TRADE", "confidence": "LOW", "rationale": ""} on error.
+    """
+    checklist = stock.get("checklist", {})
+    shares_outstanding = checklist.get("shares_outstanding")
+    shares_str = f"{shares_outstanding:,}" if shares_outstanding else "N/A"
+
+    # Context 1: historical calibration
+    calibration_section = ""
+    if sizing_stats and sizing_stats.get("total", 0) >= 10:
+        lines = [f"\nHistorical calibration ({sizing_stats['total']} labeled scans):"]
+        for label, key in [("Score", "by_score"), ("Rel Vol", "by_relvol"),
+                           ("Float", "by_float"), ("Daily gain", "by_gain")]:
+            buckets = sizing_stats.get(key, {})
+            if buckets:
+                parts = [f"{bkt}→{s['win_rate']}%hit20pct/{s['avg_return']:+.1f}%avg({s['count']})"
+                         for bkt, s in buckets.items()]
+                lines.append(f"  {label}: {' | '.join(parts)}")
+        calibration_section = "\n".join(lines)
+
+    # Context 2: hypothesis patterns
+    hypothesis_section = ""
+    if hypothesis:
+        hypothesis_section = f"\nLearned patterns:\n{hypothesis[:400].strip()}"
+
+    # Context 3: recent scan history for this ticker
+    history_section = ""
+    if ticker_history:
+        lines = ["\nPrior scans for this ticker (most recent first):"]
+        for h in ticker_history[:3]:
+            nd = f" → next_day: {h['next_day']:+.1f}%" if h.get("next_day") else ""
+            relvol = h.get("relvol") or 0
+            lines.append(f"  {h['timestamp']}: score={h['score']}, relvol={relvol:.1f}x{nd}")
+        history_section = "\n".join(lines)
+
+    # Context 4: market context (day of week)
+    day_name = datetime.now().strftime("%A")
+    market_section = f"\nMarket context: Today is {day_name}."
+
+    prompt = f"""You are a momentum trading AI making a TRADE or NO_TRADE call for a low-float microcap.
+Strategy: buy stocks showing unusual volume compression setups targeting 20%+ next-day spike.
+
+Stock: {stock['symbol']} | Score: {stock['score']}/100 | Price: ${stock['price']}
+Signals:
+- Relative Volume: {checklist.get('relative_volume')}x
+- Shares Outstanding: {shares_str}
+- Daily gain today: {stock.get('daily_return_pct', 'N/A')}%
+- Sideways Compression: {checklist.get('sideways_chop')}
+- Yesterday Green: {checklist.get('yesterday_green')}
+- Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'}{calibration_section}{hypothesis_section}{history_section}{market_section}
+
+Make a TRADE or NO_TRADE call. Does this setup match learned patterns? Is the score/signal quality sufficient?
+
+Respond EXACTLY (no other text):
+DECISION: TRADE or NO_TRADE
+CONFIDENCE: HIGH or MEDIUM or LOW
+RATIONALE: <one sentence, 15 words or less>"""
+
+    try:
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=60,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = message.content[0].text.strip()
+        lines_map = {}
+        for line in text.split("\n"):
+            if ":" in line:
+                key, _, val = line.partition(":")
+                lines_map[key.strip()] = val.strip()
+        decision = lines_map.get("DECISION", "NO_TRADE").upper()
+        confidence = lines_map.get("CONFIDENCE", "LOW").upper()
+        rationale = lines_map.get("RATIONALE", "")
+        if decision not in ("TRADE", "NO_TRADE"):
+            decision = "NO_TRADE"
+        if confidence not in ("HIGH", "MEDIUM", "LOW"):
+            confidence = "LOW"
+        return {"decision": decision, "confidence": confidence, "rationale": rationale}
+    except Exception:
+        return {"decision": "NO_TRADE", "confidence": "LOW", "rationale": ""}
+
+
 def synthesize_combined_hypothesis(feedback_entries: list,
                                    opt_data: dict,
                                    historical_count: int) -> str:

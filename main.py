@@ -22,6 +22,7 @@ from app.backfill import build_historical_dataset
 from app.ai_agent import (
     recommend_position_size,
     predict_price_target,
+    recommend_trade,
     analyze_and_optimize_weights,
     analyze_chart_feedback,
     reprocess_chart_analysis,
@@ -73,6 +74,13 @@ from app.database import (
     get_sizing_stats,
     save_validation_report,
     get_validation_reports,
+    get_live_scan_stats,
+    get_auto_learn_count,
+    save_auto_learn_count,
+    update_scan_ai_rec,
+    get_ticker_scan_history,
+    tag_feedback_outcome,
+    tag_trade_outcome,
 )
 
 app = FastAPI()
@@ -122,6 +130,29 @@ def _autoclose_take_profit() -> list:
     return closed
 
 
+def _auto_learn():
+    """Re-synthesize hypothesis + weights if new scan outcomes were labeled since last run.
+    Called automatically at the end of each morning scan (_scheduled_scan)."""
+    try:
+        opt_data = get_optimization_data()
+        if not opt_data or opt_data["total_trades"] < 5:
+            return  # not enough labeled data yet
+
+        current_count = opt_data["total_trades"]
+        last_count = get_auto_learn_count()
+
+        if current_count <= last_count:
+            print(f"AUTO-LEARN: no new labeled scans ({current_count} total) — skipping")
+            return
+
+        print(f"AUTO-LEARN: {current_count - last_count} new labeled scan(s) → updating hypothesis + weights")
+        _run_hypothesis_and_weights(get_all_feedback())
+        save_auto_learn_count(current_count)
+        print("AUTO-LEARN: complete")
+    except Exception as e:
+        print(f"AUTO-LEARN: failed — {e}")
+
+
 def _scheduled_scan():
     """Auto-run all scan modes at 9:45am ET Mon–Fri and refresh cache."""
     print("SCHEDULER: Running scheduled morning scan...")
@@ -137,6 +168,7 @@ def _scheduled_scan():
             print(f"SCHEDULER: {mode} scan failed — {e}")
     _autoclose_take_profit()
     update_returns()
+    _auto_learn()
 
 
 def _premarket_scan():
@@ -266,12 +298,13 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
 
     # Serve from cache (15-min TTL) unless user clicked Refresh
     cached = None if refresh else get_scan_cache(mode)
+    scan_id_map = {}
     if cached:
         scan_data = {"results": cached["results"], "summary": cached["summary"]}
         cache_age = cached["cache_age_minutes"]
     else:
         scan_data = run_scan(mode=mode)
-        save_scan(scan_data["results"], mode)
+        scan_id_map = save_scan(scan_data["results"], mode)
         update_returns()
         save_scan_cache(mode, scan_data["results"], scan_data["summary"])
         cache_age = 0
@@ -281,7 +314,7 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
     hypothesis_text = hypothesis_data["content"] if hypothesis_data else None
     sizing_stats    = get_sizing_stats()
 
-    # Parallel AI enrichment — position sizing + price target prediction (score >= 75)
+    # Parallel AI enrichment — position sizing + price target prediction (score >= 75) + AI trade call
     def _ai_enrich(stock):
         stock["ai_rec"] = recommend_position_size(
             stock, available_cash, hypothesis_text, sizing_stats
@@ -290,6 +323,17 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
             stock["ai_target"] = predict_price_target(stock, sizing_stats, hypothesis_text)
         else:
             stock["ai_target"] = {"target_pct": 20, "rationale": ""}
+        ticker_history = get_ticker_scan_history(stock["symbol"])
+        stock["ai_trade_call"] = recommend_trade(
+            stock, hypothesis_text, sizing_stats, ticker_history
+        )
+        scan_id = scan_id_map.get(stock.get("symbol"))
+        if scan_id:
+            try:
+                tc = stock["ai_trade_call"]
+                update_scan_ai_rec(scan_id, tc["decision"], tc["confidence"], tc["rationale"])
+            except Exception:
+                pass
 
     with ThreadPoolExecutor(max_workers=5) as executor:
         list(executor.map(_ai_enrich, scan_data["results"]))
@@ -336,6 +380,7 @@ def analytics(request: Request):
             "user": request.session["user"],
             "complex_ai_weights": get_squeeze_weights(),
             "hypothesis": hypothesis_data,
+            "live_scan_stats": get_live_scan_stats(),
         }
     )
 
@@ -459,6 +504,17 @@ def trade_sell(request: Request, trade_id: int):
     return RedirectResponse("/trades", status_code=303)
 
 
+@app.post("/trade/{trade_id}/tag")
+def tag_trade_route(request: Request, trade_id: int, outcome_tag: str = Form(...)):
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    if outcome_tag == "clear":
+        tag_trade_outcome(trade_id, None)
+    elif outcome_tag in ("win", "loss"):
+        tag_trade_outcome(trade_id, outcome_tag)
+    return RedirectResponse("/trades", status_code=303)
+
+
 # ---------------- WEIGHT OPTIMIZER ----------------
 @app.post("/optimize", response_class=HTMLResponse)
 def optimize_weights(request: Request):
@@ -490,6 +546,7 @@ def optimize_weights(request: Request):
             "opt_data": opt_data,
             "complex_ai_weights": get_squeeze_weights(),
             "hypothesis": get_hypothesis(),
+            "live_scan_stats": get_live_scan_stats(),
         }
     )
 
@@ -588,6 +645,11 @@ def _run_hypothesis_and_weights(all_feedback: list):
                 opt_result["suggestions"],
                 opt_result["summary"],
             )
+            save_weight_changelog(
+                opt_result.get("summary", ""),
+                opt_result.get("rationale", ""),
+                opt_result["weights"],
+            )
     except Exception:
         pass
 
@@ -666,6 +728,17 @@ async def submit_feedback(
     )
 
 
+@app.post("/feedback/{feedback_id}/tag")
+def tag_feedback_route(request: Request, feedback_id: int, outcome_tag: str = Form(...)):
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    if outcome_tag == "clear":
+        tag_feedback_outcome(feedback_id, None)
+    elif outcome_tag in ("win", "loss"):
+        tag_feedback_outcome(feedback_id, outcome_tag)
+    return RedirectResponse("/feedback", status_code=303)
+
+
 # ---------------- COMPLEX + AI OPTIMIZER ----------------
 @app.post("/optimize-complex", response_class=HTMLResponse)
 def optimize_complex(request: Request):
@@ -712,6 +785,7 @@ def optimize_complex(request: Request):
             "complex_ai_result": opt_result,
             "complex_ai_weights": get_squeeze_weights(),
             "hypothesis": hypothesis_data,
+            "live_scan_stats": get_live_scan_stats(),
         }
     )
 

@@ -146,6 +146,27 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # column already exists
 
+    # Migration: AI trade recommendation stored per scan
+    try:
+        cursor.execute("ALTER TABLE scans ADD COLUMN ai_trade_rec TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # Migration: outcome tag for manual feedback entries
+    try:
+        cursor.execute("ALTER TABLE feedback ADD COLUMN outcome_tag TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # Migration: outcome tag for closed paper trades
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN outcome_tag TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     conn.close()
 
 
@@ -325,11 +346,11 @@ def update_returns():
         try:
             scan_date = datetime.fromisoformat(timestamp).date()
 
-            if (today - scan_date).days < 3:
+            if (today - scan_date).days < 2:
                 continue
 
-            # Fetch 14 calendar days to cover 7 trading days
-            end_date = min(scan_date + timedelta(days=14), today)
+            # Fetch 21 calendar days to cover 10 trading days (2 weeks), incl. holiday-heavy weeks
+            end_date = min(scan_date + timedelta(days=21), today)
 
             data = yf.download(
                 symbol,
@@ -354,9 +375,9 @@ def update_returns():
             if len(closes) >= 4:
                 three_day = (closes[3] - base) / base * 100
 
-            # First trading day within 7 where stock closed up ≥20% from scan close
+            # First trading day within 10 (2 weeks) where stock closed up ≥20% from scan close
             days_to_20pct = None
-            for d in range(1, min(8, len(closes))):
+            for d in range(1, min(11, len(closes))):
                 if (closes[d] / base - 1) >= 0.20:
                     days_to_20pct = d
                     break
@@ -385,11 +406,13 @@ def update_returns():
 
 
 # ---------------- SAVE SCAN ----------------
-def save_scan(results: list, mode: str):
+def save_scan(results: list, mode: str) -> dict:
+    """Saves scan results and returns {symbol: scan_id} for AI rec persistence."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
     timestamp = datetime.utcnow().isoformat()
+    scan_ids = {}
 
     for r in results:
         checklist = r.get("checklist", {})
@@ -412,7 +435,57 @@ def save_scan(results: list, mode: str):
             None,
             None
         ))
+        scan_ids[r.get("symbol")] = cursor.lastrowid
 
+    conn.commit()
+    conn.close()
+    return scan_ids
+
+
+def update_scan_ai_rec(scan_id: int, decision: str, confidence: str, rationale: str):
+    """Persists the AI trade recommendation to the scans table."""
+    import json
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE scans SET ai_trade_rec = ? WHERE id = ?",
+        (json.dumps({"decision": decision, "confidence": confidence, "rationale": rationale}), scan_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_ticker_scan_history(symbol: str, limit: int = 5) -> list:
+    """Returns recent scan records for a ticker, used as context for AI trade calls."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT timestamp, score, recommendation, relative_volume,
+               today_return, next_day_return, ai_trade_rec
+        FROM scans WHERE symbol = ? AND mode != 'historical'
+        ORDER BY timestamp DESC LIMIT ?
+    """, (symbol, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"timestamp": r[0][:10] if r[0] else "", "score": r[1], "rec": r[2],
+         "relvol": r[3], "return_pct": r[4], "next_day": r[5], "ai_call": r[6]}
+        for r in rows
+    ]
+
+
+def tag_feedback_outcome(feedback_id: int, tag):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE feedback SET outcome_tag = ? WHERE id = ?", (tag, feedback_id))
+    conn.commit()
+    conn.close()
+
+
+def tag_trade_outcome(trade_id: int, tag):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE trades SET outcome_tag = ? WHERE id = ?", (tag, trade_id))
     conn.commit()
     conn.close()
 
@@ -539,7 +612,7 @@ def get_trade_history():
     cursor.execute("""
         SELECT id, symbol, entry_price, exit_price, shares,
                position_size, realized_pnl, opened_at, closed_at,
-               COALESCE(notes, '')
+               COALESCE(notes, ''), COALESCE(outcome_tag, '')
         FROM trades WHERE status = 'closed'
         ORDER BY closed_at DESC
     """)
@@ -549,7 +622,7 @@ def get_trade_history():
     history = []
     for row in rows:
         (trade_id, symbol, entry_price, exit_price, shares,
-         position_size, realized_pnl, opened_at, closed_at, notes) = row
+         position_size, realized_pnl, opened_at, closed_at, notes, outcome_tag) = row
         pnl_pct = (realized_pnl / position_size * 100) if position_size else 0
         history.append({
             "trade_id": trade_id,
@@ -563,6 +636,7 @@ def get_trade_history():
             "opened_at": opened_at,
             "closed_at": closed_at,
             "notes": notes,
+            "outcome_tag": outcome_tag,
         })
     return history
 
@@ -686,7 +760,8 @@ def get_recent_feedback(limit: int = 10):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, created_at, symbol, user_text, chart_analysis
+        SELECT id, created_at, symbol, user_text, chart_analysis,
+               COALESCE(outcome_tag, '')
         FROM feedback
         ORDER BY id DESC LIMIT ?
     """, (limit,))
@@ -694,7 +769,7 @@ def get_recent_feedback(limit: int = 10):
     conn.close()
     return [
         {"id": r[0], "created_at": r[1], "symbol": r[2],
-         "user_text": r[3], "chart_analysis": r[4]}
+         "user_text": r[3], "chart_analysis": r[4], "outcome_tag": r[5]}
         for r in rows
     ]
 
@@ -704,7 +779,8 @@ def get_all_feedback():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, created_at, symbol, user_text, chart_analysis
+        SELECT id, created_at, symbol, user_text, chart_analysis,
+               COALESCE(outcome_tag, '')
         FROM feedback
         ORDER BY id ASC
     """)
@@ -712,7 +788,7 @@ def get_all_feedback():
     conn.close()
     return [
         {"id": r[0], "created_at": r[1], "symbol": r[2],
-         "user_text": r[3], "chart_analysis": r[4]}
+         "user_text": r[3], "chart_analysis": r[4], "outcome_tag": r[5]}
         for r in rows
     ]
 
@@ -1197,3 +1273,83 @@ def get_risk_metrics() -> dict:
         "win_rate":      win_rate,
         "total_closed":  len(rows),
     }
+
+
+# ---------------- SELF-LEARNING LOOP ----------------
+def get_live_scan_stats() -> dict:
+    """Stats on live scan outcomes for the self-learning tracker on the analytics page."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM scans WHERE mode != 'historical'")
+    total = cursor.fetchone()[0]
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM scans WHERE mode != 'historical' AND next_day_return IS NOT NULL"
+    )
+    labeled = cursor.fetchone()[0]
+
+    three_days_ago = (datetime.utcnow() - timedelta(days=2)).isoformat()
+    cursor.execute("""
+        SELECT COUNT(*) FROM scans
+        WHERE mode != 'historical' AND next_day_return IS NULL AND timestamp >= ?
+    """, (three_days_ago,))
+    pending = cursor.fetchone()[0]  # too recent to label yet
+
+    cursor.execute("""
+        SELECT COUNT(*) FROM scans
+        WHERE mode != 'historical' AND next_day_return IS NULL AND timestamp < ?
+    """, (three_days_ago,))
+    awaiting = cursor.fetchone()[0]  # old enough, will be labeled next update_returns() call
+
+    cursor.execute("""
+        SELECT COUNT(*) FROM scans
+        WHERE mode != 'historical' AND next_day_return IS NOT NULL AND next_day_return >= 20
+    """)
+    hit_20 = cursor.fetchone()[0]
+
+    cursor.execute("""
+        SELECT AVG(days_to_20pct) FROM scans
+        WHERE mode != 'historical' AND days_to_20pct IS NOT NULL
+    """)
+    avg_days_row = cursor.fetchone()
+    avg_days = round(avg_days_row[0], 1) if avg_days_row[0] else None
+
+    cursor.execute("SELECT updated_at FROM settings WHERE key = 'auto_learn_labeled_count'")
+    last_learn_row = cursor.fetchone()
+    last_learn = last_learn_row[0] if last_learn_row else None
+
+    conn.close()
+    hit_rate = round(hit_20 / labeled * 100, 1) if labeled > 0 else 0
+    return {
+        "total":          total,
+        "labeled":        labeled,
+        "pending":        pending,
+        "awaiting":       awaiting,
+        "hit_20_count":   hit_20,
+        "hit_rate":       hit_rate,
+        "avg_days_to_20": avg_days,
+        "last_auto_learn": last_learn,
+    }
+
+
+def get_auto_learn_count() -> int:
+    """Returns the labeled scan count recorded at the last auto-learn run."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = 'auto_learn_labeled_count'")
+    row = cursor.fetchone()
+    conn.close()
+    return int(row[0]) if row else 0
+
+
+def save_auto_learn_count(count: int):
+    """Persist the labeled scan count after a successful auto-learn run."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO settings (key, value, updated_at) VALUES ('auto_learn_labeled_count', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    """, (str(count), datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
