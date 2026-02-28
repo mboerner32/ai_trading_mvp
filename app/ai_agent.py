@@ -252,7 +252,8 @@ Signals:
 - Daily gain today: {stock.get('daily_return_pct', 'N/A')}%
 - Sideways Compression: {checklist.get('sideways_chop')}
 - Yesterday Green: {checklist.get('yesterday_green')}
-- Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'}{calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}
+- Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'} (40%+ = strong floor, lowers downside risk)
+- Sector/Industry: {checklist.get('sector') or 'N/A'} / {checklist.get('industry') or 'N/A'} (Biotech/Healthcare historically outperforms for this setup){calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}
 
 Make a TRADE or NO_TRADE call. Does this setup match learned patterns? Is the score/signal quality sufficient?
 

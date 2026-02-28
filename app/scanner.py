@@ -374,6 +374,8 @@ def get_fundamentals(symbol):
             "float_shares": info.get("floatShares"),
             "total_cash": info.get("totalCash"),
             "institution_pct": institution_pct,
+            "sector": info.get("sector"),          # e.g. "Healthcare", "Technology"
+            "industry": info.get("industry"),      # e.g. "Biotechnology"
             "recent_news_present": recent_news_present,
             "news_headlines": news_headlines,
         }

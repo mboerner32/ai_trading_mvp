@@ -91,10 +91,14 @@ def score_stock(symbol: str, df, fundamentals=None):
     institution_pct = None
     float_tier      = "Unknown"
 
+    sector   = None
+    industry = None
     if fundamentals:
         float_shares    = fundamentals.get("float_shares")
         total_cash      = fundamentals.get("total_cash")
         institution_pct = fundamentals.get("institution_pct")
+        sector          = fundamentals.get("sector")
+        industry        = fundamentals.get("industry")
 
         if shares_outstanding is not None:
             if shares_outstanding < 10_000_000:
@@ -163,11 +167,16 @@ def score_stock(symbol: str, df, fundamentals=None):
                 cash_per_share = None
 
         # Institutional Ownership — 5 pts max
+        # 40%+ is the benchmark: institutions hold the floor, lower risk
         if institution_pct is not None:
-            if institution_pct >= 0.50:
+            if institution_pct >= 0.40:
                 score += 5
-            elif institution_pct >= 0.20:
-                score += 3
+            elif institution_pct >= 0.15:
+                score += 2
+
+        # Sector bonus — Biotech/Healthcare historically outperforms for this strategy
+        if sector == "Healthcare" or (industry and "biotech" in industry.lower()):
+            score += 5
 
     # No News Catalyst — 5 pts
     no_news_catalyst = not (fundamentals or {}).get("recent_news_present", False)
@@ -203,6 +212,8 @@ def score_stock(symbol: str, df, fundamentals=None):
             "cash_per_share": round(cash_per_share, 2) if cash_per_share else None,
             "high_cash": high_cash,
             "institution_pct": round(institution_pct * 100, 1) if institution_pct is not None else None,
+            "sector": sector,
+            "industry": industry,
             "no_news_catalyst": no_news_catalyst,
             "sweet_spot_10_40": sweet_spot,
             "over_100_percent": overheated,
@@ -237,10 +248,11 @@ DEFAULT_SQUEEZE_WEIGHTS = {
     "shares_lt100m":        8,
     "no_news_bonus":        5,    # nice-to-have
     "high_cash_bonus":      5,    # nice-to-have
-    "institution_moderate": 3,    # nice-to-have
-    "institution_strong":   5,    # nice-to-have
+    "institution_moderate": 2,    # 15–39% institutional ownership
+    "institution_strong":   5,    # 40%+ benchmark — holds the floor
+    "sector_biotech_bonus": 5,    # Healthcare/Biotech historically outperforms
 }
-# Max with defaults: 30+10+8+7+30+5+5+5 = 100
+# Max with defaults: 30+10+8+7+30+5+5+5+5 = 105 → normalised to 100
 
 
 def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
@@ -349,10 +361,14 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
     cash_per_share  = None
     high_cash       = False
 
+    sector   = None
+    industry = None
     if fundamentals:
         float_shares    = fundamentals.get("float_shares")
         institution_pct = fundamentals.get("institution_pct")
         total_cash      = fundamentals.get("total_cash")
+        sector          = fundamentals.get("sector")
+        industry        = fundamentals.get("industry")
 
         if shares_outstanding is not None:
             if shares_outstanding < 10_000_000:
@@ -375,12 +391,16 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
             except Exception:
                 cash_per_share = None
 
-        # Institutional Ownership — nice to have
+        # Institutional Ownership — 40%+ is the benchmark (holds the floor)
         if institution_pct is not None:
-            if institution_pct >= 0.50:
+            if institution_pct >= 0.40:
                 score += w.get("institution_strong", 5)
-            elif institution_pct >= 0.20:
-                score += w.get("institution_moderate", 3)
+            elif institution_pct >= 0.15:
+                score += w.get("institution_moderate", 2)
+
+        # Sector bonus — Biotech/Healthcare historically outperforms for this strategy
+        if sector == "Healthcare" or (industry and "biotech" in industry.lower()):
+            score += w.get("sector_biotech_bonus", 5)
 
     # No News Catalyst — nice to have
     no_news_catalyst = not (fundamentals or {}).get("recent_news_present", False)
@@ -403,7 +423,8 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
             w.get("shares_lt100m", 8), 0) +
         w.get("high_cash_bonus", 5) +
         max(w.get("institution_strong", 5),
-            w.get("institution_moderate", 3), 0) +
+            w.get("institution_moderate", 2), 0) +
+        w.get("sector_biotech_bonus", 5) +
         w.get("no_news_bonus", 5)
     )
     if max_score <= 0:
@@ -441,6 +462,8 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
             "sideways_chop": sideways_chop,
             "yesterday_green": yesterday_green,
             "institution_pct": round(institution_pct * 100, 1) if institution_pct is not None else None,
+            "sector": sector,
+            "industry": industry,
             "no_news_catalyst": no_news_catalyst,
             # template compatibility aliases
             "high_cash": high_cash,
