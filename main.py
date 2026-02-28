@@ -883,6 +883,10 @@ def start_backfill(request: Request):
         _backfill_running = True
         try:
             build_historical_dataset(**kwargs)
+            # Auto-activate AI model after backfill — no extra click needed
+            print("BACKFILL: complete — auto-running hypothesis + weight synthesis")
+            _run_hypothesis_and_weights(get_all_feedback())
+            print("BACKFILL: AI model activated")
         finally:
             _backfill_running = False
 

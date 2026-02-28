@@ -626,8 +626,7 @@ new Chart(document.getElementById('equityChart'), {
                     setTimeout(tick, 4000);
                 } else if (data.status === 'complete') {
                     el.textContent =
-                        'Done! ' + data.saved + ' examples saved from ' +
-                        data.total + ' tickers. Reload to see updated counts.';
+                        'Done! ' + data.saved + ' examples saved. AI hypothesis + weights updated automatically. Reload to see results.';
                 }
             })
             .catch(() => setTimeout(tick, 8000));
