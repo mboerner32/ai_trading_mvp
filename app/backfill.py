@@ -181,13 +181,14 @@ def _process_ticker(symbol, weights=None):
                 if c3 and c3 > 0:
                     three_day_return = round((c3 - close_today) / close_today * 100, 2)
 
-            # First trading day (1–7) where close reached +20% from scan-day close
+            # First trading day (1–7) where intraday HIGH hit +20% from scan-day close
+            # Uses High so a brief intraday touch counts (enough time to fill a sell order)
             days_to_20pct = None
             for days_ahead in range(1, 8):
                 if i + days_ahead < n:
-                    c = _safe(df.iloc[i + days_ahead].get("close"))
-                    if c and c > 0 and close_today > 0:
-                        if (c / close_today - 1) >= 0.20:
+                    h = _safe(df.iloc[i + days_ahead].get("high"))
+                    if h and h > 0 and close_today > 0:
+                        if (h / close_today - 1) >= 0.20:
                             days_to_20pct = days_ahead
                             break
 
