@@ -3,6 +3,7 @@ Historical backfill: applies squeeze scoring to past OHLCV data
 to generate labeled training examples (qualifying scan day → next-day return).
 """
 
+import gc
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -138,14 +139,14 @@ def _score(relative_volume, daily_return, range_10d,
 
 def _process_ticker(symbol, weights=None):
     """
-    Download 5 years of OHLCV for `symbol`.
+    Download up to 10 years of OHLCV for `symbol`.
     Slide a window to find days matching live scan criteria:
         price < $5, daily gain 10–100%, relative volume ≥ 10.
     Returns a list of labeled example dicts with next_day_return filled in.
     """
     try:
         df = yf.download(
-            symbol, period="max", interval="1d",
+            symbol, period="10y", interval="1d",
             progress=False, auto_adjust=False
         )
         if df.empty or len(df) < 70:
@@ -157,9 +158,9 @@ def _process_ticker(symbol, weights=None):
         shares_outstanding = None
         float_shares = None
         try:
-            info = yf.Ticker(symbol).info
-            shares_outstanding = info.get("sharesOutstanding")
-            float_shares = info.get("floatShares")
+            info = yf.Ticker(symbol).fast_info
+            shares_outstanding = getattr(info, "shares", None)
+            # fast_info doesn't have floatShares — skip to avoid large dict download
         except Exception:
             pass
 
@@ -206,7 +207,6 @@ def _process_ticker(symbol, weights=None):
                     three_day_return = round((c3 - close_today) / close_today * 100, 2)
 
             # First trading day (1–7) where intraday HIGH hit +20% from scan-day close
-            # Uses High so a brief intraday touch counts (enough time to fill a sell order)
             days_to_20pct = None
             for days_ahead in range(1, 8):
                 if i + days_ahead < n:
@@ -231,7 +231,7 @@ def _process_ticker(symbol, weights=None):
                 "relative_volume":    round(relative_volume, 2),
                 "today_return":       round(daily_return * 100, 2),
                 "shares_outstanding": shares_outstanding,
-                "float_shares":       int(float_shares) if float_shares else None,
+                "float_shares":       None,  # skipped in backfill to save memory
                 "next_day_return":    next_day_return,
                 "three_day_return":   three_day_return,
                 "days_to_20pct":      days_to_20pct,
@@ -244,6 +244,13 @@ def _process_ticker(symbol, weights=None):
     except Exception as e:
         print(f"Backfill: error on {symbol} — {e}")
         return []
+    finally:
+        # Explicitly free dataframe memory after each ticker
+        try:
+            del df
+        except NameError:
+            pass
+        gc.collect()
 
 
 def _get_db_tickers():
@@ -262,7 +269,7 @@ def _get_db_tickers():
         return []
 
 
-def build_historical_dataset(max_workers=2, weights=None):
+def build_historical_dataset(max_workers=1, weights=None):
     """
     Process all seed + dynamically fetched + previously seen tickers in parallel.
     Saves qualifying labeled examples into the scans table (mode='historical').
