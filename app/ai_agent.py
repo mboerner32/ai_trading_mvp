@@ -189,10 +189,12 @@ RATIONALE: <one sentence, 15 words or less>"""
 
 def recommend_trade(stock: dict, hypothesis: str = None,
                     sizing_stats: dict = None,
-                    ticker_history: list = None) -> dict:
+                    ticker_history: list = None,
+                    lstm_prob: float = None) -> dict:
     """
-    Makes TRADE/NO_TRADE call using all four context sources:
-    hypothesis, market context (day-of-week), ticker history, historical calibration.
+    Makes TRADE/NO_TRADE call using five context sources:
+    hypothesis, market context (day-of-week), ticker history, historical calibration,
+    and local LSTM model probability.
     Returns {"decision": "TRADE"|"NO_TRADE", "confidence": "HIGH"|"MEDIUM"|"LOW", "rationale": str}
     Falls back to {"decision": "NO_TRADE", "confidence": "LOW", "rationale": ""} on error.
     """
@@ -232,6 +234,14 @@ def recommend_trade(stock: dict, hypothesis: str = None,
     day_name = datetime.now().strftime("%A")
     market_section = f"\nMarket context: Today is {day_name}."
 
+    # Context 5: LSTM model prediction
+    lstm_section = ""
+    if lstm_prob is not None:
+        lstm_section = (
+            f"\nLSTM model (trained on historical setups): "
+            f"{lstm_prob:.0%} probability this stock hits +20% intraday within 7 days."
+        )
+
     prompt = f"""You are a momentum trading AI making a TRADE or NO_TRADE call for a low-float microcap.
 Strategy: buy stocks showing unusual volume compression setups targeting 20%+ next-day spike.
 
@@ -242,7 +252,7 @@ Signals:
 - Daily gain today: {stock.get('daily_return_pct', 'N/A')}%
 - Sideways Compression: {checklist.get('sideways_chop')}
 - Yesterday Green: {checklist.get('yesterday_green')}
-- Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'}{calibration_section}{hypothesis_section}{history_section}{market_section}
+- Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'}{calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}
 
 Make a TRADE or NO_TRADE call. Does this setup match learned patterns? Is the score/signal quality sufficient?
 

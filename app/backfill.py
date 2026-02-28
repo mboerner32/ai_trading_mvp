@@ -52,6 +52,27 @@ SEED_TICKERS = [
     "TPIC", "UAVS", "LAKE", "LXRX", "CDXS",
     "NVAX", "SRNE", "INMD", "CODX", "TXMD",
     "ABUS", "VXRT", "INO",  "OCUL", "ADAP",
+
+    # --- 2022–2025 additions: crypto miners ---
+    "MARA", "RIOT", "CIFR", "HUT",  "BITF",
+    "CLSK", "IREN", "BTBT", "WULF", "MIGI",
+
+    # --- 2022–2025 additions: biotech/small-cap spikes ---
+    "CERO", "NKGN", "ATNF", "CRVS", "IMVT",
+    "LASE", "FATH", "RVNC", "YMAB", "LIFW",
+    "BURU", "ABTS", "LFLY", "CLRB", "CYTO",
+    "ETON", "CASI", "APRE", "MIST", "SRTS",
+    "KNSA", "PRTA", "AQST", "IPHA", "MTNB",
+    "VTYX", "ACCD", "HOOK", "ADTX", "WINT",
+    "TZOO", "NCPL", "SNPX", "PHAS", "FWBI",
+    "CRMD", "NLSP", "ATNM", "HARP", "SPGX",
+
+    # --- Additional historical low-float plays ---
+    "NVOS", "NILE", "GOVX", "APCX", "PRPB",
+    "LTRY", "SRTX", "OBLG", "AEYE", "IMAQ",
+    "BACK", "HGEN", "CYCC", "AGLE", "MFON",
+    "CLPS", "TAOP", "ABVC", "NXTD", "MIMO",
+    "SEAC", "CREX", "SMFL", "EDTK", "XTLB",
 ]
 
 
@@ -124,7 +145,7 @@ def _process_ticker(symbol, weights=None):
     """
     try:
         df = yf.download(
-            symbol, period="5y", interval="1d",
+            symbol, period="max", interval="1d",
             progress=False, auto_adjust=False
         )
         if df.empty or len(df) < 70:
@@ -132,10 +153,13 @@ def _process_ticker(symbol, weights=None):
 
         df = prepare_dataframe(df)
 
-        # Fetch current shares outstanding (best available proxy for historical)
+        # Fetch current shares outstanding + float (best available proxy for historical)
         shares_outstanding = None
+        float_shares = None
         try:
-            shares_outstanding = yf.Ticker(symbol).info.get("sharesOutstanding")
+            info = yf.Ticker(symbol).info
+            shares_outstanding = info.get("sharesOutstanding")
+            float_shares = info.get("floatShares")
         except Exception:
             pass
 
@@ -207,9 +231,12 @@ def _process_ticker(symbol, weights=None):
                 "relative_volume":    round(relative_volume, 2),
                 "today_return":       round(daily_return * 100, 2),
                 "shares_outstanding": shares_outstanding,
+                "float_shares":       int(float_shares) if float_shares else None,
                 "next_day_return":    next_day_return,
                 "three_day_return":   three_day_return,
                 "days_to_20pct":      days_to_20pct,
+                "range_10d":          round(range_10d, 4) if range_10d is not None else None,
+                "yesterday_green":    int(yesterday_green),
             })
 
         return examples
@@ -288,4 +315,14 @@ def build_historical_dataset(max_workers=6, weights=None):
     saved = save_historical_scans(all_examples)
     set_backfill_status("complete", processed, total, saved)
     print(f"Backfill: complete — {saved} examples from {processed} tickers")
+
+    # Build LSTM training sequences from collected examples
+    try:
+        from app.lstm_model import build_sequences_from_backfill
+        print("Backfill: building LSTM sequences...")
+        n_seq = build_sequences_from_backfill(all_examples)
+        print(f"Backfill: {n_seq} LSTM sequences saved")
+    except Exception as e:
+        print(f"Backfill: LSTM sequence build failed — {e}")
+
     return saved

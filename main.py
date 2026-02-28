@@ -19,6 +19,7 @@ from app.scanner import run_scan
 from app.validator import validate_scan_results
 from app.alerts import send_scan_alert, send_take_profit_alert
 from app.backfill import build_historical_dataset
+from app.lstm_model import train_lstm, predict_hit_probability, get_lstm_status
 from app.ai_agent import (
     recommend_position_size,
     predict_price_target,
@@ -323,9 +324,14 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
             stock["ai_target"] = predict_price_target(stock, sizing_stats, hypothesis_text)
         else:
             stock["ai_target"] = {"target_pct": 20, "rationale": ""}
+        # Local LSTM inference — fast, no API cost
+        lstm_prob = predict_hit_probability(stock["symbol"])
+        stock["lstm_prob"] = lstm_prob
+
         ticker_history = get_ticker_scan_history(stock["symbol"])
         stock["ai_trade_call"] = recommend_trade(
-            stock, hypothesis_text, sizing_stats, ticker_history
+            stock, hypothesis_text, sizing_stats, ticker_history,
+            lstm_prob=lstm_prob
         )
         scan_id = scan_id_map.get(stock.get("symbol"))
         if scan_id:
@@ -381,6 +387,7 @@ def analytics(request: Request):
             "complex_ai_weights": get_squeeze_weights(),
             "hypothesis": hypothesis_data,
             "live_scan_stats": get_live_scan_stats(),
+            "lstm_status": get_lstm_status(),
         }
     )
 
@@ -882,9 +889,16 @@ def start_backfill(request: Request):
         global _backfill_running
         _backfill_running = True
         try:
-            build_historical_dataset(**kwargs)
-            # Auto-activate AI model after backfill — no extra click needed
-            print("BACKFILL: complete — auto-running hypothesis + weight synthesis")
+            build_historical_dataset(**kwargs)   # also builds lstm_sequences.npz
+            # Train LSTM on the freshly built sequences
+            print("BACKFILL: training LSTM model...")
+            try:
+                lstm_stats = train_lstm()
+                print(f"BACKFILL: LSTM trained — {lstm_stats}")
+            except Exception as e:
+                print(f"BACKFILL: LSTM training failed — {e}")
+            # Auto-activate Claude hypothesis + weights — no extra click needed
+            print("BACKFILL: auto-running hypothesis + weight synthesis")
             _run_hypothesis_and_weights(get_all_feedback())
             print("BACKFILL: AI model activated")
         finally:

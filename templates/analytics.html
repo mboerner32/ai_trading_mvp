@@ -318,6 +318,17 @@
             Auto-learn not yet run — needs 5+ labeled scans.
             {% endif %}
         </div>
+
+        <!-- LSTM Model status -->
+        <div style="margin-top:16px; padding-top:16px; border-top:1px solid #f3f4f6; display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+            <div style="font-size:12px; color:#6b7280; font-weight:600; text-transform:uppercase; letter-spacing:0.05em;">LSTM Model</div>
+            {% if lstm_status and lstm_status.trained %}
+            <span style="font-size:13px; color:#0f766e; font-weight:600;">&#10003; Trained</span>
+            <span style="font-size:12px; color:#9ca3af;">{{ lstm_status.accuracy }}% val accuracy &middot; {{ lstm_status.samples }} training samples &middot; {{ lstm_status.trained_at }}</span>
+            {% else %}
+            <span style="font-size:12px; color:#9ca3af;">Not trained — run Historical Training Data to train the LSTM</span>
+            {% endif %}
+        </div>
     </div>
 
     <!-- CURRENT HYPOTHESIS -->

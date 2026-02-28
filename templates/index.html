@@ -365,6 +365,9 @@
                             <span class="bad" style="font-size:11px; padding:2px 8px; border-radius:4px; font-weight:600;">NO TRADE</span>
                         {% endif %}
                         <div style="font-size:10px; color:#9ca3af; margin-top:2px;">{{ stock.ai_trade_call.confidence }}</div>
+                        {% if stock.lstm_prob is not none %}
+                        <div style="font-size:10px; color:#6b7280; margin-top:1px;">LSTM: {{ "%.0f"|format(stock.lstm_prob * 100) }}%</div>
+                        {% endif %}
                     {% else %}
                         <span style="font-size:10px; color:#d1d5db;">—</span>
                     {% endif %}

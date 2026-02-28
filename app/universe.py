@@ -28,6 +28,12 @@ _BACKFILL_URL = (
     "v=111&f=geo_usa,sh_price_u5,sh_avgvol_o200&o=-volume"
 )
 
+# ---- Mid-cap backfill screener ($5–$15) — stocks that may have been < $5 historically ----
+_BACKFILL_URL_MID = (
+    "https://finviz.com/screener.ashx?"
+    "v=111&f=geo_usa,sh_price_u15,sh_price_o5,sh_avgvol_o300&o=-volume"
+)
+
 _CACHE_FILE = "/tmp/backfill_universe.json"
 _CACHE_TTL  = 86400  # 24 hours
 
@@ -83,10 +89,12 @@ def get_finviz_universe():
 # ---------------------------------------------------
 # Extended backfill universe (loose filters + 24h cache)
 # ---------------------------------------------------
-def fetch_backfill_universe(max_tickers: int = 500) -> list:
+def fetch_backfill_universe(max_tickers: int = 1000) -> list:
     """
     Fetch a broad list of US micro/small-cap tickers for historical backfill.
-    Finviz filters: price < $5, avg daily vol > 200K, US-listed.
+    Pulls two Finviz passes:
+      1. price < $5, avg daily vol > 200K (primary targets)
+      2. price $5–$15, avg daily vol > 300K (may have been < $5 historically)
     Returns up to max_tickers deduplicated tickers.
     Caches result for 24 hours to respect Finviz rate limits.
     """
@@ -101,14 +109,26 @@ def fetch_backfill_universe(max_tickers: int = 500) -> list:
     except Exception:
         pass
 
-    # --- Paginate Finviz screener ---
+    # --- Pass 1: price < $5 ---
     tickers = []
     for row_start in range(1, max_tickers + 1, 20):
         page = _fetch_page(_BACKFILL_URL, row_start)
         tickers.extend(page)
         if len(page) < 20:
             break
-        time.sleep(0.4)  # Polite delay between pages
+        time.sleep(0.4)
+
+    # --- Pass 2: price $5–$15 (historically may have been < $5) ---
+    mid_tickers = []
+    for row_start in range(1, 501, 20):
+        page = _fetch_page(_BACKFILL_URL_MID, row_start)
+        mid_tickers.extend(page)
+        if len(page) < 20:
+            break
+        time.sleep(0.4)
+    tickers.extend(mid_tickers)
+    print(f"Universe: fetched {len(tickers)} tickers before dedup "
+          f"(pass2 added {len(mid_tickers)})")
 
     # Deduplicate, preserve order
     seen = set()

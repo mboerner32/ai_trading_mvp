@@ -167,6 +167,27 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # Migration: sideways compression value per scan (used by LSTM + AI calibration)
+    try:
+        cursor.execute("ALTER TABLE scans ADD COLUMN range_10d REAL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # Migration: was yesterday green (boolean) per scan
+    try:
+        cursor.execute("ALTER TABLE scans ADD COLUMN yesterday_green INTEGER")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # Migration: float shares per scan (better than shares_outstanding for float analysis)
+    try:
+        cursor.execute("ALTER TABLE scans ADD COLUMN float_shares INTEGER")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     conn.close()
 
 
@@ -1013,8 +1034,9 @@ def save_historical_scans(examples: list) -> int:
             INSERT INTO scans (
                 timestamp, symbol, score, recommendation, mode,
                 relative_volume, today_return, shares_outstanding,
-                news_recent, next_day_return, three_day_return, days_to_20pct
-            ) VALUES (?, ?, ?, ?, 'historical', ?, ?, ?, 0, ?, ?, ?)
+                news_recent, next_day_return, three_day_return, days_to_20pct,
+                range_10d, yesterday_green, float_shares
+            ) VALUES (?, ?, ?, ?, 'historical', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
         """, (
             ex["timestamp"],
             ex["symbol"],
@@ -1026,6 +1048,9 @@ def save_historical_scans(examples: list) -> int:
             ex.get("next_day_return"),
             ex.get("three_day_return"),
             ex.get("days_to_20pct"),
+            ex.get("range_10d"),
+            ex.get("yesterday_green"),
+            ex.get("float_shares"),
         ))
     conn.commit()
     conn.close()
