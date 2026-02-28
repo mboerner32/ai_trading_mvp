@@ -309,8 +309,8 @@ def get_score_buckets():
         if items:
             values  = [v for v, d in items]
             wins    = [v for v in values if v > 0]
-            hits_20 = [(v, d) for v, d in items if v >= 20]
-            valid_days = [d for v, d in hits_20 if d is not None]
+            hits_20 = [(v, d) for v, d in items if d is not None]  # intraday HIGH touched +20%
+            valid_days = [d for v, d in hits_20]  # all have d non-None by definition
             avg_days = round(sum(valid_days) / len(valid_days), 1) if valid_days else None
             results[bucket] = {
                 "trades":            len(items),
@@ -366,6 +366,7 @@ def update_returns():
                 data.columns = data.columns.get_level_values(0)
 
             closes = data["Close"].tolist()
+            highs  = data["High"].tolist()
             base   = closes[0]
 
             next_day  = None
@@ -375,10 +376,11 @@ def update_returns():
             if len(closes) >= 4:
                 three_day = (closes[3] - base) / base * 100
 
-            # First trading day within 10 (2 weeks) where stock closed up ≥20% from scan close
+            # First trading day within 10 (2 weeks) where intraday HIGH hit ≥20% above scan close
+            # Uses High price so a brief intraday touch counts (enough time to fill a sell order)
             days_to_20pct = None
-            for d in range(1, min(11, len(closes))):
-                if (closes[d] / base - 1) >= 0.20:
+            for d in range(1, min(11, len(highs))):
+                if (highs[d] / base - 1) >= 0.20:
                     days_to_20pct = d
                     break
 
@@ -689,8 +691,8 @@ def get_optimization_data():
                     "hit_20pct": 0.0, "avg_days_to_20pct": None}
         values  = [nd for nd, d in items]
         wins    = [nd for nd in values if nd > 0]
-        hits_20 = [(nd, d) for nd, d in items if nd >= 20]
-        valid_days = [d for nd, d in hits_20 if d is not None]
+        hits_20 = [(nd, d) for nd, d in items if d is not None]  # intraday HIGH touched +20%
+        valid_days = [d for nd, d in hits_20]
         avg_days = round(sum(valid_days) / len(valid_days), 1) if valid_days else None
         return {
             "count":             len(items),
@@ -1126,10 +1128,10 @@ def get_sizing_stats() -> dict | None:
         if not items:
             return None
         returns = [nd for nd, d in items]
-        # "win" = hit the 20% take-profit target within 7 trading days
-        hits_20    = [(nd, d) for nd, d in items if nd >= 20]
+        # "win" = intraday HIGH touched +20% take-profit within 10 trading days
+        hits_20    = [(nd, d) for nd, d in items if d is not None]
         any_pos    = sum(1 for nd in returns if nd > 0)
-        valid_days = [d for nd, d in hits_20 if d is not None]
+        valid_days = [d for nd, d in hits_20]
         avg_days   = round(sum(valid_days) / len(valid_days), 1) if valid_days else None
         sorted_r   = sorted(returns)
         median     = sorted_r[len(sorted_r) // 2]
@@ -1304,7 +1306,7 @@ def get_live_scan_stats() -> dict:
 
     cursor.execute("""
         SELECT COUNT(*) FROM scans
-        WHERE mode != 'historical' AND next_day_return IS NOT NULL AND next_day_return >= 20
+        WHERE mode != 'historical' AND days_to_20pct IS NOT NULL
     """)
     hit_20 = cursor.fetchone()[0]
 
