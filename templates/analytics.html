@@ -362,18 +362,61 @@
         {% endif %}
     </div>
 
-    <!-- COMPLEX + AI MODE LIVE OPTIMIZER -->
-    <div class="section-title" style="color: #0f766e;">Complex + AI Mode — Live Weight Optimizer</div>
+    <!-- WEIGHT OPTIMIZERS (combined) -->
+    <div class="section-title">Weight Optimizers</div>
 
-    <div class="chart-card" style="margin-bottom:40px; border-left: 4px solid #0f766e;">
-        <p style="color:#6b7280; font-size:14px; margin-top:0; margin-bottom:16px;">
-            Analyzes backtesting data <strong>and</strong> your feedback submissions to continuously
-            refine scoring weights. <strong>Objective: maximize the rate of 20%+ next-day spikes.</strong>
-            Weights auto-update on each feedback submission. Requires 5+ scans with known returns.
-        </p>
+    <div class="chart-card" style="margin-bottom:24px;">
 
+        <!-- Two optimizer buttons side by side -->
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
+
+            <!-- LEFT: Complex + AI Live Optimizer -->
+            <div style="border:1px solid #d1fae5; border-radius:10px; padding:18px 20px;
+                        background:#f9fffe;">
+                <div style="font-weight:700; color:#0f766e; font-size:14px; margin-bottom:8px;">
+                    Complex + AI Mode — Live Optimizer
+                </div>
+                <p style="color:#6b7280; font-size:13px; margin:0 0 16px;">
+                    Analyzes backtesting data <strong>and</strong> your feedback submissions to
+                    continuously refine scoring weights.
+                    <strong>Weights auto-update on each feedback submission.</strong>
+                    Requires 5+ scans with known returns.
+                </p>
+                <form method="post" action="/optimize-complex">
+                    <button type="submit" style="background:#0f766e; color:white; border:none;
+                            padding:9px 20px; border-radius:8px; cursor:pointer;
+                            font-size:13px; font-weight:600;">
+                        Re-optimize Now
+                    </button>
+                </form>
+            </div>
+
+            <!-- RIGHT: General AI Read-Only -->
+            <div style="border:1px solid #e0e7ff; border-radius:10px; padding:18px 20px;
+                        background:#f8f9ff;">
+                <div style="font-weight:700; color:#4f46e5; font-size:14px; margin-bottom:8px;">
+                    General AI — Read-Only Recommendations
+                </div>
+                <p style="color:#6b7280; font-size:13px; margin:0 0 16px;">
+                    Analyzes backtesting data and recommends weight adjustments to maximize
+                    the <strong>20%+ spike rate</strong>. Does <em>not</em> change live weights —
+                    outputs a text report for your review.
+                    Requires 5+ scans with known returns.
+                </p>
+                <form method="post" action="/optimize">
+                    <button type="submit" style="background:#4f46e5; color:white; border:none;
+                            padding:9px 20px; border-radius:8px; cursor:pointer;
+                            font-size:13px; font-weight:600;">
+                        Run Optimizer
+                    </button>
+                </form>
+            </div>
+
+        </div>
+
+        <!-- Complex AI: active weights (shown below both buttons) -->
         {% if complex_ai_weights %}
-        <div style="margin-bottom:20px; background:#f0fdf4; border:1px solid #86efac;
+        <div style="margin-top:24px; background:#f0fdf4; border:1px solid #86efac;
                     border-radius:8px; padding:16px 18px;">
             <div style="font-weight:700; color:#166534; margin-bottom:10px; font-size:14px;">
                 Active Weights &nbsp;·&nbsp;
@@ -381,8 +424,6 @@
                     Last updated {{ complex_ai_weights.updated_at[:10] }}
                 </span>
             </div>
-
-            <!-- Weight grid -->
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(210px,1fr));
                         gap:6px 20px; font-size:13px; margin-bottom:12px;">
                 {% set w = complex_ai_weights.weights %}
@@ -403,14 +444,12 @@
                 <div><strong>Institution ≥20%:</strong> {{ w.institution_moderate }}</div>
                 <div><strong>Institution ≥50%:</strong> {{ w.institution_strong }}</div>
             </div>
-
             {% if complex_ai_weights.rationale %}
             <div style="font-size:13px; color:#374151; line-height:1.6;
                         border-top:1px solid #bbf7d0; padding-top:10px; margin-top:4px;">
                 {{ complex_ai_weights.rationale }}
             </div>
             {% endif %}
-
             {% if complex_ai_weights.suggestions %}
             <div style="margin-top:12px; font-size:13px;">
                 <strong style="color:#166534;">Suggested new signals to track:</strong>
@@ -424,16 +463,9 @@
         </div>
         {% endif %}
 
-        <form method="post" action="/optimize-complex">
-            <button type="submit" style="background:#0f766e; color:white; border:none;
-                    padding:10px 22px; border-radius:8px; cursor:pointer;
-                    font-size:14px; font-weight:600;">
-                Re-optimize Now
-            </button>
-        </form>
-
+        <!-- Complex AI: result after clicking Re-optimize -->
         {% if complex_ai_result %}
-        <div style="margin-top:20px; padding:16px 18px; background:#f0fdf4;
+        <div style="margin-top:16px; padding:16px 18px; background:#f0fdf4;
                     border-radius:8px; border:1px solid #86efac;">
             <div style="font-weight:600; color:#166534; margin-bottom:8px;">
                 Optimization Complete
@@ -455,9 +487,24 @@
             {% endif %}
         </div>
         {% endif %}
+
+        <!-- Read-Only: analysis output -->
+        {% if weight_analysis %}
+        <div style="margin-top:16px; padding:20px; background:#f8f9ff;
+                    border-radius:8px; border:1px solid #e0e7ff;">
+            <div style="font-size:12px; font-weight:600; color:#4f46e5; margin-bottom:8px;">
+                Read-Only Analysis
+            </div>
+            <div style="font-size:13px; line-height:1.7; white-space:pre-wrap;
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+                {{ weight_analysis }}
+            </div>
+        </div>
+        {% endif %}
+
     </div>
 
-    <!-- COMPLEX + AI CHANGE LOG -->
+    <!-- WEIGHT CHANGE LOG -->
     <div class="section-title" style="color:#0f766e;">Complex + AI Model — Change Log</div>
 
     <div class="chart-card" style="margin-bottom:40px; border-left:4px solid #0f766e;">
@@ -491,35 +538,6 @@
             No model updates logged yet. Use "Apply to Complex + AI Model" on the Feedback page
             or click "Re-optimize Now" above to log the first entry.
         </p>
-        {% endif %}
-    </div>
-
-    <!-- WEIGHT OPTIMIZER -->
-    <div class="section-title">General AI Weight Optimizer (Read-Only Recommendations)</div>
-
-    <div class="chart-card" style="margin-bottom:40px;">
-        <p style="color:#6b7280; font-size:14px; margin-top:0; margin-bottom:16px;">
-            Analyzes your backtesting data and recommends scoring weight adjustments
-            to maximize the <strong>20%+ next-day spike rate</strong> — the take-profit target.
-            Also suggests new criteria to track. Requires 5+ scans with known returns.
-        </p>
-
-        <form method="post" action="/optimize">
-            <button type="submit" style="background:#4f46e5; color:white; border:none;
-                    padding:10px 22px; border-radius:8px; cursor:pointer;
-                    font-size:14px; font-weight:600;">
-                Run Optimizer
-            </button>
-        </form>
-
-        {% if weight_analysis %}
-        <div style="margin-top:24px; padding:20px; background:#f8f9ff;
-                    border-radius:8px; border:1px solid #e0e7ff;">
-            <div style="font-size:13px; line-height:1.7; white-space:pre-wrap;
-                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
-                {{ weight_analysis }}
-            </div>
-        </div>
         {% endif %}
     </div>
 
