@@ -118,7 +118,7 @@ def _score(relative_volume, daily_return, range_10d,
         elif shares_outstanding < 30_000_000:
             score += w["shares_lt30m"]
         elif shares_outstanding >= 100_000_000:
-            score -= w["shares_gte100m_penalty"]
+            score -= w.get("shares_gte100m_penalty", 0)
 
     # Treat historical moves as organic (no news signal available)
     score += w.get("no_news_bonus", 0)
@@ -262,11 +262,14 @@ def _get_db_tickers():
         return []
 
 
-def build_historical_dataset(max_workers=6, weights=None):
+def build_historical_dataset(max_workers=2, weights=None):
     """
     Process all seed + dynamically fetched + previously seen tickers in parallel.
     Saves qualifying labeled examples into the scans table (mode='historical').
     Returns count of examples saved.
+
+    Memory-efficient: batch-saves every 50 tickers (clears accumulator),
+    keeps only lightweight (symbol, timestamp, days_to_20pct) tuples for LSTM.
     """
     from app.database import save_historical_scans, set_backfill_status
     from app.universe import fetch_backfill_universe
@@ -274,7 +277,6 @@ def build_historical_dataset(max_workers=6, weights=None):
     db_tickers = _get_db_tickers()
 
     # Fetch dynamic universe from Finviz (price < $10, avg vol > 200K)
-    # The _process_ticker filter (price < $5, gain 10-100%, rv > 10x) does strict screening
     try:
         dynamic_tickers = fetch_backfill_universe(max_tickers=500)
     except Exception as e:
@@ -293,8 +295,11 @@ def build_historical_dataset(max_workers=6, weights=None):
     set_backfill_status("running", 0, total, 0)
     print(f"Backfill: starting — {total} tickers to process")
 
-    all_examples = []
+    batch = []          # full example dicts — flushed every 50 tickers
+    seq_inputs = []     # lightweight tuples for LSTM — kept for full run
+    total_saved = 0
     processed = 0
+    first_batch = True
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
@@ -308,21 +313,33 @@ def build_historical_dataset(max_workers=6, weights=None):
             except Exception:
                 result = []
             if result:
-                all_examples.extend(result)
-            if processed % 10 == 0 or processed == total:
-                set_backfill_status("running", processed, total, len(all_examples))
+                batch.extend(result)
+                for ex in result:
+                    seq_inputs.append({
+                        "symbol":       ex["symbol"],
+                        "timestamp":    ex["timestamp"],
+                        "days_to_20pct": ex.get("days_to_20pct"),
+                    })
 
-    saved = save_historical_scans(all_examples)
-    set_backfill_status("complete", processed, total, saved)
-    print(f"Backfill: complete — {saved} examples from {processed} tickers")
+            # Flush batch every 50 tickers to keep RAM low
+            if processed % 50 == 0 or processed == total:
+                if batch:
+                    saved_now = save_historical_scans(batch, clear_first=first_batch)
+                    total_saved += saved_now
+                    batch.clear()
+                    first_batch = False
+                set_backfill_status("running", processed, total, total_saved)
 
-    # Build LSTM training sequences from collected examples
+    set_backfill_status("complete", processed, total, total_saved)
+    print(f"Backfill: complete — {total_saved} examples from {processed} tickers")
+
+    # Build LSTM sequences from lightweight inputs (batch list is already cleared)
     try:
         from app.lstm_model import build_sequences_from_backfill
         print("Backfill: building LSTM sequences...")
-        n_seq = build_sequences_from_backfill(all_examples)
+        n_seq = build_sequences_from_backfill(seq_inputs)
         print(f"Backfill: {n_seq} LSTM sequences saved")
     except Exception as e:
         print(f"Backfill: LSTM sequence build failed — {e}")
 
-    return saved
+    return total_saved

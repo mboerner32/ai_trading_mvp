@@ -64,19 +64,22 @@ def extract_features(row) -> list | None:
 # Build sequences from completed backfill examples
 # ---------------------------------------------------------------------------
 
-def build_sequences_from_backfill(all_examples: list) -> int:
+def build_sequences_from_backfill(seq_inputs: list) -> int:
     """
-    For each labeled example from the backfill, fetch the 20-day feature
-    sequence ending on scan_date and save to lstm_sequences.npz.
+    Build LSTM training sequences from lightweight input dicts
+    [{symbol, timestamp, days_to_20pct}, ...].
+
+    Downloads OHLCV per symbol (one download per symbol), extracts the
+    SEQUENCE_LEN-day window ending on scan_date, and saves to lstm_sequences.npz.
 
     Returns number of sequences successfully built.
     """
     import yfinance as yf
     from app.scanner import prepare_dataframe
 
-    # Group examples by symbol to minimise yfinance downloads
+    # Group by symbol to minimise yfinance downloads
     by_symbol: dict[str, list] = {}
-    for ex in all_examples:
+    for ex in seq_inputs:
         sym = ex.get("symbol")
         ts  = ex.get("timestamp", "")[:10]
         if sym and ts:
@@ -126,14 +129,17 @@ def build_sequences_from_backfill(all_examples: list) -> int:
         print("LSTM sequences: no sequences built — check backfill data")
         return 0
 
+    n = len(X_list)
+    # Convert to numpy and immediately free the Python lists
     X = np.array(X_list, dtype=np.float32)   # (N, 20, 6)
     y = np.array(y_list, dtype=np.float32)   # (N,)
+    del X_list, y_list
 
     np.savez(SEQ_DATA_PATH, X=X, y=y)
-    print(f"LSTM sequences: saved {len(X_list)} sequences "
-          f"({int(y.sum())} positive / {len(y_list) - int(y.sum())} negative) "
+    print(f"LSTM sequences: saved {n} sequences "
+          f"({int(y.sum())} positive / {n - int(y.sum())} negative) "
           f"to {SEQ_DATA_PATH}")
-    return len(X_list)
+    return n
 
 
 # ---------------------------------------------------------------------------

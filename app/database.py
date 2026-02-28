@@ -1019,16 +1019,18 @@ def get_watchlist() -> list:
 
 
 # ---------------- HISTORICAL BACKFILL ----------------
-def save_historical_scans(examples: list) -> int:
+def save_historical_scans(examples: list, clear_first: bool = True) -> int:
     """
     Insert labeled historical scan examples (mode='historical').
-    Clears existing historical rows first to keep the table idempotent.
+    Clears existing historical rows first (clear_first=True) to keep the table idempotent.
+    Pass clear_first=False for subsequent batch calls.
     """
     if not examples:
         return 0
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM scans WHERE mode = 'historical'")
+    if clear_first:
+        cursor.execute("DELETE FROM scans WHERE mode = 'historical'")
     for ex in examples:
         cursor.execute("""
             INSERT INTO scans (
