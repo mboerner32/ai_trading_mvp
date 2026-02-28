@@ -321,14 +321,16 @@ def build_historical_dataset(max_workers=2, weights=None):
                         "days_to_20pct": ex.get("days_to_20pct"),
                     })
 
-            # Flush batch every 50 tickers to keep RAM low
+            # Update status on every ticker so progress bar stays live
+            set_backfill_status("running", processed, total, total_saved + len(batch))
+
+            # Flush batch to DB every 50 tickers to keep RAM low
             if processed % 50 == 0 or processed == total:
                 if batch:
                     saved_now = save_historical_scans(batch, clear_first=first_batch)
                     total_saved += saved_now
                     batch.clear()
                     first_batch = False
-                set_backfill_status("running", processed, total, total_saved)
 
     set_backfill_status("complete", processed, total, total_saved)
     print(f"Backfill: complete — {total_saved} examples from {processed} tickers")
