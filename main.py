@@ -208,6 +208,36 @@ def _run_validation():
         print(f"VALIDATOR: run failed — {e}")
 
 
+def _daily_backfill():
+    """
+    Runs automatically at 6:00 AM ET every weekday.
+    Incremental backfill: picks up any new tickers from yesterday's scans,
+    retrains LSTM on the growing dataset, then re-syncs hypothesis + weights.
+    Skipped if a manual backfill is already running.
+    """
+    global _backfill_running
+    if _backfill_running:
+        print("DAILY BACKFILL: skipped — manual run already in progress")
+        return
+    _backfill_running = True
+    print("DAILY BACKFILL: starting scheduled run")
+    try:
+        weights_data = get_squeeze_weights()
+        weights = weights_data["weights"] if weights_data else None
+        build_historical_dataset(weights=weights)
+        try:
+            lstm_stats = train_lstm()
+            print(f"DAILY BACKFILL: LSTM retrained — {lstm_stats}")
+        except Exception as e:
+            print(f"DAILY BACKFILL: LSTM training skipped — {e}")
+        _run_hypothesis_and_weights(get_all_feedback())
+        print("DAILY BACKFILL: complete")
+    except Exception as e:
+        print(f"DAILY BACKFILL: error — {e}")
+    finally:
+        _backfill_running = False
+
+
 _scheduler = BackgroundScheduler(timezone=pytz.timezone("America/New_York"))
 _scheduler.add_job(_scheduled_scan,  "cron", day_of_week="mon-fri", hour=9,  minute=45)
 _scheduler.add_job(_premarket_scan,  "cron", day_of_week="mon-fri", hour=8,  minute=30)
@@ -217,6 +247,8 @@ _scheduler.add_job(_run_validation,  "cron", day_of_week="mon-fri", hour=15, min
 _scheduler.add_job(_run_validation,  "cron", day_of_week="mon-fri", hour=15, minute=15)
 _scheduler.add_job(_run_validation,  "cron", day_of_week="mon-fri", hour=15, minute=30)
 _scheduler.add_job(_run_validation,  "cron", day_of_week="mon-fri", hour=15, minute=45)
+# Daily backfill + LSTM retrain at 6:00 AM ET — before market open, after prior day outcomes settle
+_scheduler.add_job(_daily_backfill,  "cron", day_of_week="mon-fri", hour=6,  minute=0)
 _scheduler.start()
 
 # Log API key status at startup so it's visible in Render logs
