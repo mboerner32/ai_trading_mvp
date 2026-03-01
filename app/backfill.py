@@ -146,7 +146,7 @@ def _process_ticker(symbol, weights=None):
     """
     try:
         df = yf.download(
-            symbol, period="10y", interval="1d",
+            symbol, period="max", interval="1d",
             progress=False, auto_adjust=False
         )
         if df.empty or len(df) < 70:
@@ -269,7 +269,7 @@ def _get_db_tickers():
         return []
 
 
-def build_historical_dataset(max_workers=1, weights=None):
+def build_historical_dataset(max_workers=2, weights=None):
     """
     Process all seed + dynamically fetched + previously seen tickers in parallel.
     Saves qualifying labeled examples into the scans table (mode='historical').
