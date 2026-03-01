@@ -91,11 +91,34 @@ from app.database import (
 
 app = FastAPI()
 
-# Session middleware
+# Session middleware — secret must be set in env (SESSION_SECRET); falls back to
+# a random value so the app still starts, but sessions won't survive restarts.
+_session_secret = _os.environ.get("SESSION_SECRET") or _os.urandom(32).hex()
+if not _os.environ.get("SESSION_SECRET"):
+    print("STARTUP: WARNING — SESSION_SECRET env var not set. Sessions will not "
+          "persist across restarts. Set SESSION_SECRET in Render environment variables.")
 app.add_middleware(
     SessionMiddleware,
-    secret_key="CHANGE_THIS_SECRET_KEY"
+    secret_key=_session_secret,
+    https_only=True,      # cookie only sent over HTTPS (Render always uses HTTPS)
+    same_site="strict",   # mitigates CSRF
 )
+
+# Security headers on every response
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Frame-Options"]           = "DENY"
+    response.headers["X-Content-Type-Options"]    = "nosniff"
+    response.headers["Referrer-Policy"]           = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"]        = "geolocation=(), microphone=(), camera=()"
+    return response
+
+# In-memory login rate limiter: max 10 attempts per IP per 15-minute window
+import time as _time
+_login_attempts: dict = {}   # {ip: [timestamp, ...]}
+_LOGIN_MAX        = 10
+_LOGIN_WINDOW_SEC = 900      # 15 minutes
 
 # Initialize database and seed users
 init_db()
@@ -103,10 +126,15 @@ seed_users()
 
 # In-process flag so the backfill guard is reliable even if DB status got stuck
 _backfill_running = False
+_lstm_training    = False
 
 # Alert deduplication — tracks symbols already alerted today; resets each trading day
 _alerted_today: set = set()
 _alerted_date:  str = ""
+
+# Auto-paper-trade daily limit — max 3 auto-trades per trading day
+_auto_trade_count: int = 0
+_auto_trade_date:  str = ""
 
 # ---------------- SCHEDULER ----------------
 def _autoclose_take_profit() -> list:
@@ -163,6 +191,87 @@ def _auto_learn():
         print(f"AUTO-LEARN: failed — {e}")
 
 
+def _enrich_high_scorers(results: list) -> list:
+    """
+    For each stock scoring >= 75, add lstm_prob and ai_trade_call to the result dict.
+    Called during scheduled and intraday scans so alerts carry full AI context.
+    Runs in parallel (max 4 workers); gracefully skips on error.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    hypothesis_data = get_hypothesis()
+    hypothesis_text = hypothesis_data["content"] if hypothesis_data else None
+    sizing_stats    = get_sizing_stats()
+    high_scorers    = [r for r in results if r.get("score", 0) >= 75]
+
+    def _enrich_one(stock):
+        try:
+            lstm_prob = predict_hit_probability(stock["symbol"])
+            stock["lstm_prob"] = lstm_prob
+            ticker_history = get_ticker_scan_history(stock["symbol"])
+            stock["ai_trade_call"] = recommend_trade(
+                stock, hypothesis_text, sizing_stats, ticker_history,
+                lstm_prob=lstm_prob
+            )
+        except Exception as e:
+            print(f"ENRICH: {stock['symbol']} failed — {e}")
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(_enrich_one, high_scorers))
+
+    return results
+
+
+def _auto_paper_trade(results: list, today_str: str):
+    """
+    Open paper trades for HIGH-confidence TRADE calls found in enriched scan results.
+    Limits to 3 auto-trades per trading day. Skips symbols already in open positions.
+    Sends a Telegram notification for each auto-trade opened.
+    """
+    global _auto_trade_count, _auto_trade_date
+    from app.alerts import _send_telegram
+
+    if today_str != _auto_trade_date:
+        _auto_trade_count = 0
+        _auto_trade_date  = today_str
+
+    if _auto_trade_count >= 3:
+        return
+
+    open_symbols = {p["symbol"] for p in get_open_positions()}
+    portfolio    = get_portfolio_summary()
+    available    = portfolio["cash"]
+
+    for r in results:
+        if _auto_trade_count >= 3:
+            break
+        if r.get("score", 0) < 75:
+            continue
+        tc = r.get("ai_trade_call") or {}
+        if tc.get("decision") != "TRADE" or tc.get("confidence") != "HIGH":
+            continue
+        symbol = r["symbol"]
+        if symbol in open_symbols:
+            continue
+        if available < 500:
+            continue
+
+        entry_price = _fetch_current_price(symbol, r.get("price", 0))
+        result = open_trade(symbol, entry_price, 1000, "auto-trade: HIGH confidence AI call", 20.0)
+        if result:
+            _auto_trade_count += 1
+            open_symbols.add(symbol)
+            available -= 1000
+            lstm_str = f" · LSTM: {r['lstm_prob']:.0%}" if r.get("lstm_prob") is not None else ""
+            _send_telegram(
+                f"<b>Auto-Trade Opened: {symbol}</b>\n"
+                f"Entry: ${entry_price:.4f} · Score: {r['score']}/100{lstm_str}\n"
+                f"<i>{tc.get('rationale', '')}</i>"
+            )
+            print(f"AUTO-TRADE: opened {symbol} at ${entry_price:.4f} "
+                  f"(score={r['score']}, count={_auto_trade_count}/3)")
+
+
 def _scheduled_scan():
     """Auto-run all scan modes at 9:45am ET Mon–Fri and refresh cache."""
     global _alerted_today, _alerted_date
@@ -183,11 +292,15 @@ def _scheduled_scan():
             save_scan_cache(mode, data["results"], data["summary"])
             print(f"SCHEDULER: {mode} scan complete ({len(data['results'])} results)")
             if mode == "squeeze":
+                # Enrich high-scorers with AI calls + LSTM before alerting
+                _enrich_high_scorers(data["results"])
                 # Track morning high-scorers so intraday scans don't re-alert them
                 for r in data["results"]:
                     if r.get("score", 0) >= 75:
                         _alerted_today.add(r.get("symbol"))
                 send_scan_alert(data["results"], "Complex + AI")
+                # Auto paper-trade HIGH confidence TRADE calls (max 3/day)
+                _auto_paper_trade(data["results"], today_str)
                 # Log near-misses (40-74) to watchlist for intraday re-checking
                 for r in data["results"]:
                     score = r.get("score", 0)
@@ -289,6 +402,13 @@ def _intraday_scan():
         save_scan(data["results"], "squeeze")
         save_scan_cache("squeeze", data["results"], data["summary"])
 
+        # Enrich new high-scorers with AI calls + LSTM before alerting
+        new_high = [
+            r for r in data["results"]
+            if r.get("score", 0) >= 75 and r.get("symbol") not in _alerted_today
+        ]
+        if new_high:
+            _enrich_high_scorers(data["results"])
         # Alert only on genuinely new high-scorers
         new_alerts = [
             r for r in data["results"]
@@ -296,6 +416,7 @@ def _intraday_scan():
         ]
         if new_alerts:
             send_scan_alert(new_alerts, f"Intraday {et_now.strftime('%H:%M')}")
+            _auto_paper_trade(new_alerts, today_str)
             for r in new_alerts:
                 _alerted_today.add(r.get("symbol"))
 
@@ -470,16 +591,28 @@ def login_page(request: Request):
 
 @app.post("/login")
 def login(request: Request, username: str = Form(...), password: str = Form(...)):
-
-    if not authenticate_user(username, password):
+    # Rate-limit by IP address
+    ip = request.client.host if request.client else "unknown"
+    now = _time.time()
+    attempts = _login_attempts.get(ip, [])
+    attempts = [t for t in attempts if now - t < _LOGIN_WINDOW_SEC]
+    if len(attempts) >= _LOGIN_MAX:
         return templates.TemplateResponse(
             "login.html",
-            {
-                "request": request,
-                "error": "Invalid credentials"
-            }
+            {"request": request, "error": "Too many login attempts. Try again in 15 minutes."}
         )
 
+    if not authenticate_user(username, password):
+        attempts.append(now)
+        _login_attempts[ip] = attempts
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "error": "Invalid credentials"}
+        )
+
+    # Successful login — clear attempts and regenerate session
+    _login_attempts.pop(ip, None)
+    request.session.clear()
     request.session["user"] = username
     return RedirectResponse("/dashboard", status_code=303)
 
@@ -1122,6 +1255,30 @@ def api_backfill_status(request: Request):
     if "user" not in request.session:
         return Response(status_code=401)
     return get_backfill_status()
+
+
+@app.post("/retrain-lstm")
+def retrain_lstm(request: Request):
+    """Re-train the LSTM on existing lstm_sequences.npz without re-running the full backfill."""
+    global _lstm_training
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    if _lstm_training:
+        return RedirectResponse("/analytics?lstm=already_training", status_code=303)
+
+    def _run():
+        global _lstm_training
+        _lstm_training = True
+        try:
+            stats = train_lstm()
+            print(f"RETRAIN LSTM: complete — {stats}")
+        except Exception as e:
+            print(f"RETRAIN LSTM: failed — {e}")
+        finally:
+            _lstm_training = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return RedirectResponse("/analytics?lstm=training", status_code=303)
 
 
 @app.get("/api/hypothesis-status")

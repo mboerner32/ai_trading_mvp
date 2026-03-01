@@ -230,14 +230,24 @@ def create_user(username: str, password: str):
 
 
 def seed_users():
-    """Ensure default users exist and passwords are current — safe to call on every startup."""
+    """
+    Create default accounts only if they do not already exist.
+    Uses DO NOTHING so that passwords changed via /account are never overwritten.
+    Default passwords come from env vars ADMIN_PASSWORD / BOB_PASSWORD; fall back
+    to the original defaults if the env vars are not set.
+    """
+    import os as _os
+    defaults = [
+        ("admin",        _os.environ.get("ADMIN_PASSWORD", "Billions1!")),
+        ("BobbyAxelrod", _os.environ.get("BOB_PASSWORD",   "Billions")),
+    ]
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    for username, password in [("admin", "Billions1!"), ("BobbyAxelrod", "Billions")]:
+    for username, password in defaults:
         hashed = pwd_context.hash(password)
         cursor.execute("""
             INSERT INTO users (username, hashed_password) VALUES (?, ?)
-            ON CONFLICT(username) DO UPDATE SET hashed_password = excluded.hashed_password
+            ON CONFLICT(username) DO NOTHING
         """, (username, hashed))
     conn.commit()
     conn.close()

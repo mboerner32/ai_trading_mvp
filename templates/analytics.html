@@ -366,20 +366,51 @@
             </div>
             {% endif %}
 
-            <!-- Model status -->
+            <!-- Model status + retrain button -->
             {% if lstm_status and lstm_status.trained %}
-            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
                 <span style="font-size:13px; color:#0f766e; font-weight:600;">&#10003; Model Trained</span>
                 <span style="font-size:12px; color:#9ca3af;">
                     {{ lstm_status.accuracy }}% val accuracy
                     &middot; trained on {{ lstm_status.samples }} sequences
                     &middot; {{ lstm_status.trained_at }}
                 </span>
+                <form method="post" action="/retrain-lstm" style="margin:0;">
+                    <button type="submit"
+                            style="font-size:12px; padding:5px 12px; border-radius:6px;
+                                   background:#0369a1; color:white; border:none; cursor:pointer;
+                                   font-weight:500;"
+                            onclick="this.textContent='Training…'; this.disabled=true;">
+                        ↻ Retrain LSTM
+                    </button>
+                </form>
             </div>
             {% else %}
-            <span style="font-size:12px; color:#9ca3af;">
-                Model not yet trained — run Historical Training Data to train.
-            </span>
+            <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                <span style="font-size:12px; color:#9ca3af;">
+                    Model not yet trained — run Historical Training Data to train.
+                </span>
+                {% if seq_stats and seq_stats.available %}
+                <form method="post" action="/retrain-lstm" style="margin:0;">
+                    <button type="submit"
+                            style="font-size:12px; padding:5px 12px; border-radius:6px;
+                                   background:#0369a1; color:white; border:none; cursor:pointer;
+                                   font-weight:500;"
+                            onclick="this.textContent='Training…'; this.disabled=true;">
+                        Train LSTM Now
+                    </button>
+                </form>
+                {% endif %}
+            </div>
+            {% endif %}
+            {% if request.query_params.get('lstm') == 'training' %}
+            <div style="margin-top:8px; font-size:12px; color:#0369a1; font-weight:500;">
+                LSTM training started — refresh in ~2 minutes to see updated results.
+            </div>
+            {% elif request.query_params.get('lstm') == 'already_training' %}
+            <div style="margin-top:8px; font-size:12px; color:#d97706; font-weight:500;">
+                LSTM training already in progress — please wait.
+            </div>
             {% endif %}
         </div>
     </div>

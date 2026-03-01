@@ -67,6 +67,7 @@ def send_scan_alert(results: list, mode: str, min_score: int = 75):
     """
     Email + Telegram top-scoring stocks from a scan.
     Only sends if at least one stock scores >= min_score.
+    Includes AI call, confidence, LSTM prob, and rationale when available.
     """
     top = [r for r in results if r.get("score", 0) >= min_score]
     if not top:
@@ -76,16 +77,38 @@ def send_scan_alert(results: list, mode: str, min_score: int = 75):
     tg_lines    = [f"<b>{len(top)} High-Score Alert — {mode}</b>\n"]
 
     for r in top[:10]:
-        chk   = r.get("checklist", {})
-        price = r.get("price", "?")
-        rv    = chk.get("relative_volume", "?")
+        chk        = r.get("checklist", {})
+        price      = r.get("price", "?")
+        rv         = chk.get("relative_volume", "?")
+        tc         = r.get("ai_trade_call") or {}
+        decision   = tc.get("decision", "")
+        confidence = tc.get("confidence", "")
+        rationale  = tc.get("rationale", "")
+        lstm_prob  = r.get("lstm_prob")
+
+        # Email line
+        ai_str   = f"  AI:{decision}/{confidence}" if decision else ""
+        lstm_str = f"  LSTM:{lstm_prob:.0%}" if lstm_prob is not None else ""
         email_lines.append(
             f"  {r['symbol']:6s}  Score:{r['score']}/100  {r.get('recommendation','')}"
-            f"  ${price}  RV:{rv}x"
+            f"  ${price}  RV:{rv}x{ai_str}{lstm_str}"
         )
+        if rationale:
+            email_lines.append(f"         {rationale}")
+
+        # Telegram line
+        if decision == "TRADE":
+            ai_badge = f" ✅ <b>{decision}</b> ({confidence})"
+        elif decision == "NO_TRADE":
+            ai_badge = f" ❌ {decision} ({confidence})"
+        else:
+            ai_badge = ""
+        lstm_badge = f" · LSTM: {lstm_prob:.0%}" if lstm_prob is not None else ""
         tg_lines.append(
-            f"<b>{r['symbol']}</b>  Score:{r['score']}/100  ${price}  RV:{rv}x"
+            f"<b>{r['symbol']}</b>  {r['score']}/100  ${price}  RV:{rv}x{ai_badge}{lstm_badge}"
         )
+        if rationale and decision == "TRADE":
+            tg_lines.append(f"  <i>{rationale}</i>")
 
     _send_email(
         subject=f"[Trading] {len(top)} High-Score Alert — {mode}",
@@ -94,19 +117,26 @@ def send_scan_alert(results: list, mode: str, min_score: int = 75):
     _send_telegram("\n".join(tg_lines))
 
 
-def send_watchlist_alert(symbol: str, score: int, price: float = None, old_score: int = None):
+def send_watchlist_alert(symbol: str, score: int, price: float = None,
+                         old_score: int = None, lstm_prob: float = None,
+                         rationale: str = None):
     """
     Alert when a near-miss watchlist stock rises to score >= 75.
     old_score is the score when it was first added to the watchlist.
     """
-    price_str = f"  ${price:.2f}" if price else ""
-    prev_str  = f" (was {old_score})" if old_score else ""
-    subject   = f"[Trading] Watchlist: {symbol} hit {score}/100"
-    body      = f"WATCHLIST BREAKOUT: {symbol} now scoring {score}/100{prev_str}{price_str}"
-    tg_msg    = (
+    price_str  = f"  ${price:.2f}" if price else ""
+    prev_str   = f" (was {old_score})" if old_score else ""
+    lstm_str   = f"  LSTM: {lstm_prob:.0%}" if lstm_prob is not None else ""
+    subject    = f"[Trading] Watchlist Breakout: {symbol} hit {score}/100"
+    body       = f"WATCHLIST BREAKOUT: {symbol} now scoring {score}/100{prev_str}{price_str}{lstm_str}"
+    if rationale:
+        body  += f"\n{rationale}"
+    tg_msg     = (
         f"<b>Watchlist Breakout: {symbol}</b>\n"
-        f"Score: {score}/100{prev_str}{price_str}"
+        f"Score: {score}/100{prev_str}{price_str}{lstm_str}"
     )
+    if rationale:
+        tg_msg += f"\n<i>{rationale}</i>"
     _send_email(subject=subject, body=body)
     _send_telegram(tg_msg)
 
