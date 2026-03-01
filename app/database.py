@@ -210,6 +210,16 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # is_admin flag on users (1 = admin, 0 = regular trader)
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+        # Make the 'admin' account an admin
+        cursor.execute("UPDATE users SET is_admin = 1 WHERE username = 'admin'")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     conn.close()
 
 
@@ -227,6 +237,30 @@ def create_user(username: str, password: str):
 
     conn.commit()
     conn.close()
+
+
+def get_all_users() -> list:
+    """Return list of all users (id, username, is_admin). Passwords excluded."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, COALESCE(is_admin, 0) FROM users ORDER BY id")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": r[0], "username": r[1], "is_admin": bool(r[2])} for r in rows]
+
+
+def delete_user(username: str) -> bool:
+    """Delete a user by username. Returns True if deleted, False if not found.
+    The 'admin' account cannot be deleted."""
+    if username == "admin":
+        return False
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE username = ?", (username,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 def seed_users():

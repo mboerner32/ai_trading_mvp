@@ -26,6 +26,7 @@ from app.ai_agent import (
     recommend_position_size,
     predict_price_target,
     recommend_trade,
+    get_stock_news,
     analyze_and_optimize_weights,
     analyze_chart_feedback,
     reprocess_chart_analysis,
@@ -38,6 +39,8 @@ from app.scoring_engine import DEFAULT_SQUEEZE_WEIGHTS, score_stock_squeeze
 from app.database import (
     init_db,
     seed_users,
+    get_all_users,
+    delete_user,
     save_scan,
     update_returns,
     get_score_buckets,
@@ -211,9 +214,10 @@ def _enrich_high_scorers(results: list) -> list:
             lstm_prob = predict_hit_probability(stock["symbol"])
             stock["lstm_prob"] = lstm_prob
             ticker_history = get_ticker_scan_history(stock["symbol"])
+            news = get_stock_news(stock["symbol"])
             stock["ai_trade_call"] = recommend_trade(
                 stock, hypothesis_text, sizing_stats, ticker_history,
-                lstm_prob=lstm_prob
+                lstm_prob=lstm_prob, news_headlines=news
             )
         except Exception as e:
             print(f"ENRICH: {stock['symbol']} failed — {e}")
@@ -668,9 +672,10 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
         stock["lstm_prob"] = lstm_prob
 
         ticker_history = get_ticker_scan_history(stock["symbol"])
+        news = get_stock_news(stock["symbol"])
         stock["ai_trade_call"] = recommend_trade(
             stock, hypothesis_text, sizing_stats, ticker_history,
-            lstm_prob=lstm_prob
+            lstm_prob=lstm_prob, news_headlines=news
         )
         scan_id = scan_id_map.get(stock.get("symbol"))
         if scan_id:
@@ -1402,6 +1407,51 @@ def test_telegram(request: Request):
     from app.alerts import _send_telegram
     _send_telegram("<b>Reno Robs Trading Bot</b>\n\nTelegram alerts are working!")
     return {"ok": True}
+
+
+# ---------------- USER MANAGEMENT (admin only) ----------------
+def _require_admin(request: Request):
+    """Returns True if the current session user is 'admin', else False."""
+    return request.session.get("user") == "admin"
+
+
+@app.get("/users", response_class=HTMLResponse)
+def users_page(request: Request):
+    if "user" not in request.session:
+        return RedirectResponse("/login")
+    if not _require_admin(request):
+        return RedirectResponse("/dashboard")
+    return templates.TemplateResponse(
+        "users.html",
+        {
+            "request": request,
+            "user": request.session["user"],
+            "users": get_all_users(),
+        }
+    )
+
+
+@app.post("/users/create")
+def users_create(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+):
+    if "user" not in request.session or not _require_admin(request):
+        return RedirectResponse("/login", status_code=303)
+    username = username.strip()
+    if not username or len(password) < 8:
+        return RedirectResponse("/users?error=invalid", status_code=303)
+    create_user(username, password)
+    return RedirectResponse("/users?created=1", status_code=303)
+
+
+@app.post("/users/delete/{username}")
+def users_delete(request: Request, username: str):
+    if "user" not in request.session or not _require_admin(request):
+        return RedirectResponse("/login", status_code=303)
+    delete_user(username)
+    return RedirectResponse("/users", status_code=303)
 
 
 # ---------------- LOGOUT ----------------

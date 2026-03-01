@@ -10,6 +10,23 @@ from datetime import datetime, date, timedelta
 client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from environment automatically
 
 
+def get_stock_news(symbol: str, max_headlines: int = 5) -> list[str]:
+    """
+    Fetch recent news headlines for a symbol via yfinance (free, no API key).
+    Returns a list of headline strings (empty list on any error).
+    """
+    try:
+        news = yf.Ticker(symbol).news or []
+        headlines = []
+        for item in news[:max_headlines]:
+            title = item.get("title") or ""
+            if title:
+                headlines.append(title)
+        return headlines
+    except Exception:
+        return []
+
+
 def recommend_position_size(stock: dict, available_cash: float,
                             hypothesis: str = None,
                             sizing_stats: dict = None) -> dict:
@@ -190,7 +207,8 @@ RATIONALE: <one sentence, 15 words or less>"""
 def recommend_trade(stock: dict, hypothesis: str = None,
                     sizing_stats: dict = None,
                     ticker_history: list = None,
-                    lstm_prob: float = None) -> dict:
+                    lstm_prob: float = None,
+                    news_headlines: list = None) -> dict:
     """
     Makes TRADE/NO_TRADE call using five context sources:
     hypothesis, market context (day-of-week), ticker history, historical calibration,
@@ -242,6 +260,14 @@ def recommend_trade(stock: dict, hypothesis: str = None,
             f"{lstm_prob:.0%} probability this stock hits +20% intraday within 7 days."
         )
 
+    # Context 6: recent news headlines
+    news_section = ""
+    if news_headlines:
+        lines = ["\nRecent news headlines:"]
+        for h in news_headlines[:5]:
+            lines.append(f"  • {h}")
+        news_section = "\n".join(lines)
+
     prompt = f"""You are a momentum trading AI making a TRADE or NO_TRADE call for a low-float microcap.
 Strategy: buy stocks showing unusual volume compression setups targeting 20%+ next-day spike.
 
@@ -253,7 +279,7 @@ Signals:
 - Sideways Compression: {checklist.get('sideways_chop')}
 - Yesterday Green: {checklist.get('yesterday_green')}
 - Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'} (40%+ = strong floor, lowers downside risk)
-- Sector/Industry: {checklist.get('sector') or 'N/A'} / {checklist.get('industry') or 'N/A'} (Biotech/Healthcare historically outperforms for this setup){calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}
+- Sector/Industry: {checklist.get('sector') or 'N/A'} / {checklist.get('industry') or 'N/A'} (Biotech/Healthcare historically outperforms for this setup){calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}{news_section}
 
 Make a TRADE or NO_TRADE call. Does this setup match learned patterns? Is the score/signal quality sufficient?
 

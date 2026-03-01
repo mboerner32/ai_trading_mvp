@@ -2,8 +2,20 @@
 Local PyTorch LSTM model for predicting 20%-hit probability on low-float momentum stocks.
 
 Architecture: 2-layer LSTM → sigmoid binary classifier
-Input:  20 trading days × 6 features per day
+Input:  20 trading days × 10 features per day
 Output: probability that stock intraday HIGH touches +20% within 7 trading days
+
+Features (10):
+  1. daily_return      — daily % change, clipped ±1
+  2. relative_volume   — vol / 63d avg, clipped 0–100 then /100
+  3. high_pct          — (high − close) / close, upside wick
+  4. low_pct           — (close − low) / close, downside wick
+  5. return_3d         — 3-day momentum, clipped ±1
+  6. range_10d         — 10-day compression range / close, clipped 0–2
+  7. rsi_14            — RSI(14) / 100, normalised to [0, 1]
+  8. macd_norm         — MACD histogram / close, clipped ±0.05 then /0.05
+  9. bb_width          — Bollinger bandwidth / close, clipped 0–0.5 then /0.5
+ 10. bb_pct            — %B position in Bollinger bands, clipped [0, 1]
 
 Training data is built by build_sequences_from_backfill() which is called automatically
 after build_historical_dataset() completes. Sequences are saved to lstm_sequences.npz.
@@ -15,10 +27,11 @@ from datetime import datetime
 
 import numpy as np
 
-SEQUENCE_LEN  = 20          # 20 trading days of history per input window
-FEATURES      = 6           # features per time step (see extract_features())
-MODEL_PATH    = "lstm_model.pt"
-SEQ_DATA_PATH = "lstm_sequences.npz"
+SEQUENCE_LEN    = 20          # 20 trading days of history per input window
+FEATURES        = 10          # features per time step (see extract_features())
+FEATURES_VER    = 2           # bump this whenever the feature set changes
+MODEL_PATH      = "lstm_model.pt"
+SEQ_DATA_PATH   = "lstm_sequences.npz"
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +40,7 @@ SEQ_DATA_PATH = "lstm_sequences.npz"
 
 def extract_features(row) -> list | None:
     """
-    Extract 6 normalised features from a prepared_dataframe row.
+    Extract 10 normalised features from a prepared_dataframe row.
     Returns None if any required field is missing/invalid.
     """
     try:
@@ -48,6 +61,12 @@ def extract_features(row) -> list | None:
         return_3d       = np.clip(_f(row.get("return_3d")),  -1.0, 1.0)
         range_10d       = np.clip(_f(row.get("range_10d")),   0.0, 2.0)
 
+        # New technical indicator features
+        rsi_14    = np.clip(_f(row.get("rsi_14"),   50.0), 0.0, 100.0) / 100.0
+        macd_norm = np.clip(_f(row.get("macd_norm"), 0.0), -0.05, 0.05) / 0.05
+        bb_width  = np.clip(_f(row.get("bb_width"),  0.1),  0.0, 0.5)  / 0.5
+        bb_pct    = np.clip(_f(row.get("bb_pct"),    0.5),  0.0, 1.0)
+
         return [
             float(daily_return),
             float(relative_volume),
@@ -55,6 +74,10 @@ def extract_features(row) -> list | None:
             float(np.clip(low_pct,  0.0, 1.0)),
             float(return_3d),
             float(range_10d),
+            float(rsi_14),
+            float(macd_norm),
+            float(bb_width),
+            float(bb_pct),
         ]
     except Exception:
         return None
@@ -230,6 +253,7 @@ def train_lstm(epochs: int = 30, lr: float = 0.001, batch_size: int = 32) -> dic
         "trained_at":     datetime.utcnow().isoformat(),
         "sequence_len":   SEQUENCE_LEN,
         "features":       FEATURES,
+        "features_ver":   FEATURES_VER,
     }, MODEL_PATH)
 
     print(f"LSTM: saved model to {MODEL_PATH}  "
@@ -242,10 +266,15 @@ def train_lstm(epochs: int = 30, lr: float = 0.001, batch_size: int = 32) -> dic
 # ---------------------------------------------------------------------------
 
 def load_lstm():
-    """Load and return trained model, or None if not available."""
+    """Load and return trained model, or None if not available or feature version mismatch."""
     try:
         import torch
         checkpoint = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
+        # Reject models trained on a different feature set — they will silently give
+        # garbage predictions if the input dimensionality has changed.
+        if checkpoint.get("features_ver", 1) != FEATURES_VER:
+            print("LSTM: model feature version mismatch — retrain required")
+            return None
         model = _build_model()
         model.load_state_dict(checkpoint["model_state"])
         model.eval()

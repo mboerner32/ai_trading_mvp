@@ -436,6 +436,31 @@ def prepare_dataframe(df):
             df["volume"].iloc[-1] * factor / rolling_mean.iloc[-1]
         )
 
+    # RSI(14)
+    delta = df["close"].diff()
+    gain  = delta.clip(lower=0)
+    loss  = (-delta).clip(lower=0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss.replace(0, float("nan"))
+    df["rsi_14"] = 100 - (100 / (1 + rs))
+
+    # MACD histogram (12/26/9) normalised by close price
+    ema12 = df["close"].ewm(span=12, adjust=False).mean()
+    ema26 = df["close"].ewm(span=26, adjust=False).mean()
+    macd_line   = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    df["macd_norm"] = (macd_line - signal_line) / df["close"]
+
+    # Bollinger Bands (20, 2σ): width and %B position
+    sma20 = df["close"].rolling(20).mean()
+    std20 = df["close"].rolling(20).std()
+    bb_upper = sma20 + 2 * std20
+    bb_lower = sma20 - 2 * std20
+    band_range = (bb_upper - bb_lower).replace(0, float("nan"))
+    df["bb_width"] = (bb_upper - bb_lower) / df["close"]
+    df["bb_pct"]   = (df["close"] - bb_lower) / band_range
+
     return df
 
 
