@@ -1427,6 +1427,76 @@ def get_risk_metrics() -> dict:
     }
 
 
+# ---------------- MODEL VALIDATION ----------------
+def get_model_validation_stats() -> dict | None:
+    """
+    Validate AI model predictions against actual outcomes.
+    Groups live labeled scans by AI decision, confidence, and score bucket.
+    Returns None if fewer than 10 labeled live scans with AI calls exist.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT score, ai_trade_rec, next_day_return, days_to_20pct
+        FROM scans
+        WHERE mode != 'historical'
+          AND next_day_return IS NOT NULL
+          AND ai_trade_rec IS NOT NULL
+        ORDER BY id DESC LIMIT 1000
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    if len(rows) < 10:
+        return None
+
+    by_decision   = {"TRADE": [], "NO_TRADE": []}
+    by_confidence = {"HIGH": [], "MEDIUM": [], "LOW": []}
+    by_score      = {"90-100": [], "75-89": [], "50-74": [], "<50": []}
+
+    for score, ai_rec_json, nd, d20 in rows:
+        item = (nd, d20)
+        try:
+            ai_rec     = json.loads(ai_rec_json)
+            decision   = ai_rec.get("decision",   "NO_TRADE").upper()
+            confidence = ai_rec.get("confidence", "LOW").upper()
+        except Exception:
+            continue
+
+        if decision in by_decision:
+            by_decision[decision].append(item)
+        if confidence in by_confidence:
+            by_confidence[confidence].append(item)
+
+        if score >= 90:        by_score["90-100"].append(item)
+        elif score >= 75:      by_score["75-89"].append(item)
+        elif score >= 50:      by_score["50-74"].append(item)
+        else:                  by_score["<50"].append(item)
+
+    def _stats(items):
+        if not items:
+            return None
+        returns  = [nd for nd, d in items]
+        hits_20  = [(nd, d) for nd, d in items if d is not None]
+        wins     = [r for r in returns if r > 0]
+        valid_days = [d for nd, d in hits_20]
+        avg_days = round(sum(valid_days) / len(valid_days), 1) if valid_days else None
+        return {
+            "count":       len(items),
+            "hit_20pct":   round(len(hits_20)  / len(items) * 100, 1),
+            "win_rate":    round(len(wins)      / len(items) * 100, 1),
+            "avg_return":  round(sum(returns)   / len(returns), 2),
+            "avg_days_to_20": avg_days,
+        }
+
+    return {
+        "total":         len(rows),
+        "by_decision":   {k: _stats(v) for k, v in by_decision.items()   if v},
+        "by_confidence": {k: _stats(v) for k, v in by_confidence.items() if v},
+        "by_score":      {k: _stats(v) for k, v in by_score.items()      if v},
+    }
+
+
 # ---------------- SELF-LEARNING LOOP ----------------
 def get_live_scan_stats() -> dict:
     """Stats on live scan outcomes for the self-learning tracker on the analytics page."""

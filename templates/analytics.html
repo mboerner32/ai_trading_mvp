@@ -384,6 +384,169 @@
         </div>
     </div>
 
+    <!-- MODEL PREDICTION ACCURACY -->
+    <div class="section-title">Model Prediction Accuracy</div>
+
+    {% if model_validation %}
+    <div class="chart-card" style="margin-bottom:40px; padding:20px 28px;">
+
+        <p style="font-size:13px; color:#6b7280; margin-top:0; margin-bottom:20px;">
+            Based on <strong>{{ model_validation.total }}</strong> live scans with known outcomes.
+            Key question: when the AI says <strong>TRADE</strong>, does the hit rate exceed
+            <strong>NO_TRADE</strong>?
+        </p>
+
+        <!-- AI Decision comparison -->
+        {% if model_validation.by_decision %}
+        <div style="margin-bottom:24px;">
+            <div style="font-size:12px; font-weight:600; color:#374151; text-transform:uppercase;
+                        letter-spacing:0.05em; margin-bottom:10px;">AI Decision (TRADE vs NO_TRADE)</div>
+            <div style="overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                <thead>
+                    <tr style="background:#f9fafb;">
+                        <th style="padding:8px 12px; text-align:left; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Decision</th>
+                        <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Calls</th>
+                        <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Hit +20%</th>
+                        <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Any Win</th>
+                        <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Avg Next-Day</th>
+                        <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Avg Days to +20%</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for decision, s in model_validation.by_decision.items() %}
+                {% if s %}
+                <tr style="border-bottom:1px solid #f3f4f6;">
+                    <td style="padding:10px 12px; font-weight:600;
+                        color:{{ '#0f766e' if decision == 'TRADE' else '#6b7280' }};">
+                        {{ decision }}
+                    </td>
+                    <td style="padding:10px 12px; text-align:right;">{{ s.count }}</td>
+                    <td style="padding:10px 12px; text-align:right; font-weight:600;
+                        color:{{ '#16a34a' if s.hit_20pct >= 30 else ('#d97706' if s.hit_20pct >= 15 else '#dc2626') }};">
+                        {{ s.hit_20pct }}%
+                    </td>
+                    <td style="padding:10px 12px; text-align:right;
+                        color:{{ '#16a34a' if s.win_rate >= 50 else '#dc2626' }};">
+                        {{ s.win_rate }}%
+                    </td>
+                    <td style="padding:10px 12px; text-align:right;
+                        color:{{ '#16a34a' if s.avg_return > 0 else '#dc2626' }};">
+                        {{ '%+.1f'|format(s.avg_return) }}%
+                    </td>
+                    <td style="padding:10px 12px; text-align:right; color:#6b7280;">
+                        {{ s.avg_days_to_20 ~ 'd' if s.avg_days_to_20 else '—' }}
+                    </td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+                </tbody>
+            </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Confidence breakdown -->
+        {% if model_validation.by_confidence %}
+        <div style="margin-bottom:24px;">
+            <div style="font-size:12px; font-weight:600; color:#374151; text-transform:uppercase;
+                        letter-spacing:0.05em; margin-bottom:10px;">AI Confidence Breakdown</div>
+            <div style="overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                <thead>
+                    <tr style="background:#f9fafb;">
+                        <th style="padding:8px 12px; text-align:left; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Confidence</th>
+                        <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Calls</th>
+                        <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Hit +20%</th>
+                        <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Any Win</th>
+                        <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Avg Next-Day</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for conf in ['HIGH', 'MEDIUM', 'LOW'] %}
+                {% set s = model_validation.by_confidence.get(conf) %}
+                {% if s %}
+                <tr style="border-bottom:1px solid #f3f4f6;">
+                    <td style="padding:10px 12px; font-weight:600;
+                        color:{{ '#0f766e' if conf == 'HIGH' else ('#d97706' if conf == 'MEDIUM' else '#6b7280') }};">
+                        {{ conf }}
+                    </td>
+                    <td style="padding:10px 12px; text-align:right;">{{ s.count }}</td>
+                    <td style="padding:10px 12px; text-align:right; font-weight:600;
+                        color:{{ '#16a34a' if s.hit_20pct >= 30 else ('#d97706' if s.hit_20pct >= 15 else '#dc2626') }};">
+                        {{ s.hit_20pct }}%
+                    </td>
+                    <td style="padding:10px 12px; text-align:right;
+                        color:{{ '#16a34a' if s.win_rate >= 50 else '#dc2626' }};">
+                        {{ s.win_rate }}%
+                    </td>
+                    <td style="padding:10px 12px; text-align:right;
+                        color:{{ '#16a34a' if s.avg_return > 0 else '#dc2626' }};">
+                        {{ '%+.1f'|format(s.avg_return) }}%
+                    </td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+                </tbody>
+            </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Score vs outcome -->
+        {% if model_validation.by_score %}
+        <div>
+            <div style="font-size:12px; font-weight:600; color:#374151; text-transform:uppercase;
+                        letter-spacing:0.05em; margin-bottom:10px;">Score vs Outcome (Live Scans Only)</div>
+            <div style="overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                <thead>
+                    <tr style="background:#f9fafb;">
+                        <th style="padding:8px 12px; text-align:left; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Score</th>
+                        <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Count</th>
+                        <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Hit +20%</th>
+                        <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Any Win</th>
+                        <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e5e7eb; color:#6b7280; font-weight:600;">Avg Next-Day</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for bucket in ['90-100', '75-89', '50-74', '<50'] %}
+                {% set s = model_validation.by_score.get(bucket) %}
+                {% if s %}
+                <tr style="border-bottom:1px solid #f3f4f6;">
+                    <td style="padding:10px 12px; font-weight:600; color:#1f2937;">{{ bucket }}</td>
+                    <td style="padding:10px 12px; text-align:right;">{{ s.count }}</td>
+                    <td style="padding:10px 12px; text-align:right; font-weight:600;
+                        color:{{ '#16a34a' if s.hit_20pct >= 30 else ('#d97706' if s.hit_20pct >= 15 else '#dc2626') }};">
+                        {{ s.hit_20pct }}%
+                    </td>
+                    <td style="padding:10px 12px; text-align:right;
+                        color:{{ '#16a34a' if s.win_rate >= 50 else '#dc2626' }};">
+                        {{ s.win_rate }}%
+                    </td>
+                    <td style="padding:10px 12px; text-align:right;
+                        color:{{ '#16a34a' if s.avg_return > 0 else '#dc2626' }};">
+                        {{ '%+.1f'|format(s.avg_return) }}%
+                    </td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+                </tbody>
+            </table>
+            </div>
+        </div>
+        {% endif %}
+
+    </div>
+    {% else %}
+    <div class="chart-card" style="margin-bottom:40px; padding:20px 28px;">
+        <p style="color:#6b7280; font-size:14px; margin:0;">
+            Not enough data yet — needs at least 10 live scans with outcomes labeled (2+ days old).
+            Outcomes are filled in automatically each morning.
+        </p>
+    </div>
+    {% endif %}
+
     <!-- CURRENT HYPOTHESIS -->
     <div class="section-title" style="color:#7c3aed;">Current AI Hypothesis</div>
 

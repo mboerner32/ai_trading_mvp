@@ -80,6 +80,7 @@ from app.database import (
     save_validation_report,
     get_validation_reports,
     get_live_scan_stats,
+    get_model_validation_stats,
     get_auto_learn_count,
     save_auto_learn_count,
     update_scan_ai_rec,
@@ -584,6 +585,7 @@ def analytics(request: Request):
             "live_scan_stats": get_live_scan_stats(),
             "lstm_status": get_lstm_status(),
             "seq_stats": get_sequence_stats(),
+            "model_validation": get_model_validation_stats(),
         }
     )
 
@@ -752,6 +754,7 @@ def optimize_weights(request: Request):
             "live_scan_stats": get_live_scan_stats(),
             "lstm_status": get_lstm_status(),
             "seq_stats": get_sequence_stats(),
+            "model_validation": get_model_validation_stats(),
         }
     )
 
@@ -997,6 +1000,7 @@ def optimize_complex(request: Request):
             "live_scan_stats": get_live_scan_stats(),
             "lstm_status": get_lstm_status(),
             "seq_stats": get_sequence_stats(),
+            "model_validation": get_model_validation_stats(),
         }
     )
 
