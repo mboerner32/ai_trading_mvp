@@ -19,7 +19,7 @@ from app.scanner import run_scan
 from app.validator import validate_scan_results
 from app.alerts import send_scan_alert, send_take_profit_alert
 from app.backfill import build_historical_dataset
-from app.lstm_model import train_lstm, predict_hit_probability, get_lstm_status
+from app.lstm_model import train_lstm, predict_hit_probability, get_lstm_status, get_sequence_stats
 from app.ai_agent import (
     recommend_position_size,
     predict_price_target,
@@ -388,6 +388,7 @@ def analytics(request: Request):
             "hypothesis": hypothesis_data,
             "live_scan_stats": get_live_scan_stats(),
             "lstm_status": get_lstm_status(),
+            "seq_stats": get_sequence_stats(),
         }
     )
 
@@ -554,6 +555,8 @@ def optimize_weights(request: Request):
             "complex_ai_weights": get_squeeze_weights(),
             "hypothesis": get_hypothesis(),
             "live_scan_stats": get_live_scan_stats(),
+            "lstm_status": get_lstm_status(),
+            "seq_stats": get_sequence_stats(),
         }
     )
 
@@ -793,6 +796,8 @@ def optimize_complex(request: Request):
             "complex_ai_weights": get_squeeze_weights(),
             "hypothesis": hypothesis_data,
             "live_scan_stats": get_live_scan_stats(),
+            "lstm_status": get_lstm_status(),
+            "seq_stats": get_sequence_stats(),
         }
     )
 

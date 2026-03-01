@@ -312,3 +312,42 @@ def get_lstm_status() -> dict:
         }
     except Exception:
         return {"trained": False}
+
+
+def get_sequence_stats() -> dict:
+    """
+    Read lstm_sequences.npz and return dataset stats:
+    total sequences, positive (hit 20%), negative, positive rate, and file date.
+    Returns {"available": False} if the file doesn't exist yet.
+    """
+    try:
+        if not os.path.exists(SEQ_DATA_PATH):
+            return {"available": False}
+
+        data = np.load(SEQ_DATA_PATH)
+        y = data["y"]
+        total    = int(len(y))
+        positive = int(y.sum())
+        negative = total - positive
+        pos_rate = round(positive / total * 100, 1) if total > 0 else 0.0
+
+        import time
+        built_ts = os.path.getmtime(SEQ_DATA_PATH)
+        built_at = datetime.utcfromtimestamp(built_ts).strftime("%Y-%m-%d")
+
+        # Check if sequences are newer than the trained model (needs retrain)
+        needs_retrain = False
+        if os.path.exists(MODEL_PATH):
+            needs_retrain = built_ts > os.path.getmtime(MODEL_PATH)
+
+        return {
+            "available":    True,
+            "total":        total,
+            "positive":     positive,
+            "negative":     negative,
+            "pos_rate":     pos_rate,
+            "built_at":     built_at,
+            "needs_retrain": needs_retrain,
+        }
+    except Exception:
+        return {"available": False}

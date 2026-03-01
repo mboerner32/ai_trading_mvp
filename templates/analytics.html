@@ -320,13 +320,66 @@
         </div>
 
         <!-- LSTM Model status -->
-        <div style="margin-top:16px; padding-top:16px; border-top:1px solid #f3f4f6; display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
-            <div style="font-size:12px; color:#6b7280; font-weight:600; text-transform:uppercase; letter-spacing:0.05em;">LSTM Model</div>
-            {% if lstm_status and lstm_status.trained %}
-            <span style="font-size:13px; color:#0f766e; font-weight:600;">&#10003; Trained</span>
-            <span style="font-size:12px; color:#9ca3af;">{{ lstm_status.accuracy }}% val accuracy &middot; {{ lstm_status.samples }} training samples &middot; {{ lstm_status.trained_at }}</span>
+        <div style="margin-top:16px; padding-top:16px; border-top:1px solid #f3f4f6;">
+            <div style="font-size:12px; color:#6b7280; font-weight:600; text-transform:uppercase;
+                        letter-spacing:0.05em; margin-bottom:10px;">LSTM Model</div>
+
+            <!-- Dataset stats -->
+            {% if seq_stats and seq_stats.available %}
+            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+                        gap:10px; margin-bottom:12px;">
+                <div style="background:#f0f9ff; border:1px solid #bae6fd; border-radius:8px;
+                            padding:10px 14px; text-align:center;">
+                    <div style="font-size:22px; font-weight:700; color:#0369a1;">
+                        {{ seq_stats.total | int }}</div>
+                    <div style="font-size:11px; color:#6b7280; margin-top:2px;">Total Sequences</div>
+                </div>
+                <div style="background:#f0fdf4; border:1px solid #86efac; border-radius:8px;
+                            padding:10px 14px; text-align:center;">
+                    <div style="font-size:22px; font-weight:700; color:#166534;">
+                        {{ seq_stats.positive | int }}</div>
+                    <div style="font-size:11px; color:#6b7280; margin-top:2px;">Hit +20% ✓</div>
+                </div>
+                <div style="background:#fff7ed; border:1px solid #fed7aa; border-radius:8px;
+                            padding:10px 14px; text-align:center;">
+                    <div style="font-size:22px; font-weight:700; color:#c2410c;">
+                        {{ seq_stats.negative | int }}</div>
+                    <div style="font-size:11px; color:#6b7280; margin-top:2px;">Did Not Hit ✗</div>
+                </div>
+                <div style="background:#faf5ff; border:1px solid #d8b4fe; border-radius:8px;
+                            padding:10px 14px; text-align:center;">
+                    <div style="font-size:22px; font-weight:700; color:#7c3aed;">
+                        {{ seq_stats.pos_rate }}%</div>
+                    <div style="font-size:11px; color:#6b7280; margin-top:2px;">Hit Rate</div>
+                </div>
+            </div>
+            <div style="font-size:12px; color:#9ca3af; margin-bottom:8px;">
+                Dataset built {{ seq_stats.built_at }}
+                {% if seq_stats.needs_retrain %}
+                &nbsp;·&nbsp;<span style="color:#d97706; font-weight:600;">
+                    ⚠ New data since last training — retrain to update model</span>
+                {% endif %}
+            </div>
             {% else %}
-            <span style="font-size:12px; color:#9ca3af;">Not trained — run Historical Training Data to train the LSTM</span>
+            <div style="font-size:12px; color:#9ca3af; margin-bottom:8px;">
+                No training data yet — run Historical Training Data to build the dataset.
+            </div>
+            {% endif %}
+
+            <!-- Model status -->
+            {% if lstm_status and lstm_status.trained %}
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <span style="font-size:13px; color:#0f766e; font-weight:600;">&#10003; Model Trained</span>
+                <span style="font-size:12px; color:#9ca3af;">
+                    {{ lstm_status.accuracy }}% val accuracy
+                    &middot; trained on {{ lstm_status.samples }} sequences
+                    &middot; {{ lstm_status.trained_at }}
+                </span>
+            </div>
+            {% else %}
+            <span style="font-size:12px; color:#9ca3af;">
+                Model not yet trained — run Historical Training Data to train.
+            </span>
             {% endif %}
         </div>
     </div>
