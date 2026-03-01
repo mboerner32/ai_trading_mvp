@@ -188,6 +188,28 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # Migration: watchlist near-miss tracking columns
+    try:
+        cursor.execute("ALTER TABLE watchlist ADD COLUMN score INTEGER")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE watchlist ADD COLUMN alerted INTEGER DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE watchlist ADD COLUMN date TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE watchlist ADD COLUMN last_checked TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     conn.close()
 
 
@@ -990,13 +1012,107 @@ def get_weight_changelog(limit: int = 20) -> list:
 
 # ---------------- WATCHLIST ----------------
 def add_to_watchlist(symbol: str, price: float = None):
+    """Manually add a symbol to the watchlist (from the trades page form)."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     now = datetime.utcnow().isoformat()
+    today = datetime.utcnow().date().isoformat()
     cursor.execute(
-        "INSERT OR IGNORE INTO watchlist (symbol, added_at, price_at_add) VALUES (?, ?, ?)",
-        (symbol.upper().strip(), now, price)
+        """INSERT OR IGNORE INTO watchlist (symbol, added_at, price_at_add, alerted, date)
+           VALUES (?, ?, ?, 0, ?)""",
+        (symbol.upper().strip(), now, price, today)
     )
+    conn.commit()
+    conn.close()
+
+
+def add_near_miss_to_watchlist(symbol: str, score: int, price: float = None):
+    """
+    Upsert a near-miss stock (score 40-74) into the watchlist for intraday re-checking.
+    - Same day: updates the score (in case it improved) but keeps the alerted flag.
+    - New day: resets alerted flag and updates all fields.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    now   = datetime.utcnow().isoformat()
+    today = datetime.utcnow().date().isoformat()
+
+    cursor.execute("SELECT date, alerted FROM watchlist WHERE symbol = ?",
+                   (symbol.upper().strip(),))
+    row = cursor.fetchone()
+
+    if row:
+        existing_date, existing_alerted = row
+        if existing_date == today:
+            # Same day — update score only; preserve alerted flag
+            cursor.execute(
+                "UPDATE watchlist SET score = ?, last_checked = ? WHERE symbol = ?",
+                (score, now, symbol.upper().strip())
+            )
+        else:
+            # New day — reset alerted, update everything
+            cursor.execute(
+                """UPDATE watchlist SET score = ?, price_at_add = ?, added_at = ?,
+                   date = ?, alerted = 0, last_checked = ? WHERE symbol = ?""",
+                (score, price, now, today, now, symbol.upper().strip())
+            )
+    else:
+        cursor.execute(
+            """INSERT INTO watchlist (symbol, added_at, price_at_add, score, alerted, date, last_checked)
+               VALUES (?, ?, ?, ?, 0, ?, ?)""",
+            (symbol.upper().strip(), now, price, score, today, now)
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def get_active_watchlist(today_only: bool = True) -> list:
+    """
+    Returns unalerted watchlist items.
+    today_only=True (default): only today's near-misses (for intraday re-checks).
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    today = datetime.utcnow().date().isoformat()
+
+    if today_only:
+        cursor.execute(
+            """SELECT symbol, added_at, price_at_add, score, alerted, date
+               FROM watchlist WHERE alerted = 0 AND date = ? ORDER BY score DESC""",
+            (today,)
+        )
+    else:
+        cursor.execute(
+            """SELECT symbol, added_at, price_at_add, score, alerted, date
+               FROM watchlist WHERE alerted = 0 ORDER BY score DESC"""
+        )
+
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"symbol": r[0], "added_at": r[1], "price_at_add": r[2],
+         "score": r[3], "alerted": r[4], "date": r[5]}
+        for r in rows
+    ]
+
+
+def mark_watchlist_alerted(symbol: str):
+    """Mark a watchlist symbol as alerted so we don't send duplicate alerts."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE watchlist SET alerted = 1 WHERE symbol = ?",
+                   (symbol.upper().strip(),))
+    conn.commit()
+    conn.close()
+
+
+def clear_old_watchlist(days_old: int = 2):
+    """Remove watchlist entries older than N days to keep the table clean."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cutoff = (datetime.utcnow() - timedelta(days=days_old)).date().isoformat()
+    cursor.execute("DELETE FROM watchlist WHERE date < ?", (cutoff,))
     conn.commit()
     conn.close()
 
@@ -1012,10 +1128,17 @@ def remove_from_watchlist(symbol: str):
 def get_watchlist() -> list:
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT symbol, added_at, price_at_add FROM watchlist ORDER BY added_at DESC")
+    cursor.execute(
+        """SELECT symbol, added_at, price_at_add, COALESCE(score, 0), COALESCE(alerted, 0), date
+           FROM watchlist ORDER BY added_at DESC"""
+    )
     rows = cursor.fetchall()
     conn.close()
-    return [{"symbol": r[0], "added_at": r[1], "price_at_add": r[2]} for r in rows]
+    return [
+        {"symbol": r[0], "added_at": r[1], "price_at_add": r[2],
+         "score": r[3], "alerted": r[4], "date": r[5]}
+        for r in rows
+    ]
 
 
 # ---------------- HISTORICAL BACKFILL ----------------

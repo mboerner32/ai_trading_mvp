@@ -15,9 +15,9 @@ from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.scanner import run_scan
+from app.scanner import run_scan, get_finviz_quotes, prepare_dataframe
 from app.validator import validate_scan_results
-from app.alerts import send_scan_alert, send_take_profit_alert
+from app.alerts import send_scan_alert, send_take_profit_alert, send_watchlist_alert
 from app.backfill import build_historical_dataset
 from app.lstm_model import train_lstm, predict_hit_probability, get_lstm_status, get_sequence_stats
 from app.ai_agent import (
@@ -32,7 +32,7 @@ from app.ai_agent import (
     synthesize_combined_hypothesis,
     optimize_complex_ai_weights,
 )
-from app.scoring_engine import DEFAULT_SQUEEZE_WEIGHTS
+from app.scoring_engine import DEFAULT_SQUEEZE_WEIGHTS, score_stock_squeeze
 from app.database import (
     init_db,
     seed_users,
@@ -64,6 +64,10 @@ from app.database import (
     save_weight_changelog,
     get_weight_changelog,
     add_to_watchlist,
+    add_near_miss_to_watchlist,
+    get_active_watchlist,
+    mark_watchlist_alerted,
+    clear_old_watchlist,
     remove_from_watchlist,
     get_watchlist,
     get_risk_metrics,
@@ -98,6 +102,10 @@ seed_users()
 
 # In-process flag so the backfill guard is reliable even if DB status got stuck
 _backfill_running = False
+
+# Alert deduplication — tracks symbols already alerted today; resets each trading day
+_alerted_today: set = set()
+_alerted_date:  str = ""
 
 # ---------------- SCHEDULER ----------------
 def _autoclose_take_profit() -> list:
@@ -156,7 +164,17 @@ def _auto_learn():
 
 def _scheduled_scan():
     """Auto-run all scan modes at 9:45am ET Mon–Fri and refresh cache."""
+    global _alerted_today, _alerted_date
     print("SCHEDULER: Running scheduled morning scan...")
+
+    et_now    = datetime.datetime.now(pytz.timezone("America/New_York"))
+    today_str = et_now.date().isoformat()
+
+    # Reset daily dedup set on each new trading day
+    if today_str != _alerted_date:
+        _alerted_today = set()
+        _alerted_date  = today_str
+
     for mode in ["squeeze", "strict", "standard"]:
         try:
             data = run_scan(mode=mode)
@@ -164,7 +182,16 @@ def _scheduled_scan():
             save_scan_cache(mode, data["results"], data["summary"])
             print(f"SCHEDULER: {mode} scan complete ({len(data['results'])} results)")
             if mode == "squeeze":
+                # Track morning high-scorers so intraday scans don't re-alert them
+                for r in data["results"]:
+                    if r.get("score", 0) >= 75:
+                        _alerted_today.add(r.get("symbol"))
                 send_scan_alert(data["results"], "Complex + AI")
+                # Log near-misses (40-74) to watchlist for intraday re-checking
+                for r in data["results"]:
+                    score = r.get("score", 0)
+                    if 40 <= score < 75:
+                        add_near_miss_to_watchlist(r["symbol"], score, r.get("price"))
         except Exception as e:
             print(f"SCHEDULER: {mode} scan failed — {e}")
     _autoclose_take_profit()
@@ -222,6 +249,7 @@ def _daily_backfill():
     _backfill_running = True
     print("DAILY BACKFILL: starting scheduled run")
     try:
+        clear_old_watchlist(days_old=2)   # prune stale near-miss entries
         weights_data = get_squeeze_weights()
         weights = weights_data["weights"] if weights_data else None
         build_historical_dataset(weights=weights)
@@ -238,6 +266,134 @@ def _daily_backfill():
         _backfill_running = False
 
 
+def _intraday_scan():
+    """
+    Squeeze scan every 30 min during market hours (10:00–15:30 ET Mon–Fri).
+    Alerts only on NEW high-scorers not already alerted today.
+    Near-misses (40-74) are added to the watchlist for 15-min re-checking.
+    """
+    global _alerted_today, _alerted_date
+
+    et_now    = datetime.datetime.now(pytz.timezone("America/New_York"))
+    today_str = et_now.date().isoformat()
+
+    # Safety: reset dedup set if we somehow missed the morning reset
+    if today_str != _alerted_date:
+        _alerted_today = set()
+        _alerted_date  = today_str
+
+    print(f"INTRADAY SCAN: running at {et_now.strftime('%H:%M')} ET...")
+    try:
+        data = run_scan(mode="squeeze")
+        save_scan(data["results"], "squeeze")
+        save_scan_cache("squeeze", data["results"], data["summary"])
+
+        # Alert only on genuinely new high-scorers
+        new_alerts = [
+            r for r in data["results"]
+            if r.get("score", 0) >= 75 and r.get("symbol") not in _alerted_today
+        ]
+        if new_alerts:
+            send_scan_alert(new_alerts, f"Intraday {et_now.strftime('%H:%M')}")
+            for r in new_alerts:
+                _alerted_today.add(r.get("symbol"))
+
+        # Add near-misses to watchlist
+        for r in data["results"]:
+            score = r.get("score", 0)
+            if 40 <= score < 75:
+                add_near_miss_to_watchlist(r["symbol"], score, r.get("price"))
+
+        print(
+            f"INTRADAY SCAN: {len(data['results'])} results, "
+            f"{len(new_alerts)} new alert(s)"
+        )
+    except Exception as e:
+        print(f"INTRADAY SCAN: failed — {e}")
+
+
+def _check_watchlist():
+    """
+    Re-score today's near-miss watchlist symbols every 15 min.
+    Sends an alert (email + Telegram) if any symbol rises to score >= 75.
+    """
+    active = get_active_watchlist(today_only=True)
+    if not active:
+        return
+
+    symbols      = [w["symbol"] for w in active]
+    symbol_scores = {w["symbol"]: w.get("score", 0) for w in active}
+    print(f"WATCHLIST CHECK: re-scoring {len(symbols)} near-miss symbol(s)...")
+
+    try:
+        live_quotes = get_finviz_quotes(symbols, max_workers=5)
+
+        raw = yf.download(
+            symbols if len(symbols) > 1 else symbols[0],
+            period="6mo",
+            interval="1d",
+            progress=False,
+            auto_adjust=False,
+            group_by="ticker",
+        )
+
+        dfs = {}
+        if len(symbols) == 1:
+            if not raw.empty:
+                dfs[symbols[0]] = raw.copy()
+        else:
+            for sym in symbols:
+                try:
+                    sym_df = raw[sym].copy()
+                    if not sym_df.empty:
+                        dfs[sym] = sym_df
+                except Exception:
+                    pass
+
+        weights_data   = get_squeeze_weights()
+        active_weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS
+
+        for symbol in symbols:
+            if symbol not in dfs:
+                continue
+            try:
+                df           = prepare_dataframe(dfs[symbol])
+                fundamentals = {}
+                q            = live_quotes.get(symbol, {})
+                if q.get("rel_volume") is not None:
+                    fundamentals["finviz_relvol"] = q["rel_volume"]
+                if q.get("price") is not None:
+                    fundamentals["finviz_price"] = q["price"]
+                if q.get("change_pct") is not None:
+                    fundamentals["finviz_change_pct"] = q["change_pct"]
+                if q.get("volume") is not None:
+                    fundamentals["finviz_volume"] = q["volume"]
+                if q.get("shares_outstanding") is not None:
+                    fundamentals["shares_outstanding"] = q["shares_outstanding"]
+                if q.get("float_shares") is not None:
+                    fundamentals["float_shares"] = q["float_shares"]
+                if q.get("institution_pct") is not None:
+                    fundamentals["institution_pct"] = q["institution_pct"]
+
+                result = score_stock_squeeze(symbol, df, fundamentals, weights=active_weights)
+                if result and result.get("score", 0) >= 75:
+                    old_score = symbol_scores.get(symbol, 0)
+                    send_watchlist_alert(
+                        symbol, result["score"], result.get("price"), old_score
+                    )
+                    mark_watchlist_alerted(symbol)
+                    _alerted_today.add(symbol)
+                    print(
+                        f"WATCHLIST: {symbol} rose to {result['score']} "
+                        f"(from {old_score}) — alert sent"
+                    )
+            except Exception as e:
+                print(f"WATCHLIST CHECK: error scoring {symbol} — {e}")
+
+    except Exception as e:
+        print(f"WATCHLIST CHECK: failed — {e}")
+
+
 _scheduler = BackgroundScheduler(timezone=pytz.timezone("America/New_York"))
 _scheduler.add_job(_scheduled_scan,  "cron", day_of_week="mon-fri", hour=9,  minute=45)
 _scheduler.add_job(_premarket_scan,  "cron", day_of_week="mon-fri", hour=8,  minute=30)
@@ -249,6 +405,12 @@ _scheduler.add_job(_run_validation,  "cron", day_of_week="mon-fri", hour=15, min
 _scheduler.add_job(_run_validation,  "cron", day_of_week="mon-fri", hour=15, minute=45)
 # Daily backfill + LSTM retrain at 6:00 AM ET — before market open, after prior day outcomes settle
 _scheduler.add_job(_daily_backfill,  "cron", day_of_week="mon-fri", hour=6,  minute=0)
+# Intraday squeeze scan every 30 min during market hours (10:00–15:30 ET)
+_scheduler.add_job(_intraday_scan,   "cron", day_of_week="mon-fri",
+                   hour="10-15", minute="0,30")
+# Watchlist near-miss re-check at the midpoints (:15 and :45) of each intraday hour
+_scheduler.add_job(_check_watchlist, "cron", day_of_week="mon-fri",
+                   hour="10-15", minute="15,45")
 _scheduler.start()
 
 # Log API key status at startup so it's visible in Render logs
@@ -391,6 +553,7 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
             "cache_age": cache_age,
             "sizing_calibrated": sizing_stats is not None,
             "sizing_total": sizing_stats["total"] if sizing_stats else 0,
+            "near_misses": get_active_watchlist(today_only=True),
         }
     )
 
@@ -1043,6 +1206,16 @@ def change_password(
         {"request": request, "user": username,
          "success": "Password updated successfully."}
     )
+
+
+# ---------------- TEST TELEGRAM ----------------
+@app.post("/api/test-telegram")
+def test_telegram(request: Request):
+    if "user" not in request.session:
+        return Response(status_code=401)
+    from app.alerts import _send_telegram
+    _send_telegram("<b>Reno Robs Trading Bot</b>\n\nTelegram alerts are working!")
+    return {"ok": True}
 
 
 # ---------------- LOGOUT ----------------

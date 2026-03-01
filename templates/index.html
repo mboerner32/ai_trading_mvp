@@ -992,6 +992,50 @@
     </div>
     <!-- ===== End mobile cards ===== -->
 
+    <!-- ===== Near-Miss Watchlist ===== -->
+    {% if near_misses %}
+    <div style="margin-top:32px; background:white; border-radius:10px;
+                box-shadow:0 4px 14px rgba(0,0,0,0.05); padding:24px;">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+            <h3 style="margin:0; font-size:15px; font-weight:600; color:#1f2937;">
+                Near-Miss Watchlist
+            </h3>
+            <span style="font-size:12px; color:#6b7280; background:#f3f4f6;
+                         padding:3px 10px; border-radius:99px;">
+                {{ near_misses|length }} stock{% if near_misses|length != 1 %}s{% endif %} — re-checked every 15 min
+            </span>
+        </div>
+        <p style="margin:0 0 16px; font-size:13px; color:#6b7280;">
+            These stocks scored 40–74 on today's squeeze scan. They're automatically
+            re-scored every 15 minutes. If any reaches 75+, you'll get a Telegram alert.
+        </p>
+        <div style="display:flex; flex-wrap:wrap; gap:10px;">
+            {% for w in near_misses %}
+            <div style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px;
+                        padding:10px 16px; display:flex; align-items:center; gap:12px;">
+                <span style="font-weight:600; font-size:14px; color:#1f2937;">
+                    {{ w.symbol }}
+                </span>
+                <span style="font-size:13px; color:#4f46e5; font-weight:500;">
+                    {{ w.score }}/100
+                </span>
+                {% if w.price_at_add %}
+                <span style="font-size:12px; color:#6b7280;">${{ "%.2f"|format(w.price_at_add) }}</span>
+                {% endif %}
+                <form method="post" action="/watchlist/remove/{{ w.symbol }}" style="margin:0;">
+                    <button type="submit"
+                            style="background:none; border:none; color:#9ca3af; cursor:pointer;
+                                   font-size:12px; padding:0; line-height:1;">
+                        ✕
+                    </button>
+                </form>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+    <!-- ===== End Near-Miss Watchlist ===== -->
+
 </div>
 
 <script>
