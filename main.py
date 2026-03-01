@@ -34,6 +34,7 @@ from app.ai_agent import (
     synthesize_historical_hypothesis,
     synthesize_combined_hypothesis,
     optimize_complex_ai_weights,
+    parse_rules_from_synthesis,
 )
 from app.scoring_engine import DEFAULT_SQUEEZE_WEIGHTS, score_stock_squeeze
 from app.database import (
@@ -92,6 +93,13 @@ from app.database import (
     get_ticker_scan_history,
     tag_feedback_outcome,
     tag_trade_outcome,
+    save_hypothesis_rules,
+    get_hypothesis_rules,
+    get_pending_rule_count,
+    update_rule_status,
+    get_active_rule_ids,
+    save_scan_active_rules,
+    get_active_hypothesis_text,
 )
 
 app = FastAPI()
@@ -204,8 +212,7 @@ def _enrich_high_scorers(results: list) -> list:
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    hypothesis_data = get_hypothesis()
-    hypothesis_text = hypothesis_data["content"] if hypothesis_data else None
+    hypothesis_text = get_active_hypothesis_text()
     sizing_stats    = get_sizing_stats()
     high_scorers    = [r for r in results if r.get("score", 0) >= 75]
 
@@ -654,9 +661,9 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
         cache_age = 0
 
     available_cash = get_portfolio_summary()["cash"]
-    hypothesis_data = get_hypothesis()
-    hypothesis_text = hypothesis_data["content"] if hypothesis_data else None
+    hypothesis_text = get_active_hypothesis_text()
     sizing_stats    = get_sizing_stats()
+    active_rule_ids = get_active_rule_ids()
 
     # Parallel AI enrichment — position sizing + price target prediction (score >= 75) + AI trade call
     def _ai_enrich(stock):
@@ -682,6 +689,9 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
             try:
                 tc = stock["ai_trade_call"]
                 update_scan_ai_rec(scan_id, tc["decision"], tc["confidence"], tc["rationale"])
+                # Tag which hypothesis rules were active — enables per-rule win rate tracking
+                if active_rule_ids:
+                    save_scan_active_rules(scan_id, active_rule_ids)
             except Exception:
                 pass
 
@@ -715,8 +725,6 @@ def analytics(request: Request):
     if "user" not in request.session:
         return RedirectResponse("/login")
 
-    hypothesis_data = get_hypothesis()
-
     return templates.TemplateResponse(
         "analytics.html",
         {
@@ -730,7 +738,9 @@ def analytics(request: Request):
             "backfill_status": get_backfill_status(),
             "user": request.session["user"],
             "complex_ai_weights": get_squeeze_weights(),
-            "hypothesis": hypothesis_data,
+            "hypothesis": get_hypothesis(),
+            "hypothesis_rules": get_hypothesis_rules(),
+            "pending_rule_count": get_pending_rule_count(),
             "live_scan_stats": get_live_scan_stats(),
             "lstm_status": get_lstm_status(),
             "seq_stats": get_sequence_stats(),
@@ -955,6 +965,9 @@ def sync_all_sources(request: Request, background_tasks: BackgroundTasks):
         total = len(all_feedback) + hist_count
         if text:
             save_hypothesis(text, total)
+            rules = parse_rules_from_synthesis(text)
+            if rules:
+                save_hypothesis_rules(rules)
 
     background_tasks.add_task(_run)
     return RedirectResponse("/feedback?syncing=1", status_code=303)
@@ -982,6 +995,9 @@ def reanalyze_feedback(request: Request, background_tasks: BackgroundTasks):
             text = synthesize_feedback_hypotheses(all_feedback)
             if text:
                 save_hypothesis(text, len(all_feedback))
+                rules = parse_rules_from_synthesis(text)
+                if rules:
+                    save_hypothesis_rules(rules)
 
     background_tasks.add_task(_run)
     return RedirectResponse("/feedback?reanalyzing=1", status_code=303)
@@ -999,6 +1015,11 @@ def _run_hypothesis_and_weights(all_feedback: list):
         if hypothesis_text:
             save_hypothesis(hypothesis_text, len(all_feedback) + hist_count)
             hypothesis_content = hypothesis_text
+            # Parse discrete rules and save as pending for admin review
+            rules = parse_rules_from_synthesis(hypothesis_text)
+            if rules:
+                save_hypothesis_rules(rules)
+                print(f"HYPOTHESIS: {len(rules)} rule(s) added as pending — review on Analytics page")
 
         weights_data = get_squeeze_weights()
         current_weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS.copy()
@@ -1452,6 +1473,23 @@ def users_delete(request: Request, username: str):
         return RedirectResponse("/login", status_code=303)
     delete_user(username)
     return RedirectResponse("/users", status_code=303)
+
+
+# ---------------- HYPOTHESIS RULE MANAGEMENT ----------------
+@app.post("/hypothesis-rules/{rule_id}/activate")
+def hypothesis_rule_activate(request: Request, rule_id: int):
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    update_rule_status(rule_id, "active")
+    return RedirectResponse("/analytics", status_code=303)
+
+
+@app.post("/hypothesis-rules/{rule_id}/reject")
+def hypothesis_rule_reject(request: Request, rule_id: int):
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    update_rule_status(rule_id, "rejected")
+    return RedirectResponse("/analytics", status_code=303)
 
 
 # ---------------- LOGOUT ----------------

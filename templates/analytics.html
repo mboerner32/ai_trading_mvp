@@ -583,11 +583,27 @@
 
     <div class="chart-card" style="margin-bottom:40px; border-left:4px solid #7c3aed;">
         <p style="color:#6b7280; font-size:14px; margin-top:0; margin-bottom:16px;">
-            The synthesized hypothesis below is the <strong>primary driver</strong> of scoring
-            weight adjustments. When you run the optimizer, it reads this hypothesis and translates
-            the identified patterns into concrete weight changes and new metric suggestions.
-            Generate or update it on the <a href="/feedback" style="color:#7c3aed;">Feedback page</a>.
+            The synthesized hypothesis is the <strong>primary driver</strong> of scoring weight
+            adjustments. Generate or update it on the
+            <a href="/feedback" style="color:#7c3aed;">Feedback page</a>.
+            Individual rules are parsed from this output and shown in the
+            <strong>Hypothesis Rules Registry</strong> below — only rules you <em>activate</em>
+            are injected into AI calls.
         </p>
+        {% set active_rule_count = hypothesis_rules | selectattr('status', 'equalto', 'active') | list | length if hypothesis_rules else 0 %}
+        {% if active_rule_count > 0 %}
+        <div style="margin-bottom:12px; padding:8px 14px; background:#d1fae5; border-radius:6px;
+                    font-size:13px; color:#065f46; font-weight:600;">
+            ✓ {{ active_rule_count }} active rule{{ 's' if active_rule_count != 1 else '' }}
+            currently injected into AI — see Registry below.
+        </div>
+        {% elif pending_rule_count > 0 %}
+        <div style="margin-bottom:12px; padding:8px 14px; background:#fef3c7; border-radius:6px;
+                    font-size:13px; color:#92400e;">
+            {{ pending_rule_count }} rule{{ 's' if pending_rule_count != 1 else '' }} awaiting review
+            — full synthesis blob used until rules are activated.
+        </div>
+        {% endif %}
 
         {% if hypothesis %}
         <div style="margin-bottom:10px; font-size:12px; color:#9ca3af;">
@@ -606,6 +622,128 @@
             <a href="/feedback" style="color:#7c3aed;">Feedback page</a>
             and click "Sync All Sources" to generate one.
         </p>
+        {% endif %}
+    </div>
+
+    <!-- HYPOTHESIS RULES REGISTRY -->
+    <div class="section-title" style="color:#7c3aed; display:flex; align-items:center; gap:10px;">
+        Hypothesis Rules Registry
+        {% if pending_rule_count > 0 %}
+        <span style="background:#dc2626; color:white; border-radius:12px; padding:1px 9px;
+                     font-size:12px; font-weight:700; line-height:1.6;">
+            {{ pending_rule_count }} pending
+        </span>
+        {% endif %}
+    </div>
+
+    <div class="chart-card" style="margin-bottom:40px; border-left:4px solid #7c3aed; padding:20px 24px;">
+        <p style="font-size:13px; color:#6b7280; margin-top:0; margin-bottom:16px; line-height:1.6;">
+            Each time synthesis runs, new rules are added here as <strong>Pending</strong> — they don't
+            affect the AI until you activate them. Review the evidence, then <strong>Activate</strong>
+            only the rules you're confident will improve win rate.
+            Activated rules are injected into every AI call and tagged on scans so win rates
+            track automatically over time.
+        </p>
+
+        {% if hypothesis_rules %}
+
+        {% set pending_rules = hypothesis_rules | selectattr('status', 'equalto', 'pending') | list %}
+        {% if pending_rules %}
+        <div style="margin-bottom:16px; padding:10px 16px; background:#fef3c7; border:1px solid #fbbf24;
+                    border-radius:8px; font-size:13px; color:#92400e;">
+            <strong>{{ pending_rules | length }} rule{{ 's' if pending_rules | length != 1 else '' }}
+            awaiting your review</strong> — activate the ones you believe are predictive.
+        </div>
+        {% endif %}
+
+        <div style="overflow-x:auto;">
+        <table style="font-size:13px; margin-bottom:0; box-shadow:none; border-radius:0;">
+            <thead>
+                <tr style="background:#f9fafb;">
+                    <th style="padding:8px 12px; color:#6b7280; font-weight:600; text-align:left; min-width:320px;">Rule</th>
+                    <th style="padding:8px 12px; color:#6b7280; font-weight:600;">Source</th>
+                    <th style="padding:8px 12px; color:#6b7280; font-weight:600;">Status</th>
+                    <th style="padding:8px 12px; color:#6b7280; font-weight:600; text-align:right;">Trades</th>
+                    <th style="padding:8px 12px; color:#6b7280; font-weight:600; text-align:right;">+20% Rate</th>
+                    <th style="padding:8px 12px; color:#6b7280; font-weight:600; text-align:right; min-width:140px;"></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for rule in hypothesis_rules %}
+            <tr style="border-bottom:1px solid #f3f4f6;
+                {% if rule.status == 'pending' %}background:#fffbeb;
+                {% elif rule.status == 'rejected' %}background:#fafafa; opacity:0.65;
+                {% endif %}">
+                <td style="padding:10px 12px; line-height:1.55; font-size:12px; max-width:400px;">
+                    {{ rule.rule_text[:240] }}{% if rule.rule_text | length > 240 %}&hellip;{% endif %}
+                </td>
+                <td style="padding:10px 12px; color:#6b7280; font-size:11px; white-space:nowrap;">
+                    {{ rule.source or '—' }}
+                </td>
+                <td style="padding:10px 12px; white-space:nowrap;">
+                    {% if rule.status == 'active' %}
+                    <span style="background:#d1fae5; color:#065f46; padding:2px 9px;
+                                 border-radius:10px; font-size:11px; font-weight:700;">Active</span>
+                    {% elif rule.status == 'pending' %}
+                    <span style="background:#fef3c7; color:#92400e; padding:2px 9px;
+                                 border-radius:10px; font-size:11px; font-weight:700;">Pending</span>
+                    {% else %}
+                    <span style="background:#f3f4f6; color:#9ca3af; padding:2px 9px;
+                                 border-radius:10px; font-size:11px;">Rejected</span>
+                    {% endif %}
+                </td>
+                <td style="padding:10px 12px; text-align:right; color:#6b7280; font-size:12px;">
+                    {{ rule.trades if rule.trades > 0 else '—' }}
+                </td>
+                <td style="padding:10px 12px; text-align:right; font-weight:700; font-size:13px;
+                    color:{% if rule.win_rate is not none and rule.win_rate >= 30 %}#0f766e
+                          {% elif rule.win_rate is not none and rule.win_rate >= 15 %}#d97706
+                          {% elif rule.win_rate is not none %}#dc2626
+                          {% else %}#9ca3af{% endif %};">
+                    {% if rule.win_rate is not none %}{{ '%.0f' | format(rule.win_rate) }}%{% else %}—{% endif %}
+                </td>
+                <td style="padding:10px 12px; text-align:right; white-space:nowrap;">
+                    {% if rule.status != 'active' %}
+                    <form method="post" action="/hypothesis-rules/{{ rule.id }}/activate" style="display:inline;">
+                        <button type="submit"
+                                style="background:#d1fae5; color:#065f46; border:none; padding:4px 11px;
+                                       border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">
+                            Activate
+                        </button>
+                    </form>
+                    {% endif %}
+                    {% if rule.status != 'rejected' %}
+                    <form method="post" action="/hypothesis-rules/{{ rule.id }}/reject"
+                          style="display:inline; margin-left:4px;">
+                        <button type="submit"
+                                style="background:#fee2e2; color:#991b1b; border:none; padding:4px 11px;
+                                       border-radius:5px; cursor:pointer; font-size:12px;">
+                            Reject
+                        </button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+
+        {% else %}
+        <p style="color:#6b7280; font-size:14px; margin:0;">
+            No rules yet. Run <strong>Sync All Sources</strong> on the
+            <a href="/feedback" style="color:#7c3aed;">Feedback page</a> to generate rules for review.
+        </p>
+        {% endif %}
+
+        {% if hypothesis_rules | selectattr('status', 'equalto', 'active') | list | length > 0 %}
+        <div style="margin-top:16px; padding:10px 14px; background:#f0fdf4; border:1px solid #86efac;
+                    border-radius:8px; font-size:12px; color:#166534; line-height:1.6;">
+            <strong>{{ hypothesis_rules | selectattr('status', 'equalto', 'active') | list | length }}
+            active rule{{ 's' if (hypothesis_rules | selectattr('status', 'equalto', 'active') | list | length) != 1 else '' }}</strong>
+            are being injected into every AI trade call.
+            Win rates will appear once tagged scans have outcomes (2+ days old).
+        </div>
         {% endif %}
     </div>
 

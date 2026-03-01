@@ -220,6 +220,26 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # ---------------- HYPOTHESIS RULES TABLE ----------------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS hypothesis_rules (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_text  TEXT NOT NULL,
+            source     TEXT NOT NULL DEFAULT '',
+            status     TEXT NOT NULL DEFAULT 'pending',
+            generation INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+
+    # Migration: tag each scan with active rule IDs at AI-enrich time
+    try:
+        cursor.execute("ALTER TABLE scans ADD COLUMN active_rule_ids TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     conn.close()
 
 
@@ -884,6 +904,7 @@ def get_all_feedback():
 
 # ---------------- HYPOTHESIS STORAGE ----------------
 def save_hypothesis(content: str, feedback_count: int):
+    now = datetime.utcnow().isoformat()
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
@@ -891,13 +912,23 @@ def save_hypothesis(content: str, feedback_count: int):
         VALUES ('hypothesis', ?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
                                        updated_at = excluded.updated_at
-    """, (content, datetime.utcnow().isoformat()))
+    """, (content, now))
     cursor.execute("""
         INSERT INTO settings (key, value, updated_at)
         VALUES ('hypothesis_feedback_count', ?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
                                        updated_at = excluded.updated_at
-    """, (str(feedback_count), datetime.utcnow().isoformat()))
+    """, (str(feedback_count), now))
+    # Extract and cache the Agent Context block separately (used by active-rules hypothesis builder)
+    agent_ctx = ""
+    if "## Agent Context" in content:
+        agent_ctx = content.split("## Agent Context")[1].strip()
+    cursor.execute("""
+        INSERT INTO settings (key, value, updated_at)
+        VALUES ('hypothesis_agent_context', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                       updated_at = excluded.updated_at
+    """, (agent_ctx, now))
     conn.commit()
     conn.close()
 
@@ -922,6 +953,176 @@ def get_hypothesis():
         "feedback_count": int(count_row[0]) if count_row else 0,
         "updated_at": row[1],
     }
+
+
+# ---------------- HYPOTHESIS RULES ----------------
+def save_hypothesis_rules(rules: list):
+    """
+    Insert parsed hypothesis rules from a new synthesis run.
+    All new rules start as 'pending' (not yet reviewed).
+    Assigns a generation number = current max + 1.
+    """
+    if not rules:
+        return
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COALESCE(MAX(generation), 0) FROM hypothesis_rules")
+    next_gen = cursor.fetchone()[0] + 1
+    now = datetime.utcnow().isoformat()
+    for r in rules:
+        cursor.execute("""
+            INSERT INTO hypothesis_rules (rule_text, source, status, generation, created_at)
+            VALUES (?, ?, 'pending', ?, ?)
+        """, (r["text"], r.get("source", ""), next_gen, now))
+    conn.commit()
+    conn.close()
+
+
+def get_hypothesis_rules() -> list:
+    """
+    Returns all hypothesis rules ordered newest-generation first.
+    Includes live win/loss stats derived from scans that were tagged with each rule's ID.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, rule_text, source, status, generation, created_at
+        FROM hypothesis_rules
+        ORDER BY generation DESC, id ASC
+    """)
+    rows = cursor.fetchall()
+    results = []
+    for (rid, rule_text, source, status, generation, created_at) in rows:
+        # Count trades and wins from scans tagged with this rule ID
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END) as wins
+            FROM scans
+            WHERE active_rule_ids LIKE ?
+              AND next_day_return IS NOT NULL
+        """, (f'%{rid}%',))
+        stat = cursor.fetchone()
+        total = stat[0] or 0
+        wins  = stat[1] or 0
+        win_rate = round(wins / total * 100, 1) if total > 0 else None
+        results.append({
+            "id":         rid,
+            "rule_text":  rule_text,
+            "source":     source or "",
+            "status":     status,
+            "generation": generation,
+            "created_at": (created_at or "")[:10],
+            "trades":     total,
+            "wins":       wins,
+            "win_rate":   win_rate,
+        })
+    conn.close()
+    return results
+
+
+def get_pending_rule_count() -> int:
+    """Returns number of rules awaiting admin review."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM hypothesis_rules WHERE status = 'pending'")
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def update_rule_status(rule_id: int, status: str) -> bool:
+    """Set a rule's status to 'active', 'rejected', or 'pending'. Returns True on success."""
+    if status not in ("active", "rejected", "pending"):
+        return False
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE hypothesis_rules SET status = ? WHERE id = ?", (status, rule_id))
+    ok = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return ok
+
+
+def get_active_rule_ids() -> list:
+    """Returns list of active rule IDs for tagging scan records."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM hypothesis_rules WHERE status = 'active'")
+    rows = cursor.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+def save_scan_active_rules(scan_id: int, rule_ids: list):
+    """Tag a scan with the IDs of hypothesis rules that were active at enrichment time."""
+    if not rule_ids:
+        return
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE scans SET active_rule_ids = ? WHERE id = ?",
+        (json.dumps(rule_ids), scan_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_active_hypothesis_text() -> str | None:
+    """
+    Returns the hypothesis text that should be fed into AI calls.
+
+    Behaviour:
+    - If no rules exist OR all rules are still pending (never reviewed):
+      fall back to the full synthesized blob (preserves existing behaviour).
+    - If at least one rule has been reviewed (activated or rejected):
+      build a compact hypothesis from only the active rules + cached Agent Context.
+      Returns None if all reviewed rules were rejected (no active rules).
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM hypothesis_rules")
+    total = cursor.fetchone()[0]
+
+    if total == 0:
+        # No rules table data yet — fall back to full synthesis blob
+        cursor.execute("SELECT value FROM settings WHERE key = 'hypothesis'")
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+
+    cursor.execute("SELECT COUNT(*) FROM hypothesis_rules WHERE status != 'pending'")
+    reviewed = cursor.fetchone()[0]
+
+    if reviewed == 0:
+        # Rules exist but none reviewed yet — fall back to full synthesis blob
+        cursor.execute("SELECT value FROM settings WHERE key = 'hypothesis'")
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+
+    # At least one rule reviewed — use only active rules
+    cursor.execute(
+        "SELECT id, rule_text FROM hypothesis_rules WHERE status = 'active' ORDER BY id ASC"
+    )
+    active = cursor.fetchall()
+
+    if not active:
+        conn.close()
+        return None  # All reviewed rules were rejected
+
+    lines = ["## Active Hypothesis Rules\n"]
+    for i, (_, rule_text) in enumerate(active, 1):
+        lines.append(f"{i}. {rule_text}\n")
+
+    cursor.execute("SELECT value FROM settings WHERE key = 'hypothesis_agent_context'")
+    ctx_row = cursor.fetchone()
+    if ctx_row and ctx_row[0]:
+        lines.append(f"\n## Agent Context\n{ctx_row[0]}")
+
+    conn.close()
+    return "\n".join(lines)
 
 
 # ---------------- COMPLEX + AI WEIGHT STORAGE ----------------

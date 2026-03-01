@@ -1,6 +1,7 @@
 # ai_trading_mvp/app/ai_agent.py
 
 import os
+import re
 import base64
 import anthropic
 import yfinance as yf
@@ -25,6 +26,55 @@ def get_stock_news(symbol: str, max_headlines: int = 5) -> list[str]:
         return headlines
     except Exception:
         return []
+
+
+def parse_rules_from_synthesis(text: str) -> list:
+    """
+    Extract individual hypothesis rules from a synthesis output string.
+
+    The synthesis format contains a '## Hypotheses' section with a numbered list.
+    Each rule is extracted as its own dict: {"text": str, "source": str}.
+
+    Source is inferred from keywords in the rule body:
+      "both"       — mentions historical AND feedback/manual
+      "historical" — mentions historical data only
+      "feedback"   — mentions feedback/manual only
+      ""           — unclassified
+    """
+    if "## Hypotheses" not in text:
+        return []
+
+    # Isolate the Hypotheses section (stop at ## Agent Context or end)
+    section = text.split("## Hypotheses")[1]
+    if "## Agent Context" in section:
+        section = section.split("## Agent Context")[0]
+
+    # Find the start position of each numbered item (e.g. "1. ", "2. ")
+    pattern = re.compile(r'^\s*\d+\.\s+', re.MULTILINE)
+    positions = [m.start() for m in pattern.finditer(section)]
+
+    rules = []
+    for i, pos in enumerate(positions):
+        end = positions[i + 1] if i + 1 < len(positions) else len(section)
+        rule_text = section[pos:end].strip()
+        # Strip leading "N. "
+        rule_text = re.sub(r'^\d+\.\s+', '', rule_text).strip()
+        if not rule_text:
+            continue
+        lower = rule_text.lower()
+        has_hist = "historical" in lower
+        has_feed = "feedback" in lower or "manual" in lower or "submitted" in lower
+        if has_hist and has_feed:
+            source = "both"
+        elif has_hist:
+            source = "historical"
+        elif has_feed:
+            source = "feedback"
+        else:
+            source = ""
+        rules.append({"text": rule_text, "source": source})
+
+    return rules
 
 
 def recommend_position_size(stock: dict, available_cash: float,
