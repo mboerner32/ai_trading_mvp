@@ -2,6 +2,8 @@
 
 import asyncio
 import datetime
+import os as _os
+import re as _re
 import threading
 import pytz
 import yfinance as yf
@@ -536,7 +538,6 @@ _scheduler.add_job(_check_watchlist, "cron", day_of_week="mon-fri",
 _scheduler.start()
 
 # Log API key status at startup so it's visible in Render logs
-import os as _os
 if _os.environ.get("ANTHROPIC_API_KEY"):
     print("STARTUP: ANTHROPIC_API_KEY is set ✓")
 else:
@@ -544,7 +545,7 @@ else:
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-templates = Jinja2Templates(directory="templates")
+templates = Jinja2Templates(directory="templates", autoescape=True)
 
 
 def _fetch_current_price(symbol: str, fallback: float) -> float:
@@ -559,6 +560,16 @@ def _fetch_current_price(symbol: str, fallback: float) -> float:
     except Exception:
         pass
     return fallback
+
+
+# Stock ticker symbols: 1–10 uppercase letters/digits, optional .A/.B suffix (e.g. BRK.A)
+_SYMBOL_RE = _re.compile(r'^[A-Z0-9]{1,10}(\.[A-Z]{1,2})?$')
+
+
+def _validate_symbol(raw: str) -> str | None:
+    """Return sanitised uppercase symbol if valid, None if it looks malicious."""
+    cleaned = raw.strip().upper()
+    return cleaned if _SYMBOL_RE.match(cleaned) else None
 
 
 # ---------------- HEALTH CHECK ----------------
@@ -813,6 +824,10 @@ def trade_buy(
 ):
     if "user" not in request.session:
         return RedirectResponse("/login", status_code=303)
+
+    symbol = _validate_symbol(symbol) or ""
+    if not symbol:
+        return RedirectResponse("/dashboard?trade_error=invalid_symbol", status_code=303)
 
     # Always use the live market price as entry — the form price comes from
     # a potentially stale scan cache and would cause immediate auto-closes.
@@ -1201,6 +1216,9 @@ def api_position_prices(request: Request):
 def watchlist_add(request: Request, symbol: str = Form(...), price: float = Form(0.0)):
     if "user" not in request.session:
         return RedirectResponse("/login", status_code=303)
+    symbol = _validate_symbol(symbol) or ""
+    if not symbol:
+        return RedirectResponse("/trades", status_code=303)
     add_to_watchlist(symbol, price or None)
     return RedirectResponse("/trades", status_code=303)
 
@@ -1359,6 +1377,13 @@ def change_password(
             "account.html",
             {"request": request, "user": username,
              "error": "New password must be at least 8 characters."}
+        )
+
+    if not _re.search(r'[A-Za-z]', new_password) or not _re.search(r'[0-9]', new_password):
+        return templates.TemplateResponse(
+            "account.html",
+            {"request": request, "user": username,
+             "error": "New password must contain at least one letter and one number."}
         )
 
     update_password(username, new_password)
