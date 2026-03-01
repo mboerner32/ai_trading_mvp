@@ -630,7 +630,9 @@ def sync_all_sources(request: Request, background_tasks: BackgroundTasks):
         all_feedback = get_all_feedback()
         opt_data = get_optimization_data()
         hist_count = get_historical_count()
-        text = synthesize_combined_hypothesis(all_feedback, opt_data, hist_count)
+        prior = get_hypothesis()
+        prior_text = prior["content"] if prior else None
+        text = synthesize_combined_hypothesis(all_feedback, opt_data, hist_count, prior_text)
         total = len(all_feedback) + hist_count
         if text:
             save_hypothesis(text, total)
@@ -671,7 +673,9 @@ def _run_hypothesis_and_weights(all_feedback: list):
     try:
         opt_data = get_optimization_data()
         hist_count = get_historical_count()
-        hypothesis_text = synthesize_combined_hypothesis(all_feedback, opt_data, hist_count)
+        prior = get_hypothesis()
+        prior_text = prior["content"] if prior else None
+        hypothesis_text = synthesize_combined_hypothesis(all_feedback, opt_data, hist_count, prior_text)
         hypothesis_content = None
         if hypothesis_text:
             save_hypothesis(hypothesis_text, len(all_feedback) + hist_count)
@@ -951,6 +955,18 @@ def api_backfill_status(request: Request):
     if "user" not in request.session:
         return Response(status_code=401)
     return get_backfill_status()
+
+
+@app.get("/api/hypothesis-status")
+def api_hypothesis_status(request: Request):
+    """Polling endpoint — returns hypothesis updated_at so the frontend
+    knows when a fresh synthesis has been saved."""
+    if "user" not in request.session:
+        return Response(status_code=401)
+    h = get_hypothesis()
+    if h:
+        return {"ready": True, "updated_at": h["updated_at"]}
+    return {"ready": False}
 
 
 # ---------------- VALIDATION ----------------

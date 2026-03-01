@@ -298,8 +298,12 @@
     </p>
 
     {% if syncing %}
-    <div class="info-banner">
-        Syncing all sources — auto-reloading in <span id="syncCountdown">15</span>s.
+    <div class="info-banner" id="syncBanner">
+        Syncing all sources — waiting for AI to finish
+        <span id="syncDots">...</span>
+        <span id="syncDoneMsg" style="display:none; color:#166534; font-weight:600;">
+            ✓ Done! Reloading...
+        </span>
     </div>
     {% endif %}
 
@@ -552,26 +556,58 @@
 </div>
 
 <script>
-// Auto-reload countdown after Sync or Re-analyze
+// Polling reload after Sync All Sources
 (function() {
-    var syncEl      = document.getElementById('syncCountdown');
+    var syncBanner = document.getElementById('syncBanner');
+    if (!syncBanner) return;
+
+    // Record the hypothesis timestamp at page load (may be null/old)
+    var knownUpdatedAt = {{ ('"' + hypothesis.updated_at + '"') if hypothesis else 'null' }};
+
+    var dotCount = 0;
+    var dotsEl = document.getElementById('syncDots');
+    var doneEl = document.getElementById('syncDoneMsg');
+
+    // Animate dots while waiting
+    var dotTimer = setInterval(function() {
+        dotCount = (dotCount + 1) % 4;
+        if (dotsEl) dotsEl.textContent = '.'.repeat(dotCount + 1);
+    }, 500);
+
+    // Poll every 3 seconds until a new hypothesis appears
+    var pollTimer = setInterval(function() {
+        fetch('/api/hypothesis-status')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.ready && data.updated_at !== knownUpdatedAt) {
+                    clearInterval(pollTimer);
+                    clearInterval(dotTimer);
+                    if (dotsEl) dotsEl.style.display = 'none';
+                    if (doneEl) doneEl.style.display = 'inline';
+                    setTimeout(function() { window.location.href = '/feedback'; }, 800);
+                }
+            })
+            .catch(function() {});
+    }, 3000);
+
+    // Hard fallback: reload after 90s no matter what
+    setTimeout(function() {
+        clearInterval(pollTimer);
+        clearInterval(dotTimer);
+        window.location.href = '/feedback';
+    }, 90000);
+})();
+
+// Fixed countdown for re-analyze
+(function() {
     var reanalyzeEl = document.getElementById('reanalyzeCountdown');
-
-    function startCountdown(el, seconds, redirectUrl) {
-        if (!el) return;
-        var remaining = seconds;
-        var timer = setInterval(function() {
-            remaining--;
-            el.textContent = remaining;
-            if (remaining <= 0) {
-                clearInterval(timer);
-                window.location.href = redirectUrl;
-            }
-        }, 1000);
-    }
-
-    startCountdown(syncEl,      15, '/feedback');
-    startCountdown(reanalyzeEl, 30, '/feedback');
+    if (!reanalyzeEl) return;
+    var remaining = 30;
+    var timer = setInterval(function() {
+        remaining--;
+        reanalyzeEl.textContent = remaining;
+        if (remaining <= 0) { clearInterval(timer); window.location.href = '/feedback'; }
+    }, 1000);
 })();
 
     const realInput   = document.getElementById('chartsInput');

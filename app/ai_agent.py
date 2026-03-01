@@ -288,10 +288,11 @@ RATIONALE: <one sentence, 15 words or less>"""
 
 def synthesize_combined_hypothesis(feedback_entries: list,
                                    opt_data: dict,
-                                   historical_count: int) -> str:
+                                   historical_count: int,
+                                   prior_hypothesis: str = None) -> str:
     """
     Unified synthesis combining qualitative manual feedback AND quantitative
-    historical scan data. Produces a single hypothesis for both sources.
+    historical scan data. Evolves the prior hypothesis rather than replacing it.
     """
     has_feedback   = bool(feedback_entries)
     has_historical = bool(opt_data and historical_count > 0)
@@ -348,26 +349,35 @@ def synthesize_combined_hypothesis(feedback_entries: list,
     else:
         historical_section = "## Historical Scan Data\nNone available."
 
-    prompt = f"""You are synthesizing trading pattern hypotheses from two sources:
-1. {len(feedback_entries)} manually submitted winning trades (qualitative: chart screenshots + trader notes)
-2. {historical_count} labeled historical scan examples (quantitative: next-day return statistics)
+    prior_section = ""
+    if prior_hypothesis and prior_hypothesis.strip():
+        prior_section = f"""## Prior Hypothesis (evolve this — retain confirmed patterns, upgrade confidence on new evidence, add new findings)
+{prior_hypothesis[:1200].strip()}
 
-GOAL: Identify which setup characteristics most reliably predict a 20%+ price spike within 7 trading days.
-That is the specific take-profit target. Setups that hit 20%+ FASTER (fewer days) are higher quality signals.
+"""
 
-{feedback_section}
+    prompt = f"""You are evolving a set of trading pattern hypotheses over time using new evidence.
+Sources:
+1. {len(feedback_entries)} manually submitted winning trades (qualitative)
+2. {historical_count} labeled historical scan examples (quantitative)
+
+GOAL: Identify which setup characteristics most reliably predict a 20%+ intraday price spike within 7 trading days.
+Setups that hit 20%+ FASTER are higher quality. Build on prior findings — do not discard confirmed patterns.
+
+{prior_section}{feedback_section}
 
 {historical_section}
 
-Identify patterns supported by either or both sources. For each hypothesis:
-- State what the pattern is and how it correlates with 20%+ spikes
-- Note whether evidence is from manual submissions, historical stats, or both
-- Note if setups with this characteristic tend to hit 20%+ faster (lower avg_days_to_20pct = better)
-- Rate confidence: HIGH (strong evidence), EMERGING (moderate), PRELIMINARY (limited)
-- State how it should influence position sizing (size up for high 20%+ hit rate + fast hit, size down otherwise)
+Instructions:
+- KEEP confirmed patterns from the prior hypothesis; upgrade confidence if new data supports them
+- ADD new patterns found in this data that aren't already captured
+- REMOVE patterns that new evidence contradicts
+- For each hypothesis: state the pattern, source (manual/historical/both), avg days-to-20% if known,
+  confidence (HIGH/EMERGING/PRELIMINARY), and position sizing implication
+- Aim for 5-8 total hypotheses (quality over quantity)
 
-Then write an AGENT CONTEXT section: a compact 3-4 sentence summary specifically about which signals
-predict 20%+ next-day spikes, formatted for injection into a trading AI agent.
+Then write an AGENT CONTEXT section: a compact 3-4 sentence summary of the strongest signals,
+formatted for direct injection into a trading AI agent prompt.
 
 Format exactly:
 ## Hypotheses
