@@ -36,31 +36,35 @@ def _send_email(subject: str, body: str):
 
 def _send_telegram(message: str):
     """
-    Send a Telegram push notification.
+    Send a Telegram push notification to one or more recipients.
     Silent no-op if TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set.
 
     Setup:
       1. Create a bot via @BotFather, copy the token → TELEGRAM_BOT_TOKEN env var
-      2. Start a chat with your bot, then visit:
+      2. Each recipient must /start a chat with the bot, then visit:
          https://api.telegram.org/bot<TOKEN>/getUpdates
-         to find your chat_id → TELEGRAM_CHAT_ID env var
+         to find their chat_id.
+      3. Set TELEGRAM_CHAT_ID to a single ID or a comma-separated list for
+         multiple recipients, e.g.: 123456789,987654321
     """
-    token   = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    raw   = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not raw:
         return
-    try:
-        resp = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
-            timeout=10,
-        )
-        if resp.ok:
-            print("Telegram alert sent")
-        else:
-            print(f"Telegram alert failed: {resp.status_code} {resp.text[:120]}")
-    except Exception as e:
-        print(f"Telegram alert error: {e}")
+    chat_ids = [cid.strip() for cid in raw.split(",") if cid.strip()]
+    for chat_id in chat_ids:
+        try:
+            resp = requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
+                timeout=10,
+            )
+            if resp.ok:
+                print(f"Telegram alert sent → {chat_id}")
+            else:
+                print(f"Telegram alert failed → {chat_id}: {resp.status_code} {resp.text[:120]}")
+        except Exception as e:
+            print(f"Telegram alert error → {chat_id}: {e}")
 
 
 def send_scan_alert(results: list, mode: str, min_score: int = 75):
