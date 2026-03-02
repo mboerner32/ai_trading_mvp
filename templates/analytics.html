@@ -230,6 +230,31 @@
             {% endif %}
         </div>
 
+        {% if model_validation and model_validation.by_decision %}
+        <div class="card">
+            <h3>AI Call Accuracy</h3>
+            {% set t  = model_validation.by_decision.get('TRADE') %}
+            {% set nt = model_validation.by_decision.get('NO_TRADE') %}
+            {% if t %}
+            <div style="font-size:13px; margin-bottom:6px;">
+                <span style="color:#10b981; font-weight:600;">TRADE</span>
+                &nbsp;{{ t.hit_20pct }}% hit 20%
+                <span style="color:#6b7280; font-size:11px;">({{ t.count }} calls)</span>
+            </div>
+            {% endif %}
+            {% if nt %}
+            <div style="font-size:13px;">
+                <span style="color:#ef4444; font-weight:600;">NO_TRADE</span>
+                &nbsp;{{ nt.hit_20pct }}% were real moves missed
+                <span style="color:#6b7280; font-size:11px;">({{ nt.count }} calls)</span>
+            </div>
+            {% endif %}
+            <div style="font-size:10px; color:#6b7280; margin-top:6px;">
+                {{ model_validation.total }} resolved calls total
+            </div>
+        </div>
+        {% endif %}
+
     </div>
 
     <!-- SCORE BUCKET TABLE -->

@@ -258,7 +258,8 @@ def recommend_trade(stock: dict, hypothesis: str = None,
                     sizing_stats: dict = None,
                     ticker_history: list = None,
                     lstm_prob: float = None,
-                    news_headlines: list = None) -> dict:
+                    news_headlines: list = None,
+                    ai_accuracy: dict = None) -> dict:
     """
     Makes TRADE/NO_TRADE call using five context sources:
     hypothesis, market context (day-of-week), ticker history, historical calibration,
@@ -318,6 +319,36 @@ def recommend_trade(stock: dict, hypothesis: str = None,
             lines.append(f"  • {h}")
         news_section = "\n".join(lines)
 
+    # Context 7: AI self-calibration — own historical accuracy
+    accuracy_section = ""
+    if ai_accuracy and ai_accuracy.get("total_resolved", 0) >= 5:
+        parts = [f"\nYour past AI call accuracy ({ai_accuracy['total_resolved']} resolved calls):"]
+        if "trade" in ai_accuracy:
+            t = ai_accuracy["trade"]
+            parts.append(
+                f"  TRADE calls: {t['hit_20pct']}% hit 20% target  |  "
+                f"{t['missed']}% missed  ({t['count']} calls)"
+            )
+        if "no_trade" in ai_accuracy:
+            nt = ai_accuracy["no_trade"]
+            parts.append(
+                f"  NO_TRADE calls: {nt['correct']}% correctly avoided  |  "
+                f"{nt['missed_moves']}% missed a real move  ({nt['count']} calls)"
+            )
+        if "trade" in ai_accuracy:
+            hit_rate = ai_accuracy["trade"]["hit_20pct"]
+            if hit_rate < 40:
+                parts.append(
+                    "  → Your TRADE calls are underperforming. "
+                    "Raise your bar — only call TRADE on the highest-conviction setups."
+                )
+            elif hit_rate > 65:
+                parts.append(
+                    "  → Your TRADE calls are performing well. "
+                    "Confidence is justified on quality setups."
+                )
+        accuracy_section = "\n".join(parts)
+
     prompt = f"""You are a momentum trading AI making a TRADE or NO_TRADE call for a low-float microcap.
 Strategy: buy stocks showing unusual volume compression setups targeting 20%+ next-day spike.
 
@@ -329,7 +360,7 @@ Signals:
 - Sideways Compression: {checklist.get('sideways_chop')}
 - Yesterday Green: {checklist.get('yesterday_green')}
 - Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'} (40%+ = strong floor, lowers downside risk)
-- Sector/Industry: {checklist.get('sector') or 'N/A'} / {checklist.get('industry') or 'N/A'} (Biotech/Healthcare historically outperforms for this setup){calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}{news_section}
+- Sector/Industry: {checklist.get('sector') or 'N/A'} / {checklist.get('industry') or 'N/A'} (Biotech/Healthcare historically outperforms for this setup){calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}{news_section}{accuracy_section}
 
 Make a TRADE or NO_TRADE call. Does this setup match learned patterns? Is the score/signal quality sufficient?
 

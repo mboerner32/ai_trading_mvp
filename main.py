@@ -90,6 +90,7 @@ from app.database import (
     get_validation_reports,
     get_live_scan_stats,
     get_model_validation_stats,
+    get_ai_decision_accuracy,
     get_auto_learn_count,
     save_auto_learn_count,
     update_scan_ai_rec,
@@ -219,6 +220,7 @@ def _enrich_high_scorers(results: list) -> list:
 
     hypothesis_text = get_active_hypothesis_text()
     sizing_stats    = get_sizing_stats()
+    ai_accuracy     = get_ai_decision_accuracy()
     high_scorers    = [r for r in results if r.get("score", 0) >= 75]
 
     def _enrich_one(stock):
@@ -229,7 +231,8 @@ def _enrich_high_scorers(results: list) -> list:
             news = get_stock_news(stock["symbol"])
             stock["ai_trade_call"] = recommend_trade(
                 stock, hypothesis_text, sizing_stats, ticker_history,
-                lstm_prob=lstm_prob, news_headlines=news
+                lstm_prob=lstm_prob, news_headlines=news,
+                ai_accuracy=ai_accuracy
             )
         except Exception as e:
             print(f"ENRICH: {stock['symbol']} failed — {e}")
@@ -668,6 +671,7 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
     available_cash = get_portfolio_summary()["cash"]
     hypothesis_text = get_active_hypothesis_text()
     sizing_stats    = get_sizing_stats()
+    ai_accuracy     = get_ai_decision_accuracy()
     active_rule_ids = get_active_rule_ids()
 
     # Parallel AI enrichment — position sizing + price target prediction (score >= 75) + AI trade call
@@ -687,7 +691,8 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
         news = get_stock_news(stock["symbol"])
         stock["ai_trade_call"] = recommend_trade(
             stock, hypothesis_text, sizing_stats, ticker_history,
-            lstm_prob=lstm_prob, news_headlines=news
+            lstm_prob=lstm_prob, news_headlines=news,
+            ai_accuracy=ai_accuracy
         )
         scan_id = scan_id_map.get(stock.get("symbol"))
         if scan_id:

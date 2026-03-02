@@ -1799,6 +1799,63 @@ def get_model_validation_stats() -> dict | None:
     }
 
 
+def get_ai_decision_accuracy() -> dict | None:
+    """
+    Computes AI TRADE/NO_TRADE accuracy against resolved outcomes.
+    Resolved = next_day_return IS NOT NULL (backfilled 2+ days after scan).
+    Returns None if fewer than 5 resolved AI calls exist.
+    Used to inject self-calibration context into future recommend_trade() calls.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT ai_trade_rec, days_to_20pct
+        FROM scans
+        WHERE mode != 'historical'
+          AND next_day_return IS NOT NULL
+          AND ai_trade_rec IS NOT NULL
+        ORDER BY id DESC LIMIT 500
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    if len(rows) < 5:
+        return None
+
+    trade_calls    = []
+    no_trade_calls = []
+
+    for ai_rec_json, d20 in rows:
+        try:
+            decision = json.loads(ai_rec_json).get("decision", "").upper()
+        except Exception:
+            continue
+        hit = d20 is not None
+        if decision == "TRADE":
+            trade_calls.append(hit)
+        elif decision == "NO_TRADE":
+            no_trade_calls.append(hit)
+
+    result = {"total_resolved": len(rows)}
+
+    if trade_calls:
+        hits = sum(trade_calls)
+        result["trade"] = {
+            "count":     len(trade_calls),
+            "hit_20pct": round(hits / len(trade_calls) * 100, 1),
+            "missed":    round((len(trade_calls) - hits) / len(trade_calls) * 100, 1),
+        }
+    if no_trade_calls:
+        missed_moves = sum(no_trade_calls)
+        result["no_trade"] = {
+            "count":        len(no_trade_calls),
+            "correct":      round((len(no_trade_calls) - missed_moves) / len(no_trade_calls) * 100, 1),
+            "missed_moves": round(missed_moves / len(no_trade_calls) * 100, 1),
+        }
+
+    return result
+
+
 # ---------------- SELF-LEARNING LOOP ----------------
 def get_live_scan_stats() -> dict:
     """Stats on live scan outcomes for the self-learning tracker on the analytics page."""
