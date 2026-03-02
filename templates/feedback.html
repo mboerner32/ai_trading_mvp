@@ -349,6 +349,31 @@
     </div>
     {% endif %}
 
+    {% set zip_imported = request.query_params.get('zip_imported') %}
+    {% set zip_error    = request.query_params.get('zip_error') %}
+    {% if zip_imported %}
+    <div class="success-banner">
+        ✓ Analyzed and saved {{ zip_imported }} image{{ 's' if zip_imported|int != 1 else '' }} from zip.
+        Hypothesis updating in the background — reload in ~20 seconds.
+    </div>
+    {% endif %}
+    {% if zip_error == 'no_images' %}
+    <div style="background:#fef2f2; border:1px solid #fca5a5; color:#991b1b;
+                padding:14px 20px; border-radius:8px; margin-bottom:20px; font-weight:500;">
+        No images found in the zip. Make sure the file contains .jpg, .png, .webp, or .gif files.
+    </div>
+    {% elif zip_error == 'too_large' %}
+    <div style="background:#fef2f2; border:1px solid #fca5a5; color:#991b1b;
+                padding:14px 20px; border-radius:8px; margin-bottom:20px; font-weight:500;">
+        Zip file is too large (100 MB max). Try uploading a smaller batch.
+    </div>
+    {% elif zip_error %}
+    <div style="background:#fef2f2; border:1px solid #fca5a5; color:#991b1b;
+                padding:14px 20px; border-radius:8px; margin-bottom:20px; font-weight:500;">
+        Zip upload failed — make sure you uploaded a valid .zip file.
+    </div>
+    {% endif %}
+
 
     <!-- ===== ACTIVE HYPOTHESES ===== -->
     {% if hypothesis %}
@@ -516,6 +541,52 @@
         </form>
     </div>
 
+
+    <!-- ===== BULK ZIP UPLOAD ===== -->
+    <div class="card" style="border-left:4px solid #7c3aed;">
+        <div class="section-title" style="color:#5b21b6; margin-bottom:4px;">
+            Bulk Upload from ZIP
+        </div>
+        <p style="font-size:13px; color:#6b7280; margin:0 0 18px;">
+            Download your Google Photos album as a zip, then upload it here.
+            Each image is analyzed individually and saved as its own feedback entry.
+            Up to 30 images per upload — submit in batches if you have more.
+        </p>
+        <form method="post" action="/feedback/upload-zip" enctype="multipart/form-data">
+            <div style="display:grid; grid-template-columns:1fr 2fr; gap:16px; margin-bottom:14px;">
+                <div>
+                    <label>Ticker Symbol (optional)</label>
+                    <input type="text" name="symbol" placeholder="e.g. MARA" maxlength="10">
+                    <div style="font-size:11px; color:#9ca3af; margin-top:4px;">
+                        Applied to all images in the zip.
+                    </div>
+                </div>
+                <div>
+                    <label>Notes (optional — applied to all images)</label>
+                    <textarea name="user_text" style="min-height:54px;"
+                              placeholder="e.g. Low float squeeze setups that ripped intraday"></textarea>
+                </div>
+            </div>
+            <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                <div style="flex:1; min-width:220px;">
+                    <label style="margin-bottom:4px;">ZIP File</label>
+                    <input type="file" name="zip_file" accept=".zip" required
+                           style="font-size:13px; width:100%; box-sizing:border-box;">
+                </div>
+                <div style="padding-top:20px;">
+                    <button type="submit"
+                            style="background:#7c3aed; color:white; border:none;
+                                   padding:11px 24px; border-radius:8px; font-size:14px;
+                                   font-weight:600; cursor:pointer; white-space:nowrap;">
+                        Upload &amp; Analyze All
+                    </button>
+                </div>
+            </div>
+            <div style="font-size:11px; color:#9ca3af; margin-top:8px;">
+                Supported formats: .jpg, .jpeg, .png, .webp, .gif · Max 100 MB · Up to 30 images
+            </div>
+        </form>
+    </div>
 
     <!-- ===== BACKUP & RESTORE ===== -->
     <div class="card" style="border-left:4px solid #f59e0b;">

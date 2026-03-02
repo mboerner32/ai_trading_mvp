@@ -2,10 +2,12 @@
 
 import asyncio
 import datetime
+import io
 import json
 import os as _os
 import re as _re
 import threading
+import zipfile
 import pytz
 import yfinance as yf
 
@@ -1115,6 +1117,82 @@ async def submit_feedback(
             "chart_analysis": chart_analysis,
         }
     )
+
+
+_ZIP_IMAGE_EXTS   = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+_ZIP_MAX_IMAGES   = 30      # cap per upload to avoid very long API waits
+_ZIP_MAX_BYTES    = 100 * 1024 * 1024  # 100 MB raw zip limit
+
+
+@app.post("/feedback/upload-zip")
+async def feedback_upload_zip(request: Request, background_tasks: BackgroundTasks):
+    """
+    Accept a zip file (e.g. downloaded from Google Photos), extract every image,
+    run each through Claude chart analysis, and save as individual feedback entries.
+    """
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+
+    form       = await request.form()
+    zip_upload = form.get("zip_file")
+    symbol     = (form.get("symbol") or "").strip().upper()
+    user_text  = (form.get("user_text") or "").strip()
+
+    if not zip_upload or not hasattr(zip_upload, "read"):
+        return RedirectResponse("/feedback?zip_error=no_file", status_code=303)
+
+    raw = await zip_upload.read()
+    if len(raw) > _ZIP_MAX_BYTES:
+        return RedirectResponse("/feedback?zip_error=too_large", status_code=303)
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+    except zipfile.BadZipFile:
+        return RedirectResponse("/feedback?zip_error=invalid_zip", status_code=303)
+
+    # Collect image entries — skip macOS metadata sidecars and folders
+    image_names = [
+        n for n in zf.namelist()
+        if not n.startswith("__MACOSX")
+        and not n.endswith("/")
+        and _os.path.splitext(n.lower())[1] in _ZIP_IMAGE_EXTS
+    ]
+
+    if not image_names:
+        return RedirectResponse("/feedback?zip_error=no_images", status_code=303)
+
+    # Cap and sort so order is deterministic (Google Photos names are date-stamped)
+    image_names = sorted(image_names)[:_ZIP_MAX_IMAGES]
+
+    # Read all image bytes up front (sync, fast)
+    chart_data = []
+    for name in image_names:
+        ext = _os.path.splitext(name.lower())[1]
+        media_type = {
+            ".png":  "image/png",
+            ".gif":  "image/gif",
+            ".webp": "image/webp",
+        }.get(ext, "image/jpeg")
+        chart_data.append((_os.path.basename(name), zf.read(name), media_type))
+
+    # Analyze every image in parallel (same approach as multi-chart upload)
+    loop   = asyncio.get_event_loop()
+    sym    = symbol or None
+    tasks  = [
+        loop.run_in_executor(None, analyze_chart_feedback, img_bytes, mt, user_text, sym)
+        for _, img_bytes, mt in chart_data
+    ]
+    analyses = await asyncio.gather(*tasks)
+
+    # Save one feedback entry per image
+    for (fname, _, _), analysis in zip(chart_data, analyses):
+        note = f"[From zip: {fname}]"
+        combined_text = f"{note}\n{user_text}" if user_text else note
+        save_feedback(symbol, combined_text, analysis)
+
+    saved = len(chart_data)
+    background_tasks.add_task(_run_hypothesis_and_weights, get_all_feedback())
+    return RedirectResponse(f"/feedback?zip_imported={saved}", status_code=303)
 
 
 @app.post("/feedback/{feedback_id}/tag")
