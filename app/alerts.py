@@ -11,6 +11,7 @@ import smtplib
 import requests
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from app.database import get_telegram_recipients
 
 
 def _send_email(subject: str, body: str):
@@ -48,10 +49,28 @@ def _send_telegram(message: str):
          multiple recipients, e.g.: 123456789,987654321
     """
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    raw   = os.environ.get("TELEGRAM_CHAT_ID", "")
-    if not token or not raw:
+    if not token:
         return
-    chat_ids = [cid.strip() for cid in raw.split(",") if cid.strip()]
+
+    # Merge env var recipients with DB-managed recipients (deduped)
+    seen = set()
+    chat_ids = []
+    for cid in os.environ.get("TELEGRAM_CHAT_ID", "").split(","):
+        cid = cid.strip()
+        if cid and cid not in seen:
+            chat_ids.append(cid)
+            seen.add(cid)
+    try:
+        for r in get_telegram_recipients():
+            cid = r["chat_id"].strip()
+            if cid and cid not in seen:
+                chat_ids.append(cid)
+                seen.add(cid)
+    except Exception:
+        pass
+
+    if not chat_ids:
+        return
     for chat_id in chat_ids:
         try:
             resp = requests.post(

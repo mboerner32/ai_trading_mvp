@@ -91,6 +91,9 @@ from app.database import (
     get_live_scan_stats,
     get_model_validation_stats,
     get_ai_decision_accuracy,
+    get_telegram_recipients,
+    add_telegram_recipient,
+    delete_telegram_recipient,
     get_auto_learn_count,
     save_auto_learn_count,
     update_scan_ai_rec,
@@ -1534,6 +1537,7 @@ def users_page(request: Request):
             "request": request,
             "user": request.session["user"],
             "users": get_all_users(),
+            "telegram_recipients": get_telegram_recipients(),
         }
     )
 
@@ -1558,6 +1562,31 @@ def users_delete(request: Request, username: str):
     if "user" not in request.session or not _require_admin(request):
         return RedirectResponse("/login", status_code=303)
     delete_user(username)
+    return RedirectResponse("/users", status_code=303)
+
+
+@app.post("/users/telegram/add")
+def telegram_add(
+    request: Request,
+    chat_id: str = Form(...),
+    label: str = Form(""),
+):
+    if "user" not in request.session or not _require_admin(request):
+        return RedirectResponse("/login", status_code=303)
+    chat_id = chat_id.strip()
+    if not chat_id:
+        return RedirectResponse("/users?tg_error=empty", status_code=303)
+    added = add_telegram_recipient(chat_id, label)
+    if added:
+        return RedirectResponse("/users?tg_added=1", status_code=303)
+    return RedirectResponse("/users?tg_error=exists", status_code=303)
+
+
+@app.post("/users/telegram/delete/{chat_id}")
+def telegram_delete(request: Request, chat_id: str):
+    if "user" not in request.session or not _require_admin(request):
+        return RedirectResponse("/login", status_code=303)
+    delete_telegram_recipient(chat_id)
     return RedirectResponse("/users", status_code=303)
 
 

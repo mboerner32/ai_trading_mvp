@@ -232,6 +232,17 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # ---------------- TELEGRAM RECIPIENTS TABLE ----------------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS telegram_recipients (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id  TEXT NOT NULL UNIQUE,
+            label    TEXT NOT NULL DEFAULT '',
+            added_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+
     # ---------------- HYPOTHESIS RULES TABLE ----------------
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS hypothesis_rules (
@@ -1808,6 +1819,45 @@ def get_model_validation_stats() -> dict | None:
         "by_confidence": {k: _stats(v) for k, v in by_confidence.items() if v},
         "by_score":      {k: _stats(v) for k, v in by_score.items()      if v},
     }
+
+
+# ---------------- TELEGRAM RECIPIENTS ----------------
+def get_telegram_recipients() -> list:
+    """Returns all saved Telegram recipients as list of {chat_id, label, added_at}."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_id, label, added_at FROM telegram_recipients ORDER BY added_at ASC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"chat_id": r[0], "label": r[1], "added_at": r[2]} for r in rows]
+
+
+def add_telegram_recipient(chat_id: str, label: str = "") -> bool:
+    """Adds a Telegram recipient. Returns True if added, False if already exists."""
+    chat_id = chat_id.strip()
+    if not chat_id:
+        return False
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO telegram_recipients (chat_id, label, added_at) VALUES (?, ?, ?)",
+            (chat_id, label.strip(), datetime.utcnow().isoformat())
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def delete_telegram_recipient(chat_id: str):
+    """Removes a Telegram recipient by chat_id."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM telegram_recipients WHERE chat_id = ?", (chat_id,))
+    conn.commit()
+    conn.close()
 
 
 def get_ai_decision_accuracy() -> dict | None:

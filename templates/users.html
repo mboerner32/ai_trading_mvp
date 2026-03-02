@@ -55,6 +55,14 @@
     {% if request.query_params.get('error') %}
     <div class="alert alert-error">Username must not be empty and password must be at least 8 characters.</div>
     {% endif %}
+    {% if request.query_params.get('tg_added') %}
+    <div class="alert alert-success">Telegram recipient added. They will receive all future alerts.</div>
+    {% endif %}
+    {% if request.query_params.get('tg_error') == 'exists' %}
+    <div class="alert alert-error">That Chat ID is already in the recipients list.</div>
+    {% elif request.query_params.get('tg_error') == 'empty' %}
+    <div class="alert alert-error">Chat ID cannot be empty.</div>
+    {% endif %}
 
     <!-- Current users -->
     <div class="card">
@@ -108,6 +116,65 @@
                 </div>
             </div>
             <button type="submit" class="btn btn-primary">Create User</button>
+        </form>
+    </div>
+
+    <!-- Telegram Alert Recipients -->
+    <h1 style="margin-top:40px;">Telegram Alert Recipients</h1>
+    <p style="color:#6b7280; font-size:13px; margin:-8px 0 20px;">
+        Everyone listed here receives all scan alerts, watchlist breakouts, and take-profit notifications.
+        To find a Chat ID: have the person send <strong>/start</strong> to your bot, then visit
+        <code style="background:#f3f4f6; padding:1px 5px; border-radius:4px;">https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code>
+        and look for <code style="background:#f3f4f6; padding:1px 5px; border-radius:4px;">"chat": {"id": ...}</code>.
+    </p>
+
+    <div class="card">
+        {% if telegram_recipients %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Chat ID</th>
+                    <th>Name / Label</th>
+                    <th>Added</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in telegram_recipients %}
+                <tr>
+                    <td><code style="background:#f3f4f6; padding:2px 6px; border-radius:4px; font-size:13px;">{{ r.chat_id }}</code></td>
+                    <td>{{ r.label or '—' }}</td>
+                    <td style="color:#9ca3af; font-size:12px;">{{ r.added_at[:10] if r.added_at else '' }}</td>
+                    <td style="text-align:right;">
+                        <form method="post" action="/users/telegram/delete/{{ r.chat_id }}"
+                              onsubmit="return confirm('Remove {{ r.label or r.chat_id }} from alerts?');" style="display:inline;">
+                            <button type="submit" class="btn-delete">Remove</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p style="color:#9ca3af; font-size:14px; margin:0;">No recipients added yet. Add one below, or set the <code>TELEGRAM_CHAT_ID</code> env var in Render.</p>
+        {% endif %}
+    </div>
+
+    <!-- Add Telegram recipient -->
+    <div class="card">
+        <h3 style="margin:0 0 20px; font-size:16px;">Add Recipient</h3>
+        <form method="post" action="/users/telegram/add">
+            <div class="form-row">
+                <div>
+                    <label>Telegram Chat ID</label>
+                    <input type="text" name="chat_id" required placeholder="e.g. 123456789" autocomplete="off">
+                </div>
+                <div>
+                    <label>Name / Label (optional)</label>
+                    <input type="text" name="label" placeholder="e.g. Alex" autocomplete="off">
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary">Add Recipient</button>
         </form>
     </div>
 </div>
