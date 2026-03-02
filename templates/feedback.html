@@ -630,7 +630,7 @@
     if (!syncBanner) return;
 
     // Record the hypothesis timestamp at page load (may be null/old)
-    var knownUpdatedAt = {{ ('"' + hypothesis.updated_at + '"') if hypothesis else 'null' }};
+    var knownUpdatedAt = {{ (hypothesis.updated_at if hypothesis else None) | tojson }};
 
     var dotCount = 0;
     var dotsEl = document.getElementById('syncDots');
