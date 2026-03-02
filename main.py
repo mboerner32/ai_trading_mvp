@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime
+import json
 import os as _os
 import re as _re
 import threading
@@ -100,6 +101,8 @@ from app.database import (
     get_active_rule_ids,
     save_scan_active_rules,
     get_active_hypothesis_text,
+    import_feedback_from_backup,
+    FEEDBACK_BACKUP_PATH,
 )
 
 app = FastAPI()
@@ -1490,6 +1493,41 @@ def hypothesis_rule_reject(request: Request, rule_id: int):
         return RedirectResponse("/login", status_code=303)
     update_rule_status(rule_id, "rejected")
     return RedirectResponse("/analytics", status_code=303)
+
+
+# ---------------- FEEDBACK BACKUP / RESTORE ----------------
+@app.get("/feedback/export")
+def feedback_export(request: Request):
+    """Download all feedback entries as a JSON backup file."""
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    entries = get_all_feedback()
+    content = json.dumps(entries, indent=2, ensure_ascii=False)
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=feedback_backup.json"},
+    )
+
+
+@app.post("/feedback/import-backup")
+async def feedback_import_backup(request: Request):
+    """Restore feedback entries from an uploaded JSON backup file."""
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    try:
+        form = await request.form()
+        backup_file = form.get("backup_file")
+        if not backup_file or not hasattr(backup_file, "read"):
+            return RedirectResponse("/feedback?import_error=no_file", status_code=303)
+        content = await backup_file.read()
+        entries = json.loads(content)
+        if not isinstance(entries, list):
+            return RedirectResponse("/feedback?import_error=invalid_format", status_code=303)
+        count = import_feedback_from_backup(entries)
+        return RedirectResponse(f"/feedback?imported={count}", status_code=303)
+    except Exception:
+        return RedirectResponse("/feedback?import_error=parse_error", status_code=303)
 
 
 # ---------------- LOGOUT ----------------

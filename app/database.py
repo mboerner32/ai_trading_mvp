@@ -9,6 +9,11 @@ from passlib.context import CryptContext
 # Locally: falls back to scan_history.db in the project root
 DB_NAME = os.environ.get("DB_PATH", "scan_history.db")
 
+# Feedback backup lives alongside the DB so it persists on Render's disk too.
+# Download it periodically via /feedback/export for an off-disk copy.
+_DB_DIR = os.path.dirname(os.path.abspath(DB_NAME)) or "."
+FEEDBACK_BACKUP_PATH = os.path.join(_DB_DIR, "feedback_backup.json")
+
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 
@@ -852,6 +857,58 @@ def save_feedback(symbol: str, user_text: str, chart_analysis: str):
     """, (datetime.utcnow().isoformat(), symbol or "", user_text or "", chart_analysis or ""))
     conn.commit()
     conn.close()
+    _write_feedback_backup()  # keep backup file in sync after every save
+
+
+def _write_feedback_backup():
+    """
+    Write all feedback entries to a JSON file alongside the database.
+    Called automatically after every save/import so the backup stays current.
+    Silently skips on any I/O error (never blocks the main request).
+    """
+    try:
+        entries = get_all_feedback()
+        with open(FEEDBACK_BACKUP_PATH, "w", encoding="utf-8") as f:
+            json.dump(entries, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def import_feedback_from_backup(entries: list) -> int:
+    """
+    Insert feedback entries from a backup list (e.g. an uploaded JSON file).
+    Deduplicates by (created_at, symbol) to avoid double-inserts.
+    Returns the number of new entries inserted.
+    """
+    if not entries:
+        return 0
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    # Build dedup set from existing rows
+    cursor.execute("SELECT created_at, symbol FROM feedback")
+    existing = {(r[0], r[1]) for r in cursor.fetchall()}
+    inserted = 0
+    for entry in entries:
+        key = (entry.get("created_at", ""), entry.get("symbol", ""))
+        if key in existing:
+            continue
+        cursor.execute("""
+            INSERT INTO feedback (created_at, symbol, user_text, chart_analysis, outcome_tag)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            entry.get("created_at") or datetime.utcnow().isoformat(),
+            entry.get("symbol", ""),
+            entry.get("user_text", ""),
+            entry.get("chart_analysis", ""),
+            entry.get("outcome_tag") or None,
+        ))
+        existing.add(key)
+        inserted += 1
+    conn.commit()
+    conn.close()
+    if inserted > 0:
+        _write_feedback_backup()  # update backup to include restored entries
+    return inserted
 
 
 def update_feedback_analysis(feedback_id: int, new_analysis: str):

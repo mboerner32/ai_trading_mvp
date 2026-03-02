@@ -289,6 +289,13 @@
                     Re-analyze Charts
                 </button>
             </form>
+            <!-- Download backup -->
+            <a href="/feedback/export"
+               style="background:#f3f4f6; border:1px solid #d1d5db; color:#374151;
+                      padding:8px 14px; border-radius:8px; font-size:12px;
+                      font-weight:500; cursor:pointer; text-decoration:none; display:inline-block;">
+                ↓ Download Backup
+            </a>
         </div>
     </div>
 
@@ -323,6 +330,23 @@
         <div class="analysis-box">{{ chart_analysis }}</div>
     </div>
     {% endif %}
+    {% endif %}
+
+    {% set imported = request.query_params.get('imported') %}
+    {% set import_error = request.query_params.get('import_error') %}
+    {% if imported %}
+    <div class="success-banner">
+        ✓ Restored {{ imported }} feedback entry{{ 'entries' if imported|int != 1 else '' }} from backup.
+        {% if imported|int > 0 %}
+        Click <strong>Sync All Sources</strong> to regenerate the hypothesis from the restored data.
+        {% endif %}
+    </div>
+    {% endif %}
+    {% if import_error %}
+    <div style="background:#fef2f2; border:1px solid #fca5a5; color:#991b1b;
+                padding:14px 20px; border-radius:8px; margin-bottom:20px; font-weight:500;">
+        Import failed — make sure you uploaded a valid <code>feedback_backup.json</code> file.
+    </div>
     {% endif %}
 
 
@@ -492,6 +516,50 @@
         </form>
     </div>
 
+
+    <!-- ===== BACKUP & RESTORE ===== -->
+    <div class="card" style="border-left:4px solid #f59e0b;">
+        <div class="section-title" style="color:#92400e; margin-bottom:6px;">Backup &amp; Restore</div>
+        <p style="font-size:13px; color:#6b7280; margin:0 0 16px;">
+            A backup file is automatically saved alongside the database every time you submit feedback.
+            <strong>Download it periodically</strong> to keep a local copy — if the server disk is ever
+            reset, you can restore all your submissions in one click.
+        </p>
+        <div style="display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap;">
+            <div>
+                <div style="font-size:12px; font-weight:600; color:#374151; margin-bottom:6px;">
+                    Download current backup
+                </div>
+                <a href="/feedback/export"
+                   style="display:inline-block; background:#f59e0b; color:white;
+                          padding:9px 18px; border-radius:8px; font-size:13px;
+                          font-weight:600; text-decoration:none;">
+                    ↓ feedback_backup.json
+                    {% if manual_count %}({{ manual_count }} entries){% endif %}
+                </a>
+            </div>
+            <div style="flex:1; min-width:240px;">
+                <div style="font-size:12px; font-weight:600; color:#374151; margin-bottom:6px;">
+                    Restore from backup file
+                </div>
+                <form method="post" action="/feedback/import-backup"
+                      enctype="multipart/form-data"
+                      style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <input type="file" name="backup_file" accept=".json" required
+                           style="font-size:12px; flex:1; min-width:180px;">
+                    <button type="submit"
+                            style="background:#374151; color:white; border:none;
+                                   padding:9px 16px; border-radius:8px; font-size:13px;
+                                   font-weight:600; cursor:pointer; white-space:nowrap;">
+                        Restore
+                    </button>
+                </form>
+                <div style="font-size:11px; color:#9ca3af; margin-top:5px;">
+                    Duplicate entries are skipped automatically.
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- ===== RECENT MANUAL SUBMISSIONS ===== -->
     <div class="section-title">Recent Submissions</div>
