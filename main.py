@@ -9,6 +9,7 @@ import re as _re
 import threading
 import zipfile
 import pytz
+import requests
 import yfinance as yf
 
 from concurrent.futures import ThreadPoolExecutor
@@ -1517,6 +1518,95 @@ def test_telegram(request: Request):
     from app.alerts import _send_telegram
     _send_telegram("<b>Reno Robs Trading Bot</b>\n\nTelegram alerts are working!")
     return {"ok": True}
+
+
+@app.get("/api/telegram/bot-info")
+def telegram_bot_info(request: Request):
+    """Return bot username for QR code generation."""
+    if "user" not in request.session:
+        return Response(status_code=401)
+    token = _os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        return {"ok": False, "error": "TELEGRAM_BOT_TOKEN not configured"}
+    try:
+        resp = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=5)
+        data = resp.json()
+        if data.get("ok"):
+            return {
+                "ok": True,
+                "username": data["result"]["username"],
+                "first_name": data["result"]["first_name"],
+            }
+        return {"ok": False, "error": data.get("description", "Unknown error")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/telegram/pending-users")
+def telegram_pending_users(request: Request):
+    """
+    Calls Telegram getUpdates and returns everyone who has messaged the bot,
+    flagging which ones are already in the DB.
+    """
+    if "user" not in request.session:
+        return Response(status_code=401)
+    token = _os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        return {"ok": False, "error": "TELEGRAM_BOT_TOKEN not configured", "users": []}
+    try:
+        resp = requests.get(
+            f"https://api.telegram.org/bot{token}/getUpdates",
+            params={"limit": 100},
+            timeout=10,
+        )
+        data = resp.json()
+        if not data.get("ok"):
+            return {"ok": False, "error": data.get("description", "Unknown error"), "users": []}
+
+        existing = {r["chat_id"] for r in get_telegram_recipients()}
+        seen_ids = set()
+        users = []
+        for update in data.get("result", []):
+            chat = None
+            if "message" in update:
+                chat = update["message"].get("chat")
+            elif "my_chat_member" in update:
+                chat = update["my_chat_member"].get("chat")
+            if not chat:
+                continue
+            chat_id = str(chat.get("id", ""))
+            if not chat_id or chat_id in seen_ids:
+                continue
+            seen_ids.add(chat_id)
+            first = chat.get("first_name", "")
+            last = chat.get("last_name", "")
+            uname = chat.get("username", "")
+            name = f"{first} {last}".strip() or uname or chat_id
+            users.append({
+                "chat_id": chat_id,
+                "name": name,
+                "username": uname,
+                "already_added": chat_id in existing,
+            })
+        return {"ok": True, "users": users}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "users": []}
+
+
+@app.post("/api/telegram/add-recipient")
+async def telegram_add_recipient_ajax(request: Request):
+    """JSON endpoint for one-click Add from the pending-users list."""
+    if "user" not in request.session or not _require_admin(request):
+        return {"ok": False, "error": "Unauthorized"}
+    body = await request.json()
+    chat_id = str(body.get("chat_id", "")).strip()
+    label = str(body.get("label", "")).strip()
+    if not chat_id:
+        return {"ok": False, "error": "chat_id required"}
+    added = add_telegram_recipient(chat_id, label)
+    if added:
+        return {"ok": True}
+    return {"ok": False, "error": "already_added"}
 
 
 # ---------------- USER MANAGEMENT (admin only) ----------------
