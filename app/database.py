@@ -193,6 +193,13 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # Migration: scan_price — price at alert time (used as base for days_to_20pct)
+    try:
+        cursor.execute("ALTER TABLE scans ADD COLUMN scan_price REAL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     # Migration: watchlist near-miss tracking columns
     try:
         cursor.execute("ALTER TABLE watchlist ADD COLUMN score INTEGER")
@@ -444,7 +451,7 @@ def update_returns():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, symbol, timestamp
+        SELECT id, symbol, timestamp, scan_price
         FROM scans
         WHERE next_day_return IS NULL
     """)
@@ -454,7 +461,7 @@ def update_returns():
     today = datetime.utcnow().date()
     updates = []
 
-    for scan_id, symbol, timestamp in rows:
+    for scan_id, symbol, timestamp, scan_price in rows:
         try:
             scan_date = datetime.fromisoformat(timestamp).date()
 
@@ -479,7 +486,10 @@ def update_returns():
 
             closes = data["Close"].tolist()
             highs  = data["High"].tolist()
-            base   = closes[0]
+
+            # Use scan_price (alert price) as base if available — measures from actual entry point.
+            # Falls back to scan-day close for older rows that predate this column.
+            base = float(scan_price) if scan_price else closes[0]
 
             next_day  = None
             three_day = None
@@ -488,10 +498,10 @@ def update_returns():
             if len(closes) >= 4:
                 three_day = (closes[3] - base) / base * 100
 
-            # First trading day within 10 (2 weeks) where intraday HIGH hit ≥20% above scan close
-            # Uses High price so a brief intraday touch counts (enough time to fill a sell order)
+            # Check same-day (d=0) AND next 10 trading days for intraday HIGH ≥20% above alert price.
+            # d=0 captures morning rips like a stock spiking 30% within 30 min of the alert.
             days_to_20pct = None
-            for d in range(1, min(11, len(highs))):
+            for d in range(0, min(11, len(highs))):
                 if (highs[d] / base - 1) >= 0.20:
                     days_to_20pct = d
                     break
@@ -534,8 +544,8 @@ def save_scan(results: list, mode: str) -> dict:
             INSERT INTO scans (
                 timestamp, symbol, score, recommendation, mode,
                 relative_volume, today_return, shares_outstanding,
-                news_recent, next_day_return, three_day_return
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                news_recent, next_day_return, three_day_return, scan_price
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             timestamp,
             r.get("symbol"),
@@ -547,7 +557,8 @@ def save_scan(results: list, mode: str) -> dict:
             checklist.get("shares_outstanding"),
             0,
             None,
-            None
+            None,
+            r.get("price"),
         ))
         scan_ids[r.get("symbol")] = cursor.lastrowid
 
