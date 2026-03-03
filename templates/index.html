@@ -237,57 +237,85 @@
     {% if mode == 'squeeze' %}
     <div style="background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%);
                 color: white; padding: 14px 20px; border-radius: 10px;
-                margin-bottom: 20px; display: flex; justify-content: space-between;
-                align-items: flex-start; gap: 16px;">
-        <div style="flex: 1;">
-            <div style="font-weight: 700; font-size: 14px; margin-bottom: 4px;">
-                {% if ai_weights_info %}
-                    AI-Optimized Weights Active
-                {% else %}
-                    Default Weights Active — Submit feedback to start training the AI
-                {% endif %}
+                margin-bottom: 20px;">
+        <!-- Header row — always visible, tappable to expand/collapse -->
+        <div onclick="toggleWeightsBanner()" style="display:flex; justify-content:space-between; align-items:center; cursor:pointer; user-select:none;">
+            <div style="font-weight: 700; font-size: 14px;">
+                {% if ai_weights_info %}AI-Optimized Weights Active{% else %}Default Weights Active{% endif %}
             </div>
-            {% if ai_weights_info %}
-                {% if ai_weights_info.summary %}
-                <div style="font-size: 13px; opacity: 0.9; margin-bottom: 5px;">
-                    {{ ai_weights_info.summary }}
-                </div>
-                {% endif %}
-                <div style="font-size: 12px; opacity: 0.75; margin-bottom: 5px;">
-                    Last optimized: {{ ai_weights_info.updated_at[:10] }}
-                </div>
-                {% if ai_weights_info.suggestions %}
-                <div style="font-size: 12px; opacity: 0.85;">
-                    <strong>Suggested new signals:</strong>
-                    {{ ai_weights_info.suggestions | join(" · ") }}
-                </div>
-                {% endif %}
-            {% else %}
-                <div style="font-size: 12px; opacity: 0.8; margin-top: 2px;">
-                    Each feedback submission automatically re-trains and applies new scoring weights.
-                </div>
-            {% endif %}
-            <!-- Position sizing calibration status -->
-            <div style="margin-top: 8px; font-size: 12px;
-                        padding: 5px 10px; border-radius: 5px; display: inline-block;
-                        {% if sizing_calibrated %}
-                        background: rgba(255,255,255,0.15); opacity: 0.95;
-                        {% else %}
-                        background: rgba(255,255,255,0.08); opacity: 0.7;
-                        {% endif %}">
-                {% if sizing_calibrated %}
-                    📊 Position sizing calibrated from {{ sizing_total }} historical examples
-                {% else %}
-                    📊 Position sizing using defaults — run Historical Backfill to calibrate
-                {% endif %}
+            <div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
+                <a href="/analytics" onclick="event.stopPropagation()"
+                   style="color:white; text-decoration:none; font-size:13px;
+                          padding:5px 12px; border:1px solid rgba(255,255,255,0.45);
+                          border-radius:6px; white-space:nowrap;">
+                    Optimizer →
+                </a>
+                <span id="weights-chevron" style="font-size:18px; line-height:1; transition:transform 0.2s; opacity:0.85;">▾</span>
             </div>
         </div>
-        <a href="/analytics" style="color: white; text-decoration: none; font-size: 13px;
-                                    padding: 7px 14px; border: 1px solid rgba(255,255,255,0.45);
-                                    border-radius: 6px; white-space: nowrap; flex-shrink: 0;">
-            Optimizer →
-        </a>
+        <!-- Collapsible detail -->
+        <div id="weights-content" style="overflow:hidden; transition:max-height 0.25s ease, margin-top 0.25s ease;">
+            <div style="margin-top:10px;">
+                {% if ai_weights_info %}
+                    {% if ai_weights_info.summary %}
+                    <div style="font-size: 13px; opacity: 0.9; margin-bottom: 5px;">
+                        {{ ai_weights_info.summary }}
+                    </div>
+                    {% endif %}
+                    <div style="font-size: 12px; opacity: 0.75; margin-bottom: 5px;">
+                        Last optimized: {{ ai_weights_info.updated_at[:10] }}
+                    </div>
+                    {% if ai_weights_info.suggestions %}
+                    <div style="font-size: 12px; opacity: 0.85;">
+                        <strong>Suggested new signals:</strong>
+                        {{ ai_weights_info.suggestions | join(" · ") }}
+                    </div>
+                    {% endif %}
+                {% else %}
+                    <div style="font-size: 12px; opacity: 0.8;">
+                        Each feedback submission automatically re-trains and applies new scoring weights.
+                    </div>
+                {% endif %}
+                <!-- Position sizing calibration status -->
+                <div style="margin-top: 8px; font-size: 12px;
+                            padding: 5px 10px; border-radius: 5px; display: inline-block;
+                            {% if sizing_calibrated %}
+                            background: rgba(255,255,255,0.15); opacity: 0.95;
+                            {% else %}
+                            background: rgba(255,255,255,0.08); opacity: 0.7;
+                            {% endif %}">
+                    {% if sizing_calibrated %}
+                        📊 Position sizing calibrated from {{ sizing_total }} historical examples
+                    {% else %}
+                        📊 Position sizing using defaults — run Historical Backfill to calibrate
+                    {% endif %}
+                </div>
+            </div>
+        </div>
     </div>
+    <script>
+    (function() {
+        var content  = document.getElementById('weights-content');
+        var chevron  = document.getElementById('weights-chevron');
+        var isOpen   = window.innerWidth >= 768;   // expanded on desktop, collapsed on mobile
+        function applyState(animate) {
+            if (!animate) content.style.transition = 'none';
+            if (isOpen) {
+                content.style.maxHeight = '400px';
+                chevron.style.transform = 'rotate(0deg)';
+            } else {
+                content.style.maxHeight = '0';
+                chevron.style.transform = 'rotate(-90deg)';
+            }
+            if (!animate) setTimeout(function(){ content.style.transition = ''; }, 0);
+        }
+        applyState(false);
+        window.toggleWeightsBanner = function() {
+            isOpen = !isOpen;
+            applyState(true);
+        };
+    })();
+    </script>
     {% endif %}
 
     <div class="kpi-grid">
