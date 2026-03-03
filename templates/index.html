@@ -371,7 +371,7 @@
                     {% else %}bad
                     {% endif %}
                 ">
-                    {{ stock.recommendation }}
+                    {% if stock.recommendation == 'TRADE' %}STRONG{% else %}{{ stock.recommendation }}{% endif %}
                 </td>
                 <td class="hide-mobile">${{ stock.price }}</td>
                 <td class="hide-mobile" style="font-size:13px; color:#6b7280;">
@@ -708,7 +708,7 @@
                 </div>
                 <span class="{% if stock.recommendation == 'TRADE' %}good{% elif stock.recommendation == 'WATCH' %}hold{% else %}bad{% endif %}"
                       style="font-size:14px;">
-                    {{ stock.recommendation }}
+                    {% if stock.recommendation == 'TRADE' %}STRONG{% else %}{{ stock.recommendation }}{% endif %}
                 </span>
             </div>
 
