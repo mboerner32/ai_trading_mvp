@@ -1052,6 +1052,22 @@
     </div>
     <!-- ===== End mobile cards ===== -->
 
+    {% if not results %}
+    <div style="text-align:center; padding:48px 20px; background:white; border-radius:12px;
+                box-shadow:0 1px 4px rgba(0,0,0,0.06); margin-bottom:24px; color:#6b7280;">
+        <div style="font-size:32px; margin-bottom:12px;">📭</div>
+        <div style="font-size:16px; font-weight:600; color:#374151; margin-bottom:8px;">No qualifying stocks right now</div>
+        <div style="font-size:13px; max-width:380px; margin:0 auto; line-height:1.6;">
+            The scanner requires <strong>&gt;10x relative volume</strong>, <strong>&gt;10% daily gain</strong>, and <strong>price &lt;$5</strong>. No stocks met all three today.
+            <br><br>
+            Check back during active market hours or hit
+            <a href="/dashboard?mode={{ mode }}&refresh=1"
+               style="color:#4f46e5; font-weight:600;">↻ Refresh</a>
+            to re-run.
+        </div>
+    </div>
+    {% endif %}
+
     <!-- ===== Near-Miss Watchlist ===== -->
     {% if near_misses %}
     <div style="margin-top:32px; background:white; border-radius:10px;
