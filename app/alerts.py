@@ -35,6 +35,22 @@ def _send_email(subject: str, body: str):
         print(f"Alert email failed: {e}")
 
 
+def _send_telegram_admin(message: str):
+    """Send to the primary TELEGRAM_CHAT_ID only (admin). Skips DB recipients."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").split(",")[0].strip()
+    if not token or not chat_id:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"Telegram admin alert error: {e}")
+
+
 def _send_telegram(message: str):
     """
     Send a Telegram push notification to one or more recipients.

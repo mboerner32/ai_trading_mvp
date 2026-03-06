@@ -24,7 +24,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.broker import submit_market_order, close_position as broker_close, is_configured as broker_configured, get_account as broker_get_account
 from app.scanner import run_scan, get_finviz_quotes, prepare_dataframe
 from app.validator import validate_scan_results
-from app.alerts import send_scan_alert, send_take_profit_alert, send_watchlist_alert
+from app.alerts import send_scan_alert, send_take_profit_alert, send_watchlist_alert, _send_telegram_admin
 from app.backfill import build_historical_dataset
 from app.lstm_model import train_lstm, predict_hit_probability, get_lstm_status, get_sequence_stats
 from app.ai_agent import (
@@ -257,7 +257,6 @@ def _auto_paper_trade(results: list, today_str: str):
     Sends a Telegram notification for each auto-trade opened.
     """
     global _auto_trade_count, _auto_trade_date
-    from app.alerts import _send_telegram
 
     if today_str != _auto_trade_date:
         _auto_trade_count = 0
@@ -301,10 +300,9 @@ def _auto_paper_trade(results: list, today_str: str):
             alpaca_str   = (" · Alpaca ✓" if alpaca_order
                             else (" · Alpaca ✗" if broker_configured() else ""))
 
-            lstm_str = f" · LSTM: {r['lstm_prob']:.0%}" if r.get("lstm_prob") is not None else ""
-            _send_telegram(
+            _send_telegram_admin(
                 f"<b>Auto-Trade Opened: {symbol}</b>\n"
-                f"Entry: ${entry_price:.4f} · Score: {r['score']}/100 · ${position_size}{lstm_str}{alpaca_str}\n"
+                f"Entry: ${entry_price:.4f} · Score: {r['score']}/100 · ${position_size}{alpaca_str}\n"
                 f"<i>{tc.get('rationale', '')}</i>"
             )
             print(f"AUTO-TRADE: opened {symbol} at ${entry_price:.4f} "
