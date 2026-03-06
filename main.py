@@ -68,6 +68,7 @@ from app.database import (
     get_recent_feedback,
     get_all_feedback,
     save_hypothesis,
+    save_autoai_hypothesis_blob,
     get_hypothesis,
     update_password,
     save_squeeze_weights,
@@ -235,6 +236,22 @@ AUTOAI_MIN_CLOSED_TRADES     = 10   # minimum closed trades before weights auto-
 AUTOAI_MIN_NEW_OUTCOMES      = 5    # new outcome-labeled scans needed to trigger a run
 AUTOAI_MAX_WEIGHT_DRIFT      = 0.40 # cap any single weight to ±40% of its default
 
+# --- Chat rate limiting (in-process, per user) ---
+import collections as _collections
+_chat_rate: dict[str, _collections.deque] = {}
+_CHAT_RATE_WINDOW = 60      # seconds
+_CHAT_RATE_MAX    = 20      # messages per window
+
+def _chat_allowed(username: str) -> bool:
+    now = _time.monotonic()
+    q = _chat_rate.setdefault(username, _collections.deque())
+    while q and now - q[0] > _CHAT_RATE_WINDOW:
+        q.popleft()
+    if len(q) >= _CHAT_RATE_MAX:
+        return False
+    q.append(now)
+    return True
+
 
 def _build_hypothesis_text_from_autoai(result: dict) -> str:
     """Convert autonomous_optimize() JSON hypotheses list into the existing ## Hypotheses text format."""
@@ -306,16 +323,28 @@ def _auto_ai_optimize():
                 max_val = int(default_val * (1 + AUTOAI_MAX_WEIGHT_DRIFT))
                 new_weights[key] = max(0, min(max_val, int(new_weights[key])))
 
+        # Safety guardrail: ensure at least one rel_vol tier and one shares tier stay > 0
+        # (zeroing all of them would make the scorer useless for momentum detection)
+        rel_vol_keys = ["rel_vol_50x", "rel_vol_25x", "rel_vol_10x", "rel_vol_5x"]
+        shares_keys  = ["shares_lt10m", "shares_lt30m", "shares_lt100m"]
+        if max(new_weights.get(k, 0) for k in rel_vol_keys) == 0:
+            new_weights["rel_vol_10x"] = DEFAULT_SQUEEZE_WEIGHTS["rel_vol_10x"]
+            print("AUTO-AI: guardrail restored rel_vol_10x (all rel_vol tiers were zeroed)")
+        if max(new_weights.get(k, 0) for k in shares_keys) == 0:
+            new_weights["shares_lt10m"] = DEFAULT_SQUEEZE_WEIGHTS["shares_lt10m"]
+            print("AUTO-AI: guardrail restored shares_lt10m (all shares tiers were zeroed)")
+
         hypotheses_auto    = 0
         hypotheses_pending = 0
 
         # Save hypotheses with confidence; auto-activate high-confidence ones
         raw_hyps = result.get("hypotheses", [])
         if raw_hyps:
-            # Update the hypothesis text blob for backward compat (per-stock AI enrichment)
+            # Save Auto AI's synthesized hypothesis to its OWN key so it never
+            # overwrites the admin-curated Complex+AI hypothesis blob.
             hyp_text = _build_hypothesis_text_from_autoai(result)
             if hyp_text:
-                save_hypothesis(hyp_text, len(all_feedback) + current_count)
+                save_autoai_hypothesis_blob(hyp_text, len(all_feedback) + current_count)
 
             rules_to_save = []
             for h in raw_hyps:
@@ -1776,6 +1805,9 @@ async def api_chat(request: Request):
     """AI model advisor chat endpoint. All logged-in users."""
     if "user" not in request.session:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    username = request.session["user"]
+    if not _chat_allowed(username):
+        return JSONResponse({"error": "Rate limit exceeded — please wait a moment."}, status_code=429)
     body = await request.json()
     message = (body.get("message") or "").strip()
     history = body.get("history") or []
@@ -1837,7 +1869,7 @@ async def api_chat_execute(request: Request):
             base = existing["weights"].copy() if existing else DEFAULT_SQUEEZE_WEIGHTS.copy()
             base.update({k: int(v) for k, v in weights.items()})
             save_squeeze_weights(base, rationale, [], summary)
-            save_weight_changelog(base, rationale, [], summary)
+            save_weight_changelog(summary, rationale, base)
         model_label = "Auto AI" if model == "autoai" else "Complex+AI"
         return JSONResponse({"ok": True, "message": f"{model_label} weights updated."})
 
@@ -1904,7 +1936,7 @@ async def api_approve_suggestion(request: Request, suggestion_id: int):
             base = existing["weights"].copy() if existing else DEFAULT_SQUEEZE_WEIGHTS.copy()
             base.update({k: int(v) for k, v in weights.items()})
             save_squeeze_weights(base, rationale, [], summary)
-            save_weight_changelog(base, rationale, [], summary)
+            save_weight_changelog(summary, rationale, base)
     else:
         ok_msg = f"Unknown action type: {action}"
     dismiss_chat_suggestion(suggestion_id, "approved")

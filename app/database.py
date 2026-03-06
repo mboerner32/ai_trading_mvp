@@ -17,9 +17,19 @@ FEEDBACK_BACKUP_PATH = os.path.join(_DB_DIR, "feedback_backup.json")
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 
+def _connect() -> sqlite3.Connection:
+    """Return a SQLite connection with WAL mode and a generous busy timeout."""
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
+    return conn
+
+
 # ---------------- INIT DB ----------------
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")   # allow concurrent reads alongside writes
+    conn.execute("PRAGMA busy_timeout=10000") # wait up to 10s before raising "database is locked"
     cursor = conn.cursor()
 
     # ---------------- SCANS TABLE ----------------
@@ -1193,6 +1203,30 @@ def save_hypothesis(content: str, feedback_count: int):
     conn.close()
 
 
+def save_autoai_hypothesis_blob(content: str, feedback_count: int):
+    """
+    Saves Auto AI's synthesized hypothesis text under its own settings key
+    ('autoai_hypothesis') so it never overwrites the admin-curated Complex+AI blob.
+    """
+    now = datetime.utcnow().isoformat()
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO settings (key, value, updated_at)
+        VALUES ('autoai_hypothesis', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                       updated_at = excluded.updated_at
+    """, (content, now))
+    cursor.execute("""
+        INSERT INTO settings (key, value, updated_at)
+        VALUES ('autoai_hypothesis_feedback_count', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                       updated_at = excluded.updated_at
+    """, (str(feedback_count), now))
+    conn.commit()
+    conn.close()
+
+
 def get_hypothesis():
     """Returns (content, feedback_count, updated_at) or None if no hypothesis stored."""
     conn = sqlite3.connect(DB_NAME)
@@ -1356,8 +1390,13 @@ def get_active_hypothesis_text(mode: str = None) -> str | None:
     total = cursor.fetchone()[0]
 
     if total == 0:
-        cursor.execute("SELECT value FROM settings WHERE key = 'hypothesis'")
+        # Auto AI falls back to its own blob first, then admin blob
+        fallback_key = 'autoai_hypothesis' if autoai_mode else 'hypothesis'
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (fallback_key,))
         row = cursor.fetchone()
+        if not row and autoai_mode:
+            cursor.execute("SELECT value FROM settings WHERE key = 'hypothesis'")
+            row = cursor.fetchone()
         conn.close()
         return row[0] if row else None
 
@@ -1368,8 +1407,12 @@ def get_active_hypothesis_text(mode: str = None) -> str | None:
     reviewed = cursor.fetchone()[0]
 
     if reviewed == 0:
-        cursor.execute("SELECT value FROM settings WHERE key = 'hypothesis'")
+        fallback_key = 'autoai_hypothesis' if autoai_mode else 'hypothesis'
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (fallback_key,))
         row = cursor.fetchone()
+        if not row and autoai_mode:
+            cursor.execute("SELECT value FROM settings WHERE key = 'hypothesis'")
+            row = cursor.fetchone()
         conn.close()
         return row[0] if row else None
 

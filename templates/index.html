@@ -1384,12 +1384,17 @@ async function approveSuggestion(id, btn) {
     btn.textContent = '…'; btn.disabled = true;
     const resp = await fetch(`/api/chat/suggestions/${id}/approve`, {method:'POST'});
     const data = await resp.json();
-    btn.closest('div[style*="flex:1"]')?.parentElement?.remove() || btn.closest('div').remove();
+    const row = btn.closest('div[style*="border-bottom"]');
+    if (row) row.remove();
+    if (data.ok) {
+        appendChatBubble('assistant', '✅ ' + (data.message || 'Action applied.'));
+    }
 }
 async function dismissSuggestion(id, btn) {
     btn.textContent = '…'; btn.disabled = true;
     await fetch(`/api/chat/suggestions/${id}/dismiss`, {method:'POST'});
-    btn.closest('div[style*="border-bottom"]')?.remove();
+    const row = btn.closest('div[style*="border-bottom"]');
+    if (row) row.remove();
 }
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 </script>

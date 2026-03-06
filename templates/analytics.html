@@ -237,14 +237,14 @@
             {% set nt = model_validation.by_decision.get('NO_TRADE') %}
             {% if t %}
             <div style="font-size:13px; margin-bottom:6px;">
-                <span style="color:#10b981; font-weight:600;">TRADE</span>
+                <span style="color:#10b981; font-weight:600;">STRONG</span>
                 &nbsp;{{ t.hit_20pct }}% hit 20%
                 <span style="color:#6b7280; font-size:11px;">({{ t.count }} calls)</span>
             </div>
             {% endif %}
             {% if nt %}
             <div style="font-size:13px;">
-                <span style="color:#ef4444; font-weight:600;">NO_TRADE</span>
+                <span style="color:#ef4444; font-weight:600;">SKIP</span>
                 &nbsp;{{ nt.hit_20pct }}% were real moves missed
                 <span style="color:#6b7280; font-size:11px;">({{ nt.count }} calls)</span>
             </div>
@@ -299,10 +299,10 @@
 
     <!-- MODEL TRADE CALL COMPARISON -->
     <div class="section-title" style="margin-top:32px;">
-        AI TRADE Call Comparison — Auto AI vs Complex + AI
+        AI STRONG Call Comparison — Auto AI vs Complex + AI
     </div>
     <p style="color:#6b7280; font-size:13px; margin:-8px 0 16px; line-height:1.6;">
-        Tracks only scans where the AI called <strong>TRADE</strong> with known outcomes (2+ days old).
+        Tracks only scans where the AI called <strong>STRONG</strong> with known outcomes (2+ days old).
         Win Rate = next-day positive return. Hit 20%+ = spiked ≥20% within 10 trading days (~2 weeks).
     </p>
 
@@ -316,12 +316,12 @@
     <div style="border:2px solid {{ '#7c3aed' if mode_key == 'autoai' else '#0f766e' }};
                 border-radius:10px; padding:16px 20px; background:{{ '#faf5ff' if mode_key == 'autoai' else '#f0fdf4' }};">
         <div style="font-weight:700; font-size:14px; color:{{ '#7c3aed' if mode_key == 'autoai' else '#0f766e' }}; margin-bottom:10px;">
-            {{ '&#x2726; ' if mode_key == 'autoai' else '' }}{{ m.label }} — Overall TRADE Calls
+            {{ m.label }} — Overall TRADE Calls
         </div>
         <div style="display:flex; gap:20px; flex-wrap:wrap;">
             <div style="text-align:center;">
                 <div style="font-size:22px; font-weight:700; color:#1f2937;">{{ o.trade_calls }}</div>
-                <div style="font-size:11px; color:#6b7280;">TRADE calls</div>
+                <div style="font-size:11px; color:#6b7280;">STRONG calls</div>
             </div>
             <div style="text-align:center;">
                 <div style="font-size:22px; font-weight:700;
@@ -353,7 +353,7 @@
             </div>
         </div>
         <div style="font-size:11px; color:#9ca3af; margin-top:8px;">
-            {{ o.total_with_outcomes }} scans with outcomes · {{ o.no_trade_calls }} NO_TRADE calls
+            {{ o.total_with_outcomes }} scans with outcomes · {{ o.no_trade_calls }} SKIP calls
         </div>
     </div>
     {% endfor %}
@@ -444,7 +444,7 @@
     </div>
 
     <p style="font-size:11px; color:#9ca3af; margin-top:8px; line-height:1.6;">
-        Win Rate = % of TRADE calls with positive next-day close.
+        Win Rate = % of STRONG calls with positive next-day close.
         Next-Day / 3-Day = avg % return from scan_price.
         Hit 20%+ = intraday high touched ≥20% above scan_price within 10 trading days.
         Rows show — until that model has outcomes in that score bucket.
@@ -607,15 +607,15 @@
 
         <p style="font-size:13px; color:#6b7280; margin-top:0; margin-bottom:20px;">
             Based on <strong>{{ model_validation.total }}</strong> live scans with known outcomes.
-            Key question: when the AI says <strong>TRADE</strong>, does the hit rate exceed
-            <strong>NO_TRADE</strong>?
+            Key question: when the AI says <strong>STRONG</strong>, does the hit rate exceed
+            <strong>SKIP</strong>?
         </p>
 
         <!-- AI Decision comparison -->
         {% if model_validation.by_decision %}
         <div style="margin-bottom:24px;">
             <div style="font-size:12px; font-weight:600; color:#374151; text-transform:uppercase;
-                        letter-spacing:0.05em; margin-bottom:10px;">AI Decision (TRADE vs NO_TRADE)</div>
+                        letter-spacing:0.05em; margin-bottom:10px;">AI Decision (STRONG vs SKIP)</div>
             <div style="overflow-x:auto;">
             <table style="width:100%; border-collapse:collapse; font-size:13px;">
                 <thead>
@@ -634,7 +634,7 @@
                 <tr style="border-bottom:1px solid #f3f4f6;">
                     <td style="padding:10px 12px; font-weight:600;
                         color:{{ '#0f766e' if decision == 'TRADE' else '#6b7280' }};">
-                        {{ decision }}
+                        {{ 'STRONG' if decision == 'TRADE' else ('SKIP' if decision == 'NO_TRADE' else decision) }}
                     </td>
                     <td style="padding:10px 12px; text-align:right;">{{ s.count }}</td>
                     <td style="padding:10px 12px; text-align:right; font-weight:600;
