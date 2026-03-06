@@ -21,6 +21,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.broker import submit_market_order, close_position as broker_close, is_configured as broker_configured, get_account as broker_get_account
 from app.scanner import run_scan, get_finviz_quotes, prepare_dataframe
 from app.validator import validate_scan_results
 from app.alerts import send_scan_alert, send_take_profit_alert, send_watchlist_alert
@@ -179,6 +180,7 @@ def _autoclose_take_profit() -> list:
         if pnl_pct >= take_profit_target:
             result = close_trade(pos["trade_id"], price)
             if result:
+                broker_close(pos["symbol"])
                 closed.append({
                     "symbol":       pos["symbol"],
                     "entry_price":  pos["entry_price"],
@@ -249,8 +251,9 @@ def _enrich_high_scorers(results: list) -> list:
 
 def _auto_paper_trade(results: list, today_str: str):
     """
-    Open paper trades for HIGH-confidence TRADE calls found in enriched scan results.
+    Open paper trades for TRADE calls (HIGH or MEDIUM confidence) found in enriched scan results.
     Limits to 3 auto-trades per trading day. Skips symbols already in open positions.
+    Mirrors each trade to Alpaca paper account if configured.
     Sends a Telegram notification for each auto-trade opened.
     """
     global _auto_trade_count, _auto_trade_date
@@ -270,10 +273,10 @@ def _auto_paper_trade(results: list, today_str: str):
     for r in results:
         if _auto_trade_count >= 3:
             break
-        if r.get("score", 0) < 75:
+        if r.get("score", 0) < 50:
             continue
         tc = r.get("ai_trade_call") or {}
-        if tc.get("decision") != "TRADE" or tc.get("confidence") != "HIGH":
+        if tc.get("decision") != "TRADE" or tc.get("confidence") not in ("HIGH", "MEDIUM"):
             continue
         symbol = r["symbol"]
         if symbol in open_symbols:
@@ -281,20 +284,32 @@ def _auto_paper_trade(results: list, today_str: str):
         if available < 500:
             continue
 
-        entry_price = _fetch_current_price(symbol, r.get("price", 0))
-        result = open_trade(symbol, entry_price, 1000, "auto-trade: HIGH confidence AI call", 20.0)
+        position_size = r.get("ai_rec", {}).get("amount", 1000)
+        entry_price   = _fetch_current_price(symbol, r.get("price", 0))
+        confidence    = tc.get("confidence", "")
+        result = open_trade(
+            symbol, entry_price, position_size,
+            f"auto-trade: {confidence} confidence AI call", 20.0
+        )
         if result:
             _auto_trade_count += 1
             open_symbols.add(symbol)
-            available -= 1000
+            available -= position_size
+
+            # Mirror to Alpaca paper account
+            alpaca_order = submit_market_order(symbol, position_size)
+            alpaca_str   = (" · Alpaca ✓" if alpaca_order
+                            else (" · Alpaca ✗" if broker_configured() else ""))
+
             lstm_str = f" · LSTM: {r['lstm_prob']:.0%}" if r.get("lstm_prob") is not None else ""
             _send_telegram(
                 f"<b>Auto-Trade Opened: {symbol}</b>\n"
-                f"Entry: ${entry_price:.4f} · Score: {r['score']}/100{lstm_str}\n"
+                f"Entry: ${entry_price:.4f} · Score: {r['score']}/100 · ${position_size}{lstm_str}{alpaca_str}\n"
                 f"<i>{tc.get('rationale', '')}</i>"
             )
             print(f"AUTO-TRADE: opened {symbol} at ${entry_price:.4f} "
-                  f"(score={r['score']}, count={_auto_trade_count}/3)")
+                  f"(score={r['score']}, conf={confidence}, size=${position_size}, "
+                  f"count={_auto_trade_count}/3{alpaca_str})")
 
 
 def _scheduled_scan():
@@ -790,6 +805,7 @@ def trades_page(request: Request):
         if current_price >= target_price:
             result = close_trade(pos["trade_id"], current_price)
             if result:
+                broker_close(pos["symbol"])
                 auto_closed.append({
                     "symbol": pos["symbol"],
                     "exit_price": round(current_price, 4),
@@ -882,6 +898,7 @@ def trade_sell(request: Request, trade_id: int):
 
     current_price = _fetch_current_price(trade["symbol"], trade["entry_price"])
     close_trade(trade_id, current_price)
+    broker_close(trade["symbol"])
 
     return RedirectResponse("/trades", status_code=303)
 
@@ -1512,6 +1529,24 @@ def change_password(
         {"request": request, "user": username,
          "success": "Password updated successfully."}
     )
+
+
+# ---------------- BROKER STATUS ----------------
+@app.get("/api/broker-status")
+def broker_status(request: Request):
+    if "user" not in request.session:
+        return Response(status_code=401)
+    if not broker_configured():
+        return {"configured": False}
+    acct = broker_get_account()
+    if acct:
+        return {
+            "configured":   True,
+            "status":       acct.get("status"),
+            "buying_power": acct.get("buying_power"),
+            "equity":       acct.get("equity"),
+        }
+    return {"configured": True, "status": "error"}
 
 
 # ---------------- TEST TELEGRAM ----------------
