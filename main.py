@@ -272,9 +272,8 @@ def _auto_ai_optimize():
         print(f"AUTO-AI: {new_outcomes} new outcomes since last run — starting autonomous optimization")
 
         all_feedback    = get_all_feedback()
-        # Use curated active rules (approved + auto-applied) as prior context so the
-        # optimization loop builds on what's actually been validated, not the raw blob.
-        prior_text      = get_active_hypothesis_text()
+        # Include all active rules (admin-approved + Auto AI auto-applied) as prior context.
+        prior_text      = get_active_hypothesis_text(mode="autoai")
         autoai_w_data   = get_autoai_weights()
         current_weights = autoai_w_data["weights"] if autoai_w_data else DEFAULT_SQUEEZE_WEIGHTS.copy()
         all_trades      = get_trade_history()
@@ -384,15 +383,17 @@ def _auto_ai_optimize():
         print(f"AUTO-AI: failed — {e}")
 
 
-def _enrich_high_scorers(results: list) -> list:
+def _enrich_high_scorers(results: list, mode: str = None) -> list:
     """
     For each stock scoring >= 75, add lstm_prob and ai_trade_call to the result dict.
     Called during scheduled and intraday scans so alerts carry full AI context.
     Runs in parallel (max 4 workers); gracefully skips on error.
+    mode is passed through to get_active_hypothesis_text() so Auto AI uses its own
+    rules and Complex+AI is fully isolated from Auto AI auto-applied rules.
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    hypothesis_text = get_active_hypothesis_text()
+    hypothesis_text = get_active_hypothesis_text(mode=mode)
     sizing_stats    = get_sizing_stats()
     ai_accuracy     = get_ai_decision_accuracy()
     high_scorers    = [r for r in results if r.get("score", 0) >= 75]
@@ -500,7 +501,7 @@ def _scheduled_scan():
             if mode in ("autoai", "squeeze"):
                 label = "Auto AI" if mode == "autoai" else "Complex + AI"
                 # Enrich high-scorers with AI calls + LSTM before alerting
-                _enrich_high_scorers(data["results"])
+                _enrich_high_scorers(data["results"], mode=mode)
                 # Track morning high-scorers so intraday scans don't re-alert them
                 for r in data["results"]:
                     if r.get("score", 0) >= 75:
@@ -624,7 +625,7 @@ def _intraday_scan():
             if r.get("score", 0) >= 75 and r.get("symbol") not in _alerted_today
         ]
         if new_high:
-            _enrich_high_scorers(data["results"])
+            _enrich_high_scorers(data["results"], mode="squeeze")
         # Alert only on genuinely new high-scorers
         new_alerts = [
             r for r in data["results"]
@@ -884,7 +885,7 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
         cache_age = 0
 
     available_cash = get_portfolio_summary()["cash"]
-    hypothesis_text = get_active_hypothesis_text()
+    hypothesis_text = get_active_hypothesis_text(mode=mode)
     sizing_stats    = get_sizing_stats()
     ai_accuracy     = get_ai_decision_accuracy()
     active_rule_ids = get_active_rule_ids()

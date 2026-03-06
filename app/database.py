@@ -1319,49 +1319,61 @@ def save_scan_active_rules(scan_id: int, rule_ids: list):
     conn.close()
 
 
-def get_active_hypothesis_text() -> str | None:
+def get_active_hypothesis_text(mode: str = None) -> str | None:
     """
     Returns the hypothesis text that should be fed into AI calls.
 
+    mode="autoai"  → includes all active rules (admin-approved + Auto AI auto-applied)
+    mode=anything else (default) → includes only admin-approved rules (auto_applied=0),
+                                   keeping Complex+AI fully isolated from Auto AI rules.
+
     Behaviour:
-    - If no rules exist OR all rules are still pending (never reviewed):
-      fall back to the full synthesized blob (preserves existing behaviour).
-    - If at least one rule has been reviewed (activated or rejected):
-      build a compact hypothesis from only the active rules + cached Agent Context.
-      Returns None if all reviewed rules were rejected (no active rules).
+    - If no qualifying rules exist OR all are still pending: fall back to the full
+      synthesized blob (preserves existing behaviour).
+    - If at least one rule has been reviewed: build a compact hypothesis from only
+      the active rules + cached Agent Context.
     """
+    autoai_mode = (mode == "autoai")
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    cursor.execute("SELECT COUNT(*) FROM hypothesis_rules")
+    if autoai_mode:
+        cursor.execute("SELECT COUNT(*) FROM hypothesis_rules")
+    else:
+        cursor.execute("SELECT COUNT(*) FROM hypothesis_rules WHERE auto_applied = 0")
     total = cursor.fetchone()[0]
 
     if total == 0:
-        # No rules table data yet — fall back to full synthesis blob
         cursor.execute("SELECT value FROM settings WHERE key = 'hypothesis'")
         row = cursor.fetchone()
         conn.close()
         return row[0] if row else None
 
-    cursor.execute("SELECT COUNT(*) FROM hypothesis_rules WHERE status != 'pending'")
+    if autoai_mode:
+        cursor.execute("SELECT COUNT(*) FROM hypothesis_rules WHERE status != 'pending'")
+    else:
+        cursor.execute("SELECT COUNT(*) FROM hypothesis_rules WHERE status != 'pending' AND auto_applied = 0")
     reviewed = cursor.fetchone()[0]
 
     if reviewed == 0:
-        # Rules exist but none reviewed yet — fall back to full synthesis blob
         cursor.execute("SELECT value FROM settings WHERE key = 'hypothesis'")
         row = cursor.fetchone()
         conn.close()
         return row[0] if row else None
 
-    # At least one rule reviewed — use only active rules
-    cursor.execute(
-        "SELECT id, rule_text FROM hypothesis_rules WHERE status = 'active' ORDER BY id ASC"
-    )
+    if autoai_mode:
+        cursor.execute(
+            "SELECT id, rule_text FROM hypothesis_rules WHERE status = 'active' ORDER BY id ASC"
+        )
+    else:
+        cursor.execute(
+            "SELECT id, rule_text FROM hypothesis_rules WHERE status = 'active' AND auto_applied = 0 ORDER BY id ASC"
+        )
     active = cursor.fetchall()
 
     if not active:
         conn.close()
-        return None  # All reviewed rules were rejected
+        return None
 
     lines = ["## Active Hypothesis Rules\n"]
     for i, (_, rule_text) in enumerate(active, 1):
