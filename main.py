@@ -902,6 +902,8 @@ def tag_trade_route(request: Request, trade_id: int, outcome_tag: str = Form(...
 def optimize_weights(request: Request):
     if "user" not in request.session:
         return RedirectResponse("/login", status_code=303)
+    if not _require_admin(request):
+        return RedirectResponse("/analytics", status_code=303)
 
     opt_data = get_optimization_data()
     if not opt_data or opt_data["total_trades"] < 5:
@@ -1220,6 +1222,8 @@ def tag_feedback_route(request: Request, feedback_id: int, outcome_tag: str = Fo
 def optimize_complex(request: Request):
     if "user" not in request.session:
         return RedirectResponse("/login", status_code=303)
+    if not _require_admin(request):
+        return RedirectResponse("/analytics", status_code=303)
 
     opt_data = get_optimization_data()
     all_feedback = get_all_feedback()
@@ -1685,6 +1689,8 @@ def telegram_delete(request: Request, chat_id: str):
 def hypothesis_rule_activate(request: Request, rule_id: int):
     if "user" not in request.session:
         return RedirectResponse("/login", status_code=303)
+    if not _require_admin(request):
+        return RedirectResponse("/analytics", status_code=303)
     update_rule_status(rule_id, "active")
     return RedirectResponse("/analytics", status_code=303)
 
@@ -1693,6 +1699,8 @@ def hypothesis_rule_activate(request: Request, rule_id: int):
 def hypothesis_rule_reject(request: Request, rule_id: int):
     if "user" not in request.session:
         return RedirectResponse("/login", status_code=303)
+    if not _require_admin(request):
+        return RedirectResponse("/analytics", status_code=303)
     update_rule_status(rule_id, "rejected")
     return RedirectResponse("/analytics", status_code=303)
 

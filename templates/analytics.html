@@ -728,6 +728,7 @@
                     {% if rule.win_rate is not none %}{{ '%.0f' | format(rule.win_rate) }}%{% else %}—{% endif %}
                 </td>
                 <td style="padding:10px 12px; text-align:right; white-space:nowrap;">
+                    {% if user == 'admin' %}
                     {% if rule.status != 'active' %}
                     <form method="post" action="/hypothesis-rules/{{ rule.id }}/activate" style="display:inline;">
                         <button type="submit"
@@ -746,6 +747,7 @@
                             Reject
                         </button>
                     </form>
+                    {% endif %}
                     {% endif %}
                 </td>
             </tr>
@@ -792,6 +794,7 @@
                     <strong>Weights auto-update on each feedback submission.</strong>
                     Requires 5+ scans with known returns.
                 </p>
+                {% if user == 'admin' %}
                 <form method="post" action="/optimize-complex">
                     <button type="submit" style="background:#0f766e; color:white; border:none;
                             padding:9px 20px; border-radius:8px; cursor:pointer;
@@ -799,6 +802,7 @@
                         Re-optimize Now
                     </button>
                 </form>
+                {% endif %}
             </div>
 
             <!-- RIGHT: General AI Read-Only -->
