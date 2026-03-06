@@ -199,6 +199,12 @@
 <div class="container">
 
     <div class="mode-toggle" style="margin-bottom:20px; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
+        <a href="/dashboard?mode=autoai"
+           class="{{ 'active' if mode == 'autoai' else '' }}"
+           style="{{ 'background:#7c3aed; color:white;' if mode == 'autoai' else 'background:#ede9fe; color:#5b21b6;' }}">
+           Auto AI <span style="font-size:9px; vertical-align:super; font-weight:700;">&#x2726;</span>
+        </a>
+
         <a href="/dashboard?mode=squeeze"
            class="{{ 'active' if mode == 'squeeze' else '' }}"
            style="{{ 'background:#0f766e; color:white;' if mode == 'squeeze' else 'background:#d1fae5; color:#065f46;' }}">
@@ -318,6 +324,35 @@
     </script>
     {% endif %}
 
+    {% if mode == 'autoai' %}
+    <div style="background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
+                color: white; padding: 14px 20px; border-radius: 10px; margin-bottom: 20px;">
+        <div style="font-weight: 700; font-size: 14px; margin-bottom: 6px;">
+            &#x2726; Auto AI — Autonomous Self-Improving Model
+        </div>
+        {% if last_autoai_run %}
+        <div style="font-size: 12px; opacity: 0.85; line-height: 1.6;">
+            Last optimized: {{ last_autoai_run.ran_at[:10] }}
+            &nbsp;·&nbsp; {{ last_autoai_run.hypotheses_auto_activated }} rule(s) auto-activated
+            &nbsp;·&nbsp; Weights: {{ 'auto-applied' if last_autoai_run.weights_auto_applied else 'pending review' }}
+            &nbsp;·&nbsp;
+            <a href="/analytics#autoai-activity" style="color:rgba(255,255,255,0.9); text-decoration:underline;">
+                View activity →
+            </a>
+        </div>
+        {% elif autoai_weights_info %}
+        <div style="font-size: 12px; opacity: 0.85;">
+            Using Auto AI weights (last updated {{ autoai_weights_info.updated_at[:10] }}).
+            Optimization triggers automatically after morning scan with 5+ new outcomes.
+        </div>
+        {% else %}
+        <div style="font-size: 12px; opacity: 0.75;">
+            Using default weights. Optimization triggers automatically after morning scan with 5+ new outcomes.
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
     <div class="kpi-grid">
         <div class="card">
             <h3>Total Stocks Scanned</h3>
@@ -331,7 +366,7 @@
 
         <div class="card">
             <h3>Mode</h3>
-            <p>{% if mode == 'squeeze' %}Complex + AI{% elif mode == 'strict' %}Complex{% else %}Standard{% endif %}</p>
+            <p>{% if mode == 'autoai' %}Auto AI{% elif mode == 'squeeze' %}Complex + AI{% elif mode == 'strict' %}Complex{% else %}Standard{% endif %}</p>
         </div>
     </div>
 
@@ -393,7 +428,10 @@
                         {% else %}
                             <span class="bad" style="font-size:11px; padding:2px 8px; border-radius:4px; font-weight:600;">NO TRADE</span>
                         {% endif %}
-                        <div style="font-size:10px; color:#9ca3af; margin-top:2px;">{{ stock.ai_trade_call.confidence }}</div>
+                        <div style="font-size:10px; color:#9ca3af; margin-top:2px;">
+                            {{ stock.ai_trade_call.confidence }}
+                            {% if mode == 'autoai' %}<span style="background:#7c3aed; color:white; border-radius:3px; padding:0 4px; font-size:9px; margin-left:3px; font-weight:700;">AUTO AI</span>{% endif %}
+                        </div>
                         {% if stock.lstm_prob is not none %}
                         <div style="font-size:10px; color:#6b7280; margin-top:1px;">LSTM: {{ "%.0f"|format(stock.lstm_prob * 100) }}%</div>
                         {% endif %}

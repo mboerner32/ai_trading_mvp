@@ -40,6 +40,7 @@ from app.ai_agent import (
     synthesize_combined_hypothesis,
     optimize_complex_ai_weights,
     parse_rules_from_synthesis,
+    autonomous_optimize,
 )
 from app.scoring_engine import DEFAULT_SQUEEZE_WEIGHTS, score_stock_squeeze
 from app.database import (
@@ -111,6 +112,14 @@ from app.database import (
     get_active_hypothesis_text,
     import_feedback_from_backup,
     FEEDBACK_BACKUP_PATH,
+    save_autoai_log,
+    get_autoai_log,
+    get_last_autoai_run_count,
+    save_last_autoai_run_count,
+    save_hypothesis_rules_with_confidence,
+    get_autoai_weights,
+    save_autoai_weights,
+    get_model_comparison_stats,
 )
 
 app = FastAPI()
@@ -214,6 +223,161 @@ def _auto_learn():
         print("AUTO-LEARN: complete")
     except Exception as e:
         print(f"AUTO-LEARN: failed — {e}")
+
+
+AUTOAI_CONFIDENCE_HYPOTHESIS = 80   # >= auto-activate hypothesis
+AUTOAI_CONFIDENCE_WEIGHTS    = 75   # >= auto-apply weights
+AUTOAI_MIN_CLOSED_TRADES     = 10   # minimum closed trades before weights auto-apply
+AUTOAI_MIN_NEW_OUTCOMES      = 5    # new outcome-labeled scans needed to trigger a run
+AUTOAI_MAX_WEIGHT_DRIFT      = 0.40 # cap any single weight to ±40% of its default
+
+
+def _build_hypothesis_text_from_autoai(result: dict) -> str:
+    """Convert autonomous_optimize() JSON hypotheses list into the existing ## Hypotheses text format."""
+    hyps = result.get("hypotheses", [])
+    if not hyps:
+        return ""
+    lines = ["## Hypotheses (Auto AI)\n"]
+    for i, h in enumerate(hyps, 1):
+        conf = h.get("confidence", 0)
+        lines.append(f"{i}. [{conf}% confidence] {h['text']}\n")
+    rationale = result.get("rationale", "")
+    if rationale:
+        lines.append(f"\n## Agent Context\n{rationale}")
+    return "\n".join(lines)
+
+
+def _auto_ai_optimize():
+    """
+    Autonomous self-improvement loop for Auto AI mode.
+    Triggered after each morning scan. Requires >= 5 new outcome-labeled scans since last run.
+    Auto-activates hypotheses >= 80 confidence.
+    Auto-applies weights if confidence >= 75 AND >= 10 closed trades.
+    Logs everything to autoai_log.
+    """
+    try:
+        opt_data = get_optimization_data()
+        if not opt_data or opt_data.get("total_trades", 0) < 5:
+            print("AUTO-AI: insufficient data — skipping")
+            return
+
+        current_count = opt_data["total_trades"]
+        last_count    = get_last_autoai_run_count()
+        new_outcomes  = current_count - last_count
+
+        if new_outcomes < AUTOAI_MIN_NEW_OUTCOMES:
+            print(f"AUTO-AI: only {new_outcomes} new outcomes — skipping (need {AUTOAI_MIN_NEW_OUTCOMES})")
+            return
+
+        print(f"AUTO-AI: {new_outcomes} new outcomes since last run — starting autonomous optimization")
+
+        all_feedback    = get_all_feedback()
+        prior           = get_hypothesis()
+        prior_text      = prior["content"] if prior else None
+        autoai_w_data   = get_autoai_weights()
+        current_weights = autoai_w_data["weights"] if autoai_w_data else DEFAULT_SQUEEZE_WEIGHTS.copy()
+        all_trades      = get_trade_history()
+        closed_trades   = [t for t in all_trades if t.get("exit_price") is not None]
+
+        result = autonomous_optimize(
+            opt_data, all_feedback, current_weights,
+            prior_text, closed_trades[-20:]
+        )
+
+        if "error" in result and not result.get("hypotheses"):
+            print(f"AUTO-AI: optimization failed — {result['error']}")
+            return
+
+        # Guardrail: cap weight drift at ±40% of defaults
+        new_weights = result.get("weights", current_weights)
+        for key, default_val in DEFAULT_SQUEEZE_WEIGHTS.items():
+            if key not in new_weights:
+                new_weights[key] = default_val
+            max_change = default_val * AUTOAI_MAX_WEIGHT_DRIFT
+            new_weights[key] = max(
+                int(default_val - max_change),
+                min(int(default_val + max_change), int(new_weights[key]))
+            )
+
+        hypotheses_auto    = 0
+        hypotheses_pending = 0
+
+        # Save hypotheses with confidence; auto-activate high-confidence ones
+        raw_hyps = result.get("hypotheses", [])
+        if raw_hyps:
+            # Update the hypothesis text blob for backward compat (per-stock AI enrichment)
+            hyp_text = _build_hypothesis_text_from_autoai(result)
+            if hyp_text:
+                save_hypothesis(hyp_text, len(all_feedback) + current_count)
+
+            rules_to_save = []
+            for h in raw_hyps:
+                conf = h.get("confidence", 0)
+                if conf < 50:
+                    continue
+                auto = conf >= AUTOAI_CONFIDENCE_HYPOTHESIS
+                rules_to_save.append({
+                    "text":             h["text"],
+                    "source":           h.get("source", ""),
+                    "confidence_score": conf,
+                    "auto_applied":     1 if auto else 0,
+                    "status":           "active" if auto else "pending",
+                })
+                if auto:
+                    hypotheses_auto += 1
+                else:
+                    hypotheses_pending += 1
+
+            if rules_to_save:
+                save_hypothesis_rules_with_confidence(rules_to_save)
+
+        # Auto-apply weights if confidence threshold met
+        weights_auto_applied = 0
+        weight_conf          = result.get("weight_confidence", 0)
+        num_closed           = len(closed_trades)
+
+        if weight_conf >= AUTOAI_CONFIDENCE_WEIGHTS and num_closed >= AUTOAI_MIN_CLOSED_TRADES:
+            save_autoai_weights(
+                new_weights,
+                result.get("rationale", ""),
+                result.get("suggestions", []),
+                f"[Auto AI] {result.get('summary', '')}",
+            )
+            save_weight_changelog(
+                f"[Auto AI] {result.get('summary', '')}",
+                result.get("rationale", ""),
+                new_weights,
+            )
+            weights_auto_applied = 1
+            print(f"AUTO-AI: weights auto-applied (confidence={weight_conf}, closed_trades={num_closed})")
+        else:
+            print(f"AUTO-AI: weights NOT applied — confidence={weight_conf}, closed_trades={num_closed}")
+
+        save_autoai_log({
+            "ran_at":                    datetime.datetime.utcnow().isoformat(),
+            "trigger_reason":            f"{new_outcomes} new outcome-labeled scans",
+            "trades_evaluated":          current_count,
+            "hypotheses_added":          len(raw_hyps),
+            "hypotheses_auto_activated": hypotheses_auto,
+            "hypotheses_to_pending":     hypotheses_pending,
+            "weights_auto_applied":      weights_auto_applied,
+            "weight_confidence":         weight_conf,
+            "summary":                   result.get("summary", ""),
+            "full_response":             __import__("json").dumps(result),
+        })
+        save_last_autoai_run_count(current_count)
+
+        summary_msg = result.get("summary", "autonomous optimization cycle complete")
+        _send_telegram_admin(
+            f"<b>Auto AI Optimization</b>\n"
+            f"{hypotheses_auto} rules auto-activated · {hypotheses_pending} to review · "
+            f"Weights: {'applied' if weights_auto_applied else 'skipped'}\n"
+            f"<i>{summary_msg}</i>"
+        )
+        print(f"AUTO-AI: complete — {hypotheses_auto} auto-activated, "
+              f"{hypotheses_pending} pending, weights={'applied' if weights_auto_applied else 'skipped'}")
+    except Exception as e:
+        print(f"AUTO-AI: failed — {e}")
 
 
 def _enrich_high_scorers(results: list) -> list:
@@ -323,20 +487,21 @@ def _scheduled_scan():
         _alerted_today = set()
         _alerted_date  = today_str
 
-    for mode in ["squeeze", "strict", "standard"]:
+    for mode in ["autoai", "squeeze", "strict", "standard"]:
         try:
             data = run_scan(mode=mode)
             save_scan(data["results"], mode)
             save_scan_cache(mode, data["results"], data["summary"])
             print(f"SCHEDULER: {mode} scan complete ({len(data['results'])} results)")
-            if mode == "squeeze":
+            if mode in ("autoai", "squeeze"):
+                label = "Auto AI" if mode == "autoai" else "Complex + AI"
                 # Enrich high-scorers with AI calls + LSTM before alerting
                 _enrich_high_scorers(data["results"])
                 # Track morning high-scorers so intraday scans don't re-alert them
                 for r in data["results"]:
                     if r.get("score", 0) >= 75:
                         _alerted_today.add(r.get("symbol"))
-                send_scan_alert(data["results"], "Complex + AI")
+                send_scan_alert(data["results"], label)
                 # Auto paper-trade HIGH confidence TRADE calls (max 3/day)
                 _auto_paper_trade(data["results"], today_str)
                 # Log near-misses (40-74) to watchlist for intraday re-checking
@@ -349,6 +514,7 @@ def _scheduled_scan():
     _autoclose_take_profit()
     update_returns()
     _auto_learn()
+    _auto_ai_optimize()
 
 
 def _premarket_scan():
@@ -439,6 +605,14 @@ def _intraday_scan():
         data = run_scan(mode="squeeze")
         save_scan(data["results"], "squeeze")
         save_scan_cache("squeeze", data["results"], data["summary"])
+
+        # Also save Auto AI cache (uses its own weights; same raw results for intraday)
+        try:
+            data_autoai = run_scan(mode="autoai")
+            save_scan(data_autoai["results"], "autoai")
+            save_scan_cache("autoai", data_autoai["results"], data_autoai["summary"])
+        except Exception as ae:
+            print(f"INTRADAY SCAN: autoai cache update failed — {ae}")
 
         # Enrich new high-scorers with AI calls + LSTM before alerting
         new_high = [
@@ -642,33 +816,6 @@ def invite_page(request: Request):
     )
 
 
-@app.post("/users/invite")
-def users_send_invite(
-    request: Request,
-    name:  str = Form(...),
-    email: str = Form(...),
-):
-    if "user" not in request.session or not _require_admin(request):
-        return RedirectResponse("/login", status_code=303)
-
-    bot_username = ""
-    token = _os.environ.get("TELEGRAM_BOT_TOKEN")
-    if token:
-        try:
-            import requests as _req
-            r = _req.get(f"https://api.telegram.org/bot{token}/getMe", timeout=5)
-            if r.ok:
-                bot_username = r.json().get("result", {}).get("username", "")
-        except Exception:
-            pass
-
-    invite_url = str(request.base_url).rstrip("/") + "/invite"
-    ok = send_invite_email(email.strip(), name.strip(), invite_url, bot_username)
-    if ok:
-        return RedirectResponse("/users?invited=1", status_code=303)
-    return RedirectResponse("/users?invite_error=1", status_code=303)
-
-
 # ---------------- LOGIN ----------------
 @app.head("/login")
 def login_head():
@@ -773,6 +920,11 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
         list(executor.map(_ai_enrich, scan_data["results"]))
 
     ai_weights_info = get_squeeze_weights() if mode == "squeeze" else None
+    autoai_weights_info = get_autoai_weights() if mode == "autoai" else None
+    last_autoai_run = None
+    if mode == "autoai":
+        log = get_autoai_log(limit=1)
+        last_autoai_run = log[0] if log else None
 
     return templates.TemplateResponse(
         "index.html",
@@ -784,6 +936,8 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
             "trade_error": trade_error,
             "user": request.session["user"],
             "ai_weights_info": ai_weights_info,
+            "autoai_weights_info": autoai_weights_info,
+            "last_autoai_run": last_autoai_run,
             "cache_age": cache_age,
             "sizing_calibrated": sizing_stats is not None,
             "sizing_total": sizing_stats["total"] if sizing_stats else 0,
@@ -819,6 +973,9 @@ def analytics(request: Request):
             "lstm_status": get_lstm_status(),
             "seq_stats": get_sequence_stats(),
             "model_validation": get_model_validation_stats(),
+            "autoai_log": get_autoai_log(limit=20),
+            "autoai_weights": get_autoai_weights(),
+            "model_comparison": get_model_comparison_stats(),
         }
     )
 
@@ -1592,6 +1749,31 @@ def broker_status(request: Request):
             "equity":       acct.get("equity"),
         }
     return {"configured": True, "status": "error"}
+
+
+@app.get("/api/autoai-status")
+def autoai_status(request: Request):
+    if "user" not in request.session:
+        return Response(status_code=401)
+    log = get_autoai_log(limit=1)
+    last_run = log[0] if log else None
+    rules = get_hypothesis_rules()
+    auto_active = sum(1 for r in rules if r.get("auto_applied") and r["status"] == "active")
+    return {"last_run": last_run, "auto_active_rules": auto_active}
+
+
+@app.post("/admin/test-autoai")
+def test_autoai(request: Request):
+    """Admin-only: manually trigger the Auto AI optimization loop for testing."""
+    if "user" not in request.session:
+        return Response(status_code=401)
+    if not _require_admin(request):
+        return Response(status_code=403)
+    try:
+        _auto_ai_optimize()
+        return {"ok": True, "message": "Auto AI optimization triggered — check autoai_log table"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 # ---------------- TEST TELEGRAM ----------------

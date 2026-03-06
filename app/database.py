@@ -263,6 +263,36 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # Migration: confidence score and auto-applied flag on hypothesis rules
+    try:
+        cursor.execute("ALTER TABLE hypothesis_rules ADD COLUMN confidence_score INTEGER DEFAULT NULL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE hypothesis_rules ADD COLUMN auto_applied INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # ---------------- AUTOAI LOG TABLE ----------------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS autoai_log (
+            id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+            ran_at                    TEXT NOT NULL,
+            trigger_reason            TEXT,
+            trades_evaluated          INTEGER,
+            hypotheses_added          INTEGER,
+            hypotheses_auto_activated INTEGER,
+            hypotheses_to_pending     INTEGER,
+            weights_auto_applied      INTEGER,
+            weight_confidence         INTEGER,
+            summary                   TEXT,
+            full_response             TEXT
+        )
+    """)
+    conn.commit()
+
     conn.close()
 
 
@@ -308,26 +338,53 @@ def delete_user(username: str) -> bool:
 
 def seed_users():
     """
-    Create default accounts only if they do not already exist.
-    Uses DO NOTHING so that passwords changed via /account are never overwritten.
-    Default passwords come from env vars ADMIN_PASSWORD / BOB_PASSWORD; fall back
-    to the original defaults if the env vars are not set.
+    Create default + env-configured accounts on startup if they do not already exist.
+    Uses ON CONFLICT DO NOTHING so passwords changed via /account are never overwritten.
+
+    Seeding sources (all use ON CONFLICT DO NOTHING):
+      1. Hardcoded defaults: admin (ADMIN_PASSWORD env var) + BobbyAxelrod (BOB_PASSWORD env var)
+      2. SEED_USERS env var — JSON array of {"username": "...", "password": "..."} objects.
+         Add every web-created user here on Render so they survive DB resets:
+         SEED_USERS=[{"username":"kelly","password":"her_password"},{"username":"rob","password":"his_password"}]
     """
     import os as _os
     defaults = [
         ("admin",        _os.environ.get("ADMIN_PASSWORD", "Billions1!")),
         ("BobbyAxelrod", _os.environ.get("BOB_PASSWORD",   "Billions")),
     ]
+
+    # Load extra users from SEED_USERS env var (JSON array)
+    seed_users_json = _os.environ.get("SEED_USERS", "")
+    extra_users = []
+    if seed_users_json:
+        try:
+            parsed = json.loads(seed_users_json)
+            if isinstance(parsed, list):
+                for u in parsed:
+                    if isinstance(u, dict) and u.get("username") and u.get("password"):
+                        extra_users.append((u["username"], u["password"]))
+        except Exception as e:
+            print(f"SEED_USERS parse error (skipping extra users): {e}")
+
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    for username, password in defaults:
+    for username, password in defaults + extra_users:
         hashed = pwd_context.hash(password)
         cursor.execute("""
             INSERT INTO users (username, hashed_password) VALUES (?, ?)
             ON CONFLICT(username) DO NOTHING
         """, (username, hashed))
+    if extra_users:
+        # Ensure all SEED_USERS accounts have is_admin=0 (DO NOTHING on conflict preserves existing role)
+        for username, _ in extra_users:
+            cursor.execute(
+                "UPDATE users SET is_admin = COALESCE(is_admin, 0) WHERE username = ?",
+                (username,)
+            )
     conn.commit()
     conn.close()
+    if extra_users:
+        print(f"SEED_USERS: seeded {len(extra_users)} extra user(s): {[u for u, _ in extra_users]}")
 
 
 def authenticate_user(username: str, password: str):
@@ -456,6 +513,118 @@ def get_score_buckets():
             }
 
     return results
+
+
+def get_model_comparison_stats() -> dict:
+    """
+    Returns per-model (autoai vs squeeze) TRADE call performance broken down by score bucket.
+
+    For each model × score bucket, tracks:
+      - trade_calls:    number of AI TRADE calls with known outcomes
+      - win_rate:       % of TRADE calls with positive next-day return
+      - avg_next_day:   average next-day return %
+      - avg_3day:       average 3-day return %  (medium-term, ~1 week)
+      - hit_20pct:      % of TRADE calls that touched +20% within 10 trading days (~2 weeks)
+      - avg_days_to_20: average trading days to hit the +20% target
+      - no_trade_calls: number of NO_TRADE calls (for comparison)
+
+    Uses json_extract() to parse the ai_trade_rec JSON column.
+    Only includes scans with next_day_return IS NOT NULL (outcomes known).
+    Excludes 'historical' mode scans.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    MODELS = {"autoai": "Auto AI", "squeeze": "Complex + AI"}
+    BUCKET_DEFS = [
+        ("80-100", 80, 101),
+        ("75-79",  75, 80),
+        ("60-74",  60, 75),
+        ("0-59",    0, 60),
+    ]
+
+    result = {}
+
+    for mode_key, mode_label in MODELS.items():
+        # All TRADE calls with known returns for this mode
+        cursor.execute("""
+            SELECT score,
+                   next_day_return,
+                   three_day_return,
+                   days_to_20pct,
+                   json_extract(ai_trade_rec, '$.decision') as decision
+            FROM scans
+            WHERE next_day_return IS NOT NULL
+              AND mode = ?
+              AND ai_trade_rec IS NOT NULL
+        """, (mode_key,))
+        rows = cursor.fetchall()
+
+        buckets = {}
+        for bucket_label, lo, hi in BUCKET_DEFS:
+            trade_rows = [
+                (nd, td, d20) for score, nd, td, d20, dec in rows
+                if lo <= score < hi and dec == "TRADE"
+            ]
+            no_trade_count = sum(
+                1 for score, nd, td, d20, dec in rows
+                if lo <= score < hi and dec == "NO_TRADE"
+            )
+            total_scored = sum(1 for score, *_ in rows if lo <= score < hi)
+
+            if trade_rows:
+                nd_vals   = [nd for nd, td, d20 in trade_rows if nd is not None]
+                td_vals   = [td for nd, td, d20 in trade_rows if td is not None]
+                wins      = [v for v in nd_vals if v > 0]
+                hits_20   = [d20 for nd, td, d20 in trade_rows if d20 is not None]
+                avg_days  = round(sum(hits_20) / len(hits_20), 1) if hits_20 else None
+                buckets[bucket_label] = {
+                    "trade_calls":    len(trade_rows),
+                    "no_trade_calls": no_trade_count,
+                    "total_scored":   total_scored,
+                    "win_rate":       round(len(wins) / len(nd_vals) * 100, 1) if nd_vals else None,
+                    "avg_next_day":   round(sum(nd_vals) / len(nd_vals), 2) if nd_vals else None,
+                    "avg_3day":       round(sum(td_vals) / len(td_vals), 2) if td_vals else None,
+                    "hit_20pct":      round(len(hits_20) / len(trade_rows) * 100, 1),
+                    "avg_days_to_20": avg_days,
+                }
+            else:
+                buckets[bucket_label] = {
+                    "trade_calls":    0,
+                    "no_trade_calls": no_trade_count,
+                    "total_scored":   total_scored,
+                    "win_rate":       None,
+                    "avg_next_day":   None,
+                    "avg_3day":       None,
+                    "hit_20pct":      None,
+                    "avg_days_to_20": None,
+                }
+
+        # Overall totals for this model
+        all_trade_rows = [
+            (nd, td, d20) for score, nd, td, d20, dec in rows if dec == "TRADE"
+        ]
+        nd_all  = [nd for nd, td, d20 in all_trade_rows if nd is not None]
+        td_all  = [td for nd, td, d20 in all_trade_rows if td is not None]
+        h20_all = [d20 for nd, td, d20 in all_trade_rows if d20 is not None]
+
+        result[mode_key] = {
+            "label":   mode_label,
+            "buckets": buckets,
+            "overall": {
+                "trade_calls":    len(all_trade_rows),
+                "no_trade_calls": sum(1 for *_, dec in rows if dec == "NO_TRADE"),
+                "total_with_outcomes": len(rows),
+                "win_rate":       round(sum(1 for v in nd_all if v > 0) / len(nd_all) * 100, 1) if nd_all else None,
+                "avg_next_day":   round(sum(nd_all) / len(nd_all), 2) if nd_all else None,
+                "avg_3day":       round(sum(td_all) / len(td_all), 2) if td_all else None,
+                "hit_20pct":      round(len(h20_all) / len(all_trade_rows) * 100, 1) if all_trade_rows else None,
+                "avg_days_to_20": round(sum(h20_all) / len(h20_all), 1) if h20_all else None,
+            },
+        }
+
+    conn.close()
+    return result
 # ---------------- RETURN UPDATES ----------------
 def update_returns():
     # Fetch pending rows then close connection before slow yf.download calls
@@ -1065,13 +1234,14 @@ def get_hypothesis_rules() -> list:
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, rule_text, source, status, generation, created_at
+        SELECT id, rule_text, source, status, generation, created_at,
+               confidence_score, auto_applied
         FROM hypothesis_rules
         ORDER BY generation DESC, id ASC
     """)
     rows = cursor.fetchall()
     results = []
-    for (rid, rule_text, source, status, generation, created_at) in rows:
+    for (rid, rule_text, source, status, generation, created_at, confidence_score, auto_applied) in rows:
         # Count trades and wins from scans tagged with this rule ID
         cursor.execute("""
             SELECT
@@ -1086,15 +1256,17 @@ def get_hypothesis_rules() -> list:
         wins  = stat[1] or 0
         win_rate = round(wins / total * 100, 1) if total > 0 else None
         results.append({
-            "id":         rid,
-            "rule_text":  rule_text,
-            "source":     source or "",
-            "status":     status,
-            "generation": generation,
-            "created_at": (created_at or "")[:10],
-            "trades":     total,
-            "wins":       wins,
-            "win_rate":   win_rate,
+            "id":               rid,
+            "rule_text":        rule_text,
+            "source":           source or "",
+            "status":           status,
+            "generation":       generation,
+            "created_at":       (created_at or "")[:10],
+            "trades":           total,
+            "wins":             wins,
+            "win_rate":         win_rate,
+            "confidence_score": confidence_score,
+            "auto_applied":     auto_applied or 0,
         })
     conn.close()
     return results
@@ -1993,5 +2165,173 @@ def save_auto_learn_count(count: int):
         INSERT INTO settings (key, value, updated_at) VALUES ('auto_learn_labeled_count', ?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
     """, (str(count), datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+# ---------------- AUTO AI ----------------
+
+def save_autoai_log(entry: dict):
+    """Insert a row into the autoai_log audit table."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO autoai_log
+            (ran_at, trigger_reason, trades_evaluated, hypotheses_added,
+             hypotheses_auto_activated, hypotheses_to_pending,
+             weights_auto_applied, weight_confidence, summary, full_response)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        entry.get("ran_at", datetime.utcnow().isoformat()),
+        entry.get("trigger_reason", ""),
+        entry.get("trades_evaluated", 0),
+        entry.get("hypotheses_added", 0),
+        entry.get("hypotheses_auto_activated", 0),
+        entry.get("hypotheses_to_pending", 0),
+        entry.get("weights_auto_applied", 0),
+        entry.get("weight_confidence", 0),
+        entry.get("summary", ""),
+        entry.get("full_response", ""),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_autoai_log(limit: int = 20) -> list:
+    """Returns recent Auto AI optimization run records, newest first."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, ran_at, trigger_reason, trades_evaluated, hypotheses_added,
+               hypotheses_auto_activated, hypotheses_to_pending,
+               weights_auto_applied, weight_confidence, summary, full_response
+        FROM autoai_log
+        ORDER BY id DESC
+        LIMIT ?
+    """, (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "id":                        r[0],
+            "ran_at":                    r[1],
+            "trigger_reason":            r[2],
+            "trades_evaluated":          r[3],
+            "hypotheses_added":          r[4],
+            "hypotheses_auto_activated": r[5],
+            "hypotheses_to_pending":     r[6],
+            "weights_auto_applied":      r[7],
+            "weight_confidence":         r[8],
+            "summary":                   r[9],
+            "full_response":             r[10],
+        }
+        for r in rows
+    ]
+
+
+def get_last_autoai_run_count() -> int:
+    """Returns the outcome-labeled scan count recorded at the last Auto AI optimization run."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = 'autoai_last_trade_count'")
+    row = cursor.fetchone()
+    conn.close()
+    return int(row[0]) if row else 0
+
+
+def save_last_autoai_run_count(count: int):
+    """Persist the outcome-labeled scan count after a successful Auto AI optimization run."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO settings (key, value, updated_at) VALUES ('autoai_last_trade_count', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    """, (str(count), datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def save_hypothesis_rules_with_confidence(rules: list):
+    """
+    Insert hypothesis rules with confidence scores from an Auto AI optimization run.
+    Rules with confidence >= 80 are auto-activated (status='active', auto_applied=1).
+    Rules with confidence 50-79 go to pending for admin review.
+    Assigns a generation number = current max + 1.
+    """
+    if not rules:
+        return
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COALESCE(MAX(generation), 0) FROM hypothesis_rules")
+    next_gen = cursor.fetchone()[0] + 1
+    now = datetime.utcnow().isoformat()
+    for r in rules:
+        cursor.execute("""
+            INSERT INTO hypothesis_rules
+                (rule_text, source, status, generation, created_at, confidence_score, auto_applied)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            r["text"],
+            r.get("source", ""),
+            r.get("status", "pending"),
+            next_gen,
+            now,
+            r.get("confidence_score"),
+            r.get("auto_applied", 0),
+        ))
+    conn.commit()
+    conn.close()
+
+
+def get_autoai_weights():
+    """
+    Returns dict with Auto AI autonomous weights, rationale, suggestions, summary,
+    and updated_at. Returns None if no Auto AI weights have been stored yet.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    keys = [
+        "autoai_weights",
+        "autoai_weights_rationale",
+        "autoai_weights_suggestions",
+        "autoai_weights_summary",
+    ]
+    result = {}
+    for key in keys:
+        cursor.execute("SELECT value, updated_at FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        if row:
+            result[key] = row[0]
+            result["updated_at"] = row[1]
+    conn.close()
+    if "autoai_weights" not in result:
+        return None
+    return {
+        "weights":     json.loads(result["autoai_weights"]),
+        "rationale":   result.get("autoai_weights_rationale", ""),
+        "suggestions": json.loads(result.get("autoai_weights_suggestions", "[]")),
+        "summary":     result.get("autoai_weights_summary", ""),
+        "updated_at":  result.get("updated_at", ""),
+    }
+
+
+def save_autoai_weights(weights: dict, rationale: str = "",
+                        suggestions: list = None, summary: str = ""):
+    """Persist Auto AI autonomous weights to the settings table (separate from squeeze weights)."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    now = datetime.utcnow().isoformat()
+    for key, value in [
+        ("autoai_weights",             json.dumps(weights)),
+        ("autoai_weights_rationale",   rationale),
+        ("autoai_weights_suggestions", json.dumps(suggestions or [])),
+        ("autoai_weights_summary",     summary),
+    ]:
+        cursor.execute("""
+            INSERT INTO settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                           updated_at = excluded.updated_at
+        """, (key, value, now))
     conn.commit()
     conn.close()

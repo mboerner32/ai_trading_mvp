@@ -10,7 +10,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.scoring_engine import score_stock, score_stock_squeeze, DEFAULT_SQUEEZE_WEIGHTS
-from app.database import get_squeeze_weights
+from app.database import get_squeeze_weights, get_autoai_weights
 
 
 def _tod_factor() -> float:
@@ -480,7 +480,13 @@ def run_scan(mode="standard", premarket: bool = False):
     if not tickers:
         return {"results": results, "summary": summary}
 
-    if mode == "squeeze":
+    if mode == "autoai":
+        weights_data = get_autoai_weights()
+        active_weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS
+        scorer = lambda symbol, df, fundamentals=None: score_stock_squeeze(
+            symbol, df, fundamentals, weights=active_weights
+        )
+    elif mode == "squeeze":
         weights_data = get_squeeze_weights()
         active_weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS
         scorer = lambda symbol, df, fundamentals=None: score_stock_squeeze(

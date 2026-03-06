@@ -260,8 +260,8 @@
     <!-- SCORE BUCKET TABLE -->
     <div class="section-title">Score Bucket Performance</div>
     <p style="color:#6b7280; font-size:13px; margin:-8px 0 16px;">
-        <strong>Hit 20%+</strong> = % of setups that spiked ≥20% within 7 trading days (take-profit target).
-        <strong>Avg Days</strong> = how fast it hit — lower is better (faster = stronger signal).
+        <strong>Hit 20%+</strong> = % of setups that spiked ≥20% within 10 trading days (~2 weeks).
+        <strong>Avg Days</strong> = how fast it hit — lower is better.
     </p>
 
     <table>
@@ -296,6 +296,165 @@
         {% endfor %}
         </tbody>
     </table>
+
+    <!-- MODEL TRADE CALL COMPARISON -->
+    <div class="section-title" style="margin-top:32px;">
+        AI TRADE Call Comparison — Auto AI vs Complex + AI
+    </div>
+    <p style="color:#6b7280; font-size:13px; margin:-8px 0 16px; line-height:1.6;">
+        Tracks only scans where the AI called <strong>TRADE</strong> with known outcomes (2+ days old).
+        Win Rate = next-day positive return. Hit 20%+ = spiked ≥20% within 10 trading days (~2 weeks).
+    </p>
+
+    {% if model_comparison %}
+
+    {# --- Overall summary row --- #}
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px;">
+    {% for mode_key in ['autoai', 'squeeze'] %}
+    {% set m = model_comparison[mode_key] %}
+    {% set o = m.overall %}
+    <div style="border:2px solid {{ '#7c3aed' if mode_key == 'autoai' else '#0f766e' }};
+                border-radius:10px; padding:16px 20px; background:{{ '#faf5ff' if mode_key == 'autoai' else '#f0fdf4' }};">
+        <div style="font-weight:700; font-size:14px; color:{{ '#7c3aed' if mode_key == 'autoai' else '#0f766e' }}; margin-bottom:10px;">
+            {{ '&#x2726; ' if mode_key == 'autoai' else '' }}{{ m.label }} — Overall TRADE Calls
+        </div>
+        <div style="display:flex; gap:20px; flex-wrap:wrap;">
+            <div style="text-align:center;">
+                <div style="font-size:22px; font-weight:700; color:#1f2937;">{{ o.trade_calls }}</div>
+                <div style="font-size:11px; color:#6b7280;">TRADE calls</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:22px; font-weight:700;
+                    color:{% if o.win_rate is not none and o.win_rate >= 55 %}#0f766e{% elif o.win_rate is not none %}#d97706{% else %}#9ca3af{% endif %};">
+                    {{ '%.0f' | format(o.win_rate) ~ '%' if o.win_rate is not none else '—' }}
+                </div>
+                <div style="font-size:11px; color:#6b7280;">Win Rate</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:22px; font-weight:700;
+                    color:{% if o.avg_next_day is not none and o.avg_next_day > 0 %}#0f766e{% elif o.avg_next_day is not none %}#dc2626{% else %}#9ca3af{% endif %};">
+                    {{ ('+' if o.avg_next_day > 0 else '') ~ '%.1f' | format(o.avg_next_day) ~ '%' if o.avg_next_day is not none else '—' }}
+                </div>
+                <div style="font-size:11px; color:#6b7280;">Avg Next-Day</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:22px; font-weight:700;
+                    color:{% if o.avg_3day is not none and o.avg_3day > 0 %}#0f766e{% elif o.avg_3day is not none %}#dc2626{% else %}#9ca3af{% endif %};">
+                    {{ ('+' if o.avg_3day > 0 else '') ~ '%.1f' | format(o.avg_3day) ~ '%' if o.avg_3day is not none else '—' }}
+                </div>
+                <div style="font-size:11px; color:#6b7280;">Avg 3-Day</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:22px; font-weight:700;
+                    color:{% if o.hit_20pct is not none and o.hit_20pct >= 30 %}#0f766e{% elif o.hit_20pct is not none %}#d97706{% else %}#9ca3af{% endif %};">
+                    {{ '%.0f' | format(o.hit_20pct) ~ '%' if o.hit_20pct is not none else '—' }}
+                </div>
+                <div style="font-size:11px; color:#6b7280;">Hit 20%+ (2wk)</div>
+            </div>
+        </div>
+        <div style="font-size:11px; color:#9ca3af; margin-top:8px;">
+            {{ o.total_with_outcomes }} scans with outcomes · {{ o.no_trade_calls }} NO_TRADE calls
+        </div>
+    </div>
+    {% endfor %}
+    </div>
+
+    {# --- Score bucket breakdown side-by-side --- #}
+    {% set bucket_order = ['80-100', '75-79', '60-74', '0-59'] %}
+    <div style="overflow-x:auto;">
+    <table style="font-size:13px; min-width:680px;">
+        <thead>
+            <tr style="background:#f9fafb;">
+                <th style="padding:9px 12px; text-align:left; color:#6b7280; font-weight:600;">Score</th>
+                <th colspan="5" style="padding:9px 12px; text-align:center; color:#7c3aed; font-weight:700;
+                                       border-left:3px solid #7c3aed;">
+                    &#x2726; Auto AI
+                </th>
+                <th colspan="5" style="padding:9px 12px; text-align:center; color:#0f766e; font-weight:700;
+                                       border-left:3px solid #0f766e;">
+                    Complex + AI
+                </th>
+            </tr>
+            <tr style="background:#fafafa; font-size:11px;">
+                <th style="padding:6px 12px; color:#9ca3af; text-align:left;"></th>
+                <th style="padding:6px 8px; color:#9ca3af; border-left:3px solid #7c3aed;">Calls</th>
+                <th style="padding:6px 8px; color:#9ca3af;">Win%</th>
+                <th style="padding:6px 8px; color:#9ca3af;">Next-Day</th>
+                <th style="padding:6px 8px; color:#9ca3af;">3-Day</th>
+                <th style="padding:6px 8px; color:#9ca3af;">Hit 20%</th>
+                <th style="padding:6px 8px; color:#9ca3af; border-left:3px solid #0f766e;">Calls</th>
+                <th style="padding:6px 8px; color:#9ca3af;">Win%</th>
+                <th style="padding:6px 8px; color:#9ca3af;">Next-Day</th>
+                <th style="padding:6px 8px; color:#9ca3af;">3-Day</th>
+                <th style="padding:6px 8px; color:#9ca3af;">Hit 20%</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for bkt in bucket_order %}
+        {% set a = model_comparison.autoai.buckets[bkt] %}
+        {% set s = model_comparison.squeeze.buckets[bkt] %}
+        <tr style="border-bottom:1px solid #f3f4f6;">
+            <td style="padding:9px 12px; font-weight:600; color:#374151;">{{ bkt }}</td>
+
+            {# Auto AI columns #}
+            <td style="padding:9px 8px; text-align:center; border-left:3px solid #ede9fe; color:#6b7280;">
+                {{ a.trade_calls if a.trade_calls else '—' }}
+            </td>
+            <td style="padding:9px 8px; text-align:center; font-weight:600;
+                color:{% if a.win_rate is not none and a.win_rate >= 55 %}#0f766e{% elif a.win_rate is not none and a.win_rate >= 40 %}#d97706{% elif a.win_rate is not none %}#dc2626{% else %}#9ca3af{% endif %};">
+                {{ '%.0f' | format(a.win_rate) ~ '%' if a.win_rate is not none else '—' }}
+            </td>
+            <td style="padding:9px 8px; text-align:center; font-weight:600;
+                color:{% if a.avg_next_day is not none and a.avg_next_day > 0 %}#0f766e{% elif a.avg_next_day is not none %}#dc2626{% else %}#9ca3af{% endif %};">
+                {{ ('+' if a.avg_next_day > 0 else '') ~ '%.1f' | format(a.avg_next_day) ~ '%' if a.avg_next_day is not none else '—' }}
+            </td>
+            <td style="padding:9px 8px; text-align:center; font-weight:600;
+                color:{% if a.avg_3day is not none and a.avg_3day > 0 %}#0f766e{% elif a.avg_3day is not none %}#dc2626{% else %}#9ca3af{% endif %};">
+                {{ ('+' if a.avg_3day > 0 else '') ~ '%.1f' | format(a.avg_3day) ~ '%' if a.avg_3day is not none else '—' }}
+            </td>
+            <td style="padding:9px 8px; text-align:center; font-weight:700;
+                color:{% if a.hit_20pct is not none and a.hit_20pct >= 30 %}#0f766e{% elif a.hit_20pct is not none and a.hit_20pct >= 15 %}#d97706{% elif a.hit_20pct is not none %}#dc2626{% else %}#9ca3af{% endif %};">
+                {{ '%.0f' | format(a.hit_20pct) ~ '%' if a.hit_20pct is not none else '—' }}
+            </td>
+
+            {# Complex+AI columns #}
+            <td style="padding:9px 8px; text-align:center; border-left:3px solid #d1fae5; color:#6b7280;">
+                {{ s.trade_calls if s.trade_calls else '—' }}
+            </td>
+            <td style="padding:9px 8px; text-align:center; font-weight:600;
+                color:{% if s.win_rate is not none and s.win_rate >= 55 %}#0f766e{% elif s.win_rate is not none and s.win_rate >= 40 %}#d97706{% elif s.win_rate is not none %}#dc2626{% else %}#9ca3af{% endif %};">
+                {{ '%.0f' | format(s.win_rate) ~ '%' if s.win_rate is not none else '—' }}
+            </td>
+            <td style="padding:9px 8px; text-align:center; font-weight:600;
+                color:{% if s.avg_next_day is not none and s.avg_next_day > 0 %}#0f766e{% elif s.avg_next_day is not none %}#dc2626{% else %}#9ca3af{% endif %};">
+                {{ ('+' if s.avg_next_day > 0 else '') ~ '%.1f' | format(s.avg_next_day) ~ '%' if s.avg_next_day is not none else '—' }}
+            </td>
+            <td style="padding:9px 8px; text-align:center; font-weight:600;
+                color:{% if s.avg_3day is not none and s.avg_3day > 0 %}#0f766e{% elif s.avg_3day is not none %}#dc2626{% else %}#9ca3af{% endif %};">
+                {{ ('+' if s.avg_3day > 0 else '') ~ '%.1f' | format(s.avg_3day) ~ '%' if s.avg_3day is not none else '—' }}
+            </td>
+            <td style="padding:9px 8px; text-align:center; font-weight:700;
+                color:{% if s.hit_20pct is not none and s.hit_20pct >= 30 %}#0f766e{% elif s.hit_20pct is not none and s.hit_20pct >= 15 %}#d97706{% elif s.hit_20pct is not none %}#dc2626{% else %}#9ca3af{% endif %};">
+                {{ '%.0f' | format(s.hit_20pct) ~ '%' if s.hit_20pct is not none else '—' }}
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+
+    <p style="font-size:11px; color:#9ca3af; margin-top:8px; line-height:1.6;">
+        Win Rate = % of TRADE calls with positive next-day close.
+        Next-Day / 3-Day = avg % return from scan_price.
+        Hit 20%+ = intraday high touched ≥20% above scan_price within 10 trading days.
+        Rows show — until that model has outcomes in that score bucket.
+    </p>
+
+    {% else %}
+    <p style="color:#6b7280; font-size:14px; margin:0 0 32px;">
+        No comparison data yet — run Auto AI mode scans and wait 2+ days for outcomes to be labeled.
+    </p>
+    {% endif %}
 
     <!-- SELF-LEARNING LOOP STATUS -->
     <div class="section-title">Self-Learning Loop Status</div>
@@ -688,6 +847,8 @@
                     <th style="padding:8px 12px; color:#6b7280; font-weight:600; text-align:left; min-width:320px;">Rule</th>
                     <th style="padding:8px 12px; color:#6b7280; font-weight:600;">Source</th>
                     <th style="padding:8px 12px; color:#6b7280; font-weight:600;">Status</th>
+                    <th style="padding:8px 12px; color:#6b7280; font-weight:600;">Applied By</th>
+                    <th style="padding:8px 12px; color:#6b7280; font-weight:600; text-align:center;">Conf.</th>
                     <th style="padding:8px 12px; color:#6b7280; font-weight:600; text-align:right;">Trades</th>
                     <th style="padding:8px 12px; color:#6b7280; font-weight:600; text-align:right;">+20% Rate</th>
                     <th style="padding:8px 12px; color:#6b7280; font-weight:600; text-align:right; min-width:140px;"></th>
@@ -717,6 +878,24 @@
                                  border-radius:10px; font-size:11px;">Rejected</span>
                     {% endif %}
                 </td>
+                <td style="padding:10px 12px; white-space:nowrap;">
+                    {% if rule.auto_applied %}
+                    <span style="background:#ede9fe; color:#5b21b6; padding:2px 9px;
+                                 border-radius:10px; font-size:11px; font-weight:700;">AI Applied</span>
+                    {% elif rule.status == 'active' %}
+                    <span style="background:#dbeafe; color:#1e40af; padding:2px 9px;
+                                 border-radius:10px; font-size:11px;">Admin Approved</span>
+                    {% else %}
+                    <span style="color:#9ca3af; font-size:11px;">—</span>
+                    {% endif %}
+                </td>
+                <td style="padding:10px 12px; text-align:center; font-size:12px; font-weight:600;
+                    color:{% if rule.confidence_score is not none and rule.confidence_score >= 80 %}#7c3aed
+                          {% elif rule.confidence_score is not none and rule.confidence_score >= 60 %}#d97706
+                          {% elif rule.confidence_score is not none %}#6b7280
+                          {% else %}#9ca3af{% endif %};">
+                    {% if rule.confidence_score is not none %}{{ rule.confidence_score }}%{% else %}—{% endif %}
+                </td>
                 <td style="padding:10px 12px; text-align:right; color:#6b7280; font-size:12px;">
                     {{ rule.trades if rule.trades > 0 else '—' }}
                 </td>
@@ -728,7 +907,7 @@
                     {% if rule.win_rate is not none %}{{ '%.0f' | format(rule.win_rate) }}%{% else %}—{% endif %}
                 </td>
                 <td style="padding:10px 12px; text-align:right; white-space:nowrap;">
-                    {% if user == 'admin' %}
+                    {% if user == 'admin' and not rule.auto_applied %}
                     {% if rule.status != 'active' %}
                     <form method="post" action="/hypothesis-rules/{{ rule.id }}/activate" style="display:inline;">
                         <button type="submit"
@@ -748,6 +927,8 @@
                         </button>
                     </form>
                     {% endif %}
+                    {% elif rule.auto_applied %}
+                    <span style="font-size:11px; color:#9ca3af; font-style:italic;">Auto-applied</span>
                     {% endif %}
                 </td>
             </tr>
@@ -771,6 +952,72 @@
             are being injected into every AI trade call.
             Win rates will appear once tagged scans have outcomes (2+ days old).
         </div>
+        {% endif %}
+    </div>
+
+    <!-- AUTO AI ACTIVITY LOG -->
+    <div class="section-title" id="autoai-activity" style="color:#7c3aed;">&#x2726; Auto AI Activity</div>
+    <div class="chart-card" style="margin-bottom:40px; border-left:4px solid #7c3aed; padding:20px 24px;">
+        <p style="font-size:13px; color:#6b7280; margin-top:0; margin-bottom:16px; line-height:1.6;">
+            The Auto AI loop runs autonomously after each morning scan when 5+ new trade outcomes are available.
+            Rules with confidence &ge; 80 are activated immediately. Weights with confidence &ge; 75 and 10+ closed trades are auto-applied.
+            <a href="/admin/test-autoai" onclick="return confirm('Trigger Auto AI optimization now?')"
+               style="color:#7c3aed; margin-left:8px; font-weight:600;">Trigger now →</a>
+        </p>
+
+        {% if autoai_weights %}
+        <div style="margin-bottom:16px; padding:10px 14px; background:#f5f3ff; border:1px solid #c4b5fd;
+                    border-radius:8px; font-size:12px; color:#5b21b6; line-height:1.6;">
+            <strong>Auto AI weights active</strong> (last updated {{ autoai_weights.updated_at[:10] }}).
+            {% if autoai_weights.summary %}<br>{{ autoai_weights.summary }}{% endif %}
+        </div>
+        {% endif %}
+
+        {% if autoai_log %}
+        <table style="font-size:12px; margin-bottom:0; box-shadow:none; border-radius:0; width:100%;">
+            <thead>
+                <tr style="background:#f9fafb;">
+                    <th style="padding:7px 10px; color:#6b7280; font-weight:600; text-align:left;">Date</th>
+                    <th style="padding:7px 10px; color:#6b7280; font-weight:600; text-align:left;">Trigger</th>
+                    <th style="padding:7px 10px; color:#6b7280; font-weight:600; text-align:center;">Rules Added</th>
+                    <th style="padding:7px 10px; color:#6b7280; font-weight:600; text-align:center;">Auto-Activated</th>
+                    <th style="padding:7px 10px; color:#6b7280; font-weight:600; text-align:center;">To Review</th>
+                    <th style="padding:7px 10px; color:#6b7280; font-weight:600; text-align:center;">Weights</th>
+                    <th style="padding:7px 10px; color:#6b7280; font-weight:600; text-align:center;">W. Conf.</th>
+                    <th style="padding:7px 10px; color:#6b7280; font-weight:600; text-align:left;">Summary</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for entry in autoai_log %}
+            <tr style="border-bottom:1px solid #f3f4f6;">
+                <td style="padding:8px 10px; white-space:nowrap; color:#374151;">{{ entry.ran_at[:10] }}</td>
+                <td style="padding:8px 10px; color:#6b7280;">{{ entry.trigger_reason or '—' }}</td>
+                <td style="padding:8px 10px; text-align:center; color:#374151;">{{ entry.hypotheses_added or 0 }}</td>
+                <td style="padding:8px 10px; text-align:center; font-weight:700; color:#7c3aed;">{{ entry.hypotheses_auto_activated or 0 }}</td>
+                <td style="padding:8px 10px; text-align:center; color:#374151;">{{ entry.hypotheses_to_pending or 0 }}</td>
+                <td style="padding:8px 10px; text-align:center;">
+                    {% if entry.weights_auto_applied %}
+                    <span style="background:#7c3aed; color:white; border-radius:4px; padding:2px 8px; font-size:10px; font-weight:700;">Applied</span>
+                    {% else %}
+                    <span style="background:#f3f4f6; color:#9ca3af; border-radius:4px; padding:2px 8px; font-size:10px;">Skipped</span>
+                    {% endif %}
+                </td>
+                <td style="padding:8px 10px; text-align:center; font-weight:600;
+                    color:{% if entry.weight_confidence >= 75 %}#7c3aed{% elif entry.weight_confidence >= 50 %}#d97706{% else %}#dc2626{% endif %};">
+                    {{ entry.weight_confidence or 0 }}%
+                </td>
+                <td style="padding:8px 10px; color:#6b7280; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                    {{ entry.summary or '—' }}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p style="color:#6b7280; font-size:14px; margin:0;">
+            No Auto AI optimization runs yet — triggers automatically after morning scan when 5+ new outcomes are available.
+            Runs can also be triggered manually using the link above (admin only).
+        </p>
         {% endif %}
     </div>
 

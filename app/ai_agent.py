@@ -930,6 +930,213 @@ SUMMARY:
         }
 
 
+def autonomous_optimize(
+    opt_data: dict,
+    all_feedback: list,
+    current_weights: dict,
+    prior_hypothesis: str = None,
+    closed_trades: list = None,
+) -> dict:
+    """
+    Single Claude Sonnet call that combines hypothesis synthesis + weight optimization
+    for the Auto AI autonomous self-improving model.
+
+    Returns structured JSON with per-hypothesis confidence scores and a weight
+    confidence score. Callers use these to decide what to auto-activate vs. send
+    to pending for admin review.
+
+    Returns:
+        {
+            "hypotheses": [{"text": str, "source": str, "confidence": int}],
+            "weights": dict,           # all 16 required keys as ints
+            "weight_confidence": int,  # 0-100
+            "rationale": str,
+            "summary": str,
+            "suggestions": list,
+        }
+    On error adds "error" key and falls back to current_weights.
+    """
+    import json
+
+    REQUIRED_KEYS = [
+        "rel_vol_50x", "rel_vol_25x", "rel_vol_10x", "rel_vol_5x",
+        "daily_sweet_20_40", "daily_ok_10_20", "daily_ok_40_100",
+        "sideways_chop", "yesterday_green",
+        "shares_lt10m", "shares_lt30m", "shares_lt100m",
+        "no_news_bonus", "high_cash_bonus",
+        "institution_moderate", "institution_strong",
+    ]
+
+    # ---- Format backtest section (reuse same logic as optimize_complex_ai_weights) ----
+    if opt_data and opt_data.get("total_trades", 0) >= 5:
+        def fmt(stats):
+            if not stats or stats["count"] == 0:
+                return "No data"
+            hit = stats.get("hit_20pct", 0)
+            days = stats.get("avg_days_to_20pct")
+            days_str = f" (avg {days}d to target)" if days is not None else ""
+            return (f"{stats['count']} trades | "
+                    f"{hit}% hit 20%+ target{days_str} | "
+                    f"{stats['win_rate']}% any-gain | "
+                    f"{stats['avg_return']:+.1f}% avg return")
+        rv = opt_data["relative_volume"]
+        dg = opt_data["daily_gain"]
+        so = opt_data["shares_outstanding"]
+        backtest_section = f"""BACKTESTED SIGNAL PERFORMANCE ({opt_data['total_trades']} trades):
+Relative Volume: >=50x: {fmt(rv.get(">=50x"))} | 25-50x: {fmt(rv.get("25-50x"))} | 10-25x: {fmt(rv.get("10-25x"))} | <10x: {fmt(rv.get("<10x"))}
+Daily Gain: 20-40%: {fmt(dg.get("20-40%"))} | 10-20%: {fmt(dg.get("10-20%"))} | 40-100%: {fmt(dg.get("40-100%"))} | <10%: {fmt(dg.get("<10%"))}
+Shares: <1M: {fmt(so.get("<1M"))} | 1-5M: {fmt(so.get("1-5M"))} | 5-10M: {fmt(so.get("5-10M"))} | 10-30M: {fmt(so.get("10-30M"))} | 30M+: {fmt(so.get("30M+"))}"""
+    else:
+        backtest_section = "BACKTESTED SIGNAL PERFORMANCE: Insufficient data (<5 trades with known outcomes)."
+
+    # ---- Format prior hypothesis section ----
+    if prior_hypothesis:
+        hyp_section = f"PRIOR HYPOTHESIS / LEARNED PATTERNS (evolve, do not discard):\n{prior_hypothesis[:1200]}"
+    else:
+        hyp_section = "PRIOR HYPOTHESIS: None yet — derive patterns fresh from evidence."
+
+    # ---- Format feedback section ----
+    if all_feedback:
+        lines = ""
+        for fb in all_feedback[-8:]:
+            sym = fb.get("symbol") or "?"
+            txt = (fb.get("user_text") or "")[:160]
+            tag = fb.get("outcome_tag") or ""
+            lines += f"\n- {sym} [{tag}]: {txt}"
+        feedback_section = f"MANUAL FEEDBACK (last {min(8, len(all_feedback))} submissions):{lines}"
+    else:
+        feedback_section = "MANUAL FEEDBACK: None submitted yet."
+
+    # ---- Format closed trades section ----
+    if closed_trades:
+        trade_lines = ""
+        for t in closed_trades[-20:]:
+            sym = t.get("symbol", "?")
+            entry = t.get("entry_price", 0)
+            exit_ = t.get("exit_price") or 0
+            pnl   = t.get("pnl_pct") or t.get("realized_pnl") or 0
+            tag   = t.get("outcome_tag") or ("win" if pnl > 0 else "loss")
+            trade_lines += f"\n- {sym}: entry ${entry:.2f} → exit ${exit_:.2f} ({pnl:+.1f}%) [{tag}]"
+        trades_section = f"CLOSED PAPER TRADES (last {min(20, len(closed_trades))} trades):{trade_lines}"
+    else:
+        trades_section = "CLOSED PAPER TRADES: None yet."
+
+    current_display = {k: current_weights.get(k, 0) for k in REQUIRED_KEYS}
+
+    prompt = f"""You are autonomously evolving a self-improving stock trading model for low-float microcap momentum setups targeting 20%+ intraday spikes.
+
+You have TWO tasks:
+
+TASK 1 — HYPOTHESIS EVOLUTION: Generate pattern rules supported by the evidence. Assign a confidence score (0-100) to each.
+TASK 2 — WEIGHT OPTIMIZATION: Recommend new scoring weights for all 16 required keys. Assign an overall confidence score (0-100).
+
+## Current Auto AI Weights (integer scale 0-50; scorer normalises to 0-100 automatically)
+{json.dumps(current_display, indent=2)}
+
+Weight definitions:
+- rel_vol_50x/25x/10x/5x: relative volume tiers (highest matching tier scores, must be ordered descending)
+- daily_sweet_20_40/daily_ok_10_20/daily_ok_40_100: daily gain tiers
+- sideways_chop: 10-day range <20% (compression before move)
+- yesterday_green: prior day closed positive
+- shares_lt10m/lt30m/lt100m: float/shares tiers (must be ordered descending)
+- no_news_bonus: no recent news catalyst (organic move)
+- high_cash_bonus: cash/share > price
+- institution_moderate/strong: institutional ownership tiers
+
+## Evidence
+{backtest_section}
+
+{hyp_section}
+
+{feedback_section}
+
+{trades_section}
+
+## Confidence Guidelines
+- Hypothesis confidence >= 80: will be AUTO-ACTIVATED immediately (no admin review)
+- Hypothesis confidence 50-79: goes to pending for admin review
+- Hypothesis confidence < 50: omit entirely
+- Weight confidence >= 75: weights will be AUTO-APPLIED (if >= 10 closed trades exist)
+- Weight confidence < 75: weights will be logged but NOT applied
+
+## Constraints
+- All weight values must be integers 0-50
+- Tier ordering: rel_vol_50x >= rel_vol_25x >= rel_vol_10x >= rel_vol_5x
+- Tier ordering: shares_lt10m >= shares_lt30m >= shares_lt100m
+- Include all 16 required weight keys in the output JSON
+
+## Required Output Format
+Respond with ONLY a valid JSON object (no markdown, no code fences, no other text):
+
+{{"hypotheses": [{{"text": "specific pattern rule", "source": "historical|feedback|both", "confidence": 85}}, {{"text": "another rule", "source": "historical", "confidence": 72}}], "weights": {{"rel_vol_50x": 30, "rel_vol_25x": 22, "rel_vol_10x": 15, "rel_vol_5x": 7, "daily_sweet_20_40": 10, "daily_ok_10_20": 5, "daily_ok_40_100": 5, "sideways_chop": 8, "yesterday_green": 7, "shares_lt10m": 30, "shares_lt30m": 18, "shares_lt100m": 8, "no_news_bonus": 5, "high_cash_bonus": 5, "institution_moderate": 2, "institution_strong": 5}}, "weight_confidence": 82, "rationale": "2-3 sentences citing specific evidence that drove changes", "summary": "one sentence max 20 words", "suggestions": ["new signal idea 1", "new signal idea 2", "new signal idea 3"]}}"""
+
+    try:
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1200,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = message.content[0].text.strip()
+
+        # Try to parse as JSON directly; fallback: extract from code fence
+        result = None
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError:
+            import re
+            m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+            if m:
+                result = json.loads(m.group(1))
+            else:
+                # Last resort: find first { ... } block
+                m2 = re.search(r"\{.*\}", text, re.DOTALL)
+                if m2:
+                    result = json.loads(m2.group(0))
+                else:
+                    raise ValueError(f"Could not parse JSON from response: {text[:300]}")
+
+        # Validate and clamp all required weight keys
+        weights = result.get("weights", {})
+        for key in REQUIRED_KEYS:
+            weights[key] = max(0, min(50, int(weights.get(key, current_weights.get(key, 5)))))
+
+        # Enforce tier ordering constraints
+        weights["rel_vol_25x"]  = min(weights["rel_vol_25x"],  weights["rel_vol_50x"])
+        weights["rel_vol_10x"]  = min(weights["rel_vol_10x"],  weights["rel_vol_25x"])
+        weights["rel_vol_5x"]   = min(weights["rel_vol_5x"],   weights["rel_vol_10x"])
+        weights["shares_lt30m"] = min(weights["shares_lt30m"], weights["shares_lt10m"])
+        weights["shares_lt100m"]= min(weights["shares_lt100m"],weights["shares_lt30m"])
+        result["weights"] = weights
+
+        # Ensure weight_confidence is an int 0-100
+        result["weight_confidence"] = max(0, min(100, int(result.get("weight_confidence", 0))))
+
+        # Ensure hypotheses is a list of dicts with required keys
+        hyps = result.get("hypotheses", [])
+        clean_hyps = []
+        for h in hyps:
+            if isinstance(h, dict) and h.get("text") and isinstance(h.get("confidence"), (int, float)):
+                clean_hyps.append({
+                    "text":       str(h["text"])[:400],
+                    "source":     str(h.get("source", ""))[:20],
+                    "confidence": max(0, min(100, int(h["confidence"]))),
+                })
+        result["hypotheses"] = clean_hyps
+
+        return result
+
+    except Exception as e:
+        return {
+            "hypotheses":       [],
+            "weights":          current_weights,
+            "weight_confidence": 0,
+            "rationale":        "",
+            "summary":          "",
+            "suggestions":      [],
+            "error":            str(e),
+        }
+
+
 def _fetch_historical_factors(symbol: str, move_date: date) -> str | None:
     """
     Fetches actual yfinance data for symbol around move_date and returns

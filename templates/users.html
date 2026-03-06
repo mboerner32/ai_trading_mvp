@@ -55,12 +55,6 @@
     {% if request.query_params.get('error') %}
     <div class="alert alert-error">Username must not be empty and password must be at least 8 characters.</div>
     {% endif %}
-    {% if request.query_params.get('invited') %}
-    <div class="alert alert-success">Invite email sent successfully.</div>
-    {% endif %}
-    {% if request.query_params.get('invite_error') %}
-    <div class="alert alert-error">Failed to send invite — check GMAIL_USER and GMAIL_APP_PASSWORD env vars.</div>
-    {% endif %}
     {% if request.query_params.get('tg_added') %}
     <div class="alert alert-success">Telegram recipient added. They will receive all future alerts.</div>
     {% endif %}
@@ -72,20 +66,13 @@
 
     <!-- Invite new user -->
     <div class="card" style="margin-bottom:28px;">
-        <h3 style="margin:0 0 16px; font-size:16px;">Invite New User</h3>
-        <form method="post" action="/users/invite">
-            <div class="form-row">
-                <div>
-                    <label>Name</label>
-                    <input type="text" name="name" required placeholder="e.g. Kelly" autocomplete="off">
-                </div>
-                <div>
-                    <label>Email Address</label>
-                    <input type="email" name="email" required placeholder="e.g. kelly@example.com" autocomplete="off">
-                </div>
-            </div>
-            <button type="submit" class="btn btn-primary">Send Invite Email</button>
-        </form>
+        <h3 style="margin:0 0 8px; font-size:16px;">Invite New User</h3>
+        <p style="color:#6b7280; font-size:13px; margin:0 0 14px;">Share this link via text or iMessage. They'll be prompted to set up their account.</p>
+        <div style="display:flex; gap:10px; align-items:center;">
+            <input type="text" id="invite-url" value="{{ request.url.scheme }}://{{ request.url.netloc }}/invite" readonly
+                   style="background:#f9fafb; color:#374151; cursor:default; margin-bottom:0; flex:1;">
+            <button onclick="copyInviteLink()" class="btn btn-primary" style="white-space:nowrap;" id="copy-btn">Copy Link</button>
+        </div>
     </div>
 
     <!-- Current users -->
@@ -286,6 +273,21 @@ async function addUser(chatId, label, btn) {
         btn.textContent = 'Error';
         btn.disabled = false;
     }
+}
+
+function copyInviteLink() {
+    const input = document.getElementById('invite-url');
+    const btn = document.getElementById('copy-btn');
+    navigator.clipboard.writeText(input.value).then(() => {
+        btn.textContent = 'Copied!';
+        btn.style.background = '#10b981';
+        setTimeout(() => { btn.textContent = 'Copy Link'; btn.style.background = ''; }, 2000);
+    }).catch(() => {
+        input.select();
+        document.execCommand('copy');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy Link'; }, 2000);
+    });
 }
 
 function escHtml(s) {
