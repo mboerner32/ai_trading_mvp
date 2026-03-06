@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>You're Invited — Reno Robs Trading</title>
+    <link rel="icon" type="image/png" href="/static/logo.png">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            background: #f7f9fc;
+            color: #1f2937;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px 16px;
+        }
+        .card {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+            max-width: 480px;
+            width: 100%;
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+            color: white;
+            padding: 32px 32px 28px;
+            text-align: center;
+        }
+        .header img {
+            width: 56px; height: 56px;
+            border-radius: 12px;
+            margin-bottom: 14px;
+            background: rgba(255,255,255,0.15);
+        }
+        .header h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+        .header p  { font-size: 14px; opacity: 0.85; line-height: 1.5; }
+
+        .body { padding: 28px 32px; }
+
+        .step {
+            display: flex;
+            gap: 16px;
+            align-items: flex-start;
+            margin-bottom: 28px;
+        }
+        .step-num {
+            width: 32px; height: 32px; border-radius: 50%;
+            background: #ede9fe; color: #7c3aed;
+            font-weight: 700; font-size: 15px;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0; margin-top: 2px;
+        }
+        .step-body h3 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+        .step-body p  { font-size: 13px; color: #6b7280; line-height: 1.55; }
+
+        .btn {
+            display: block;
+            background: #4f46e5;
+            color: white;
+            text-decoration: none;
+            text-align: center;
+            padding: 14px;
+            border-radius: 10px;
+            font-weight: 700;
+            font-size: 15px;
+            margin-bottom: 12px;
+            transition: background 0.15s;
+        }
+        .btn:hover { background: #4338ca; }
+        .btn.tg {
+            background: #0088cc;
+        }
+        .btn.tg:hover { background: #0077b5; }
+
+        .qr-wrap {
+            text-align: center;
+            margin: 12px 0 4px;
+        }
+        .qr-wrap img {
+            width: 130px; height: 130px;
+            border-radius: 10px;
+            border: 1px solid #e5e7eb;
+        }
+        .qr-label {
+            font-size: 12px; color: #9ca3af; margin-top: 6px;
+        }
+
+        .divider {
+            border: none;
+            border-top: 1px solid #f3f4f6;
+            margin: 4px 0 28px;
+        }
+
+        .footer {
+            text-align: center;
+            font-size: 12px;
+            color: #9ca3af;
+            padding: 0 32px 24px;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="header">
+        <img src="/static/logo.png" alt="Logo" onerror="this.style.display='none'">
+        <h1>You're Invited</h1>
+        <p>Join Reno Robs Trading — AI-powered stock alerts<br>and real-time scan results.</p>
+    </div>
+
+    <div class="body">
+
+        <!-- Step 1: Create account -->
+        <div class="step">
+            <div class="step-num">1</div>
+            <div class="step-body">
+                <h3>Create your account</h3>
+                <p>Tap the button below to sign up and access the live trading dashboard.</p>
+            </div>
+        </div>
+        <a href="/login" class="btn">Create Account →</a>
+
+        <hr class="divider">
+
+        <!-- Step 2: Telegram -->
+        <div class="step">
+            <div class="step-num">2</div>
+            <div class="step-body">
+                <h3>Sign up for Telegram alerts</h3>
+                <p>Get instant notifications when a high-score stock is detected. Scan the QR code or tap the button below on your phone.</p>
+            </div>
+        </div>
+
+        {% if bot_username %}
+        <div class="qr-wrap">
+            <img src="https://api.qrserver.com/v1/create-qr-code/?data=https://t.me/{{ bot_username }}&size=130x130&margin=2"
+                 alt="Telegram QR code">
+            <div class="qr-label">Scan with your phone camera</div>
+        </div>
+        <a href="https://t.me/{{ bot_username }}" class="btn tg" target="_blank">
+            Open @{{ bot_username }} on Telegram →
+        </a>
+        <p style="font-size:12px; color:#9ca3af; text-align:center; margin-top:6px;">
+            Tap <strong>Start</strong> in Telegram to activate alerts.
+        </p>
+        {% else %}
+        <p style="font-size:13px; color:#9ca3af; text-align:center; padding:12px 0;">
+            Telegram bot not configured — contact admin to set up alerts.
+        </p>
+        {% endif %}
+
+    </div>
+
+    <div class="footer">
+        Questions? Reply to this email or message the admin.<br>
+        Reno Robs Trading · Powered by AI
+    </div>
+</div>
+</body>
+</html>

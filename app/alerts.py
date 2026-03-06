@@ -11,6 +11,7 @@ import smtplib
 import requests
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
 from app.database import get_telegram_recipients
 
 
@@ -33,6 +34,94 @@ def _send_email(subject: str, body: str):
         print(f"Alert email sent: {subject}")
     except Exception as e:
         print(f"Alert email failed: {e}")
+
+
+def send_invite_email(to_email: str, name: str, invite_url: str, bot_username: str = "") -> bool:
+    """Send an HTML invite email to a new user. Returns True on success."""
+    gmail_user = os.environ.get("GMAIL_USER")
+    gmail_pwd  = os.environ.get("GMAIL_APP_PASSWORD")
+    if not all([gmail_user, gmail_pwd]):
+        return False
+
+    tg_section = ""
+    if bot_username:
+        tg_section = f"""
+        <div style="margin-top:28px; padding-top:28px; border-top:1px solid #f3f4f6;">
+          <p style="font-size:15px; font-weight:600; margin:0 0 6px;">Step 2 — Sign up for Telegram alerts</p>
+          <p style="font-size:13px; color:#6b7280; margin:0 0 16px;">
+            Get instant alerts when a high-score stock is detected.
+            Open <a href="https://t.me/{bot_username}" style="color:#0088cc;">@{bot_username}</a>
+            on Telegram, tap <strong>Start</strong>, and send any message to activate.
+          </p>
+          <div style="text-align:center; margin:16px 0;">
+            <img src="https://api.qrserver.com/v1/create-qr-code/?data=https://t.me/{bot_username}&size=140x140&margin=2"
+                 width="140" height="140"
+                 style="border-radius:10px; border:1px solid #e5e7eb;"
+                 alt="Telegram QR code">
+            <p style="font-size:11px; color:#9ca3af; margin-top:6px;">Scan with your phone camera</p>
+          </div>
+          <a href="https://t.me/{bot_username}"
+             style="display:block; background:#0088cc; color:white; text-decoration:none;
+                    text-align:center; padding:12px; border-radius:8px; font-weight:600; font-size:14px;">
+            Open @{bot_username} on Telegram →
+          </a>
+        </div>"""
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="margin:0; padding:24px 16px; background:#f7f9fc;
+             font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+  <div style="max-width:480px; margin:0 auto; background:white; border-radius:16px;
+              box-shadow:0 4px 24px rgba(0,0,0,0.08); overflow:hidden;">
+
+    <div style="background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);
+                color:white; padding:32px; text-align:center;">
+      <div style="font-size:28px; margin-bottom:10px;">📈</div>
+      <h1 style="margin:0 0 8px; font-size:22px; font-weight:700;">You're Invited</h1>
+      <p style="margin:0; font-size:14px; opacity:0.85; line-height:1.5;">
+        Hi {name}, you've been invited to join<br><strong>Reno Robs Trading</strong> —
+        AI-powered stock alerts and real-time scan results.
+      </p>
+    </div>
+
+    <div style="padding:28px 32px;">
+      <p style="font-size:15px; font-weight:600; margin:0 0 6px;">Step 1 — Create your account</p>
+      <p style="font-size:13px; color:#6b7280; margin:0 0 16px;">
+        Click below to set up your login and access the live dashboard.
+      </p>
+      <a href="{invite_url}"
+         style="display:block; background:#4f46e5; color:white; text-decoration:none;
+                text-align:center; padding:13px; border-radius:8px;
+                font-weight:700; font-size:15px;">
+        Create Account →
+      </a>
+      {tg_section}
+    </div>
+
+    <div style="text-align:center; padding:0 32px 24px;
+                font-size:12px; color:#9ca3af; line-height:1.6;">
+      Questions? Reply to this email.<br>
+      Reno Robs Trading · Powered by AI
+    </div>
+  </div>
+</body>
+</html>"""
+
+    msg = MIMEMultipart("alternative")
+    msg["From"]    = gmail_user
+    msg["To"]      = to_email
+    msg["Subject"] = "You're invited to Reno Robs Trading"
+    msg.attach(MIMEText(html, "html"))
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+            s.login(gmail_user, gmail_pwd)
+            s.sendmail(gmail_user, to_email, msg.as_string())
+        print(f"Invite email sent to {to_email}")
+        return True
+    except Exception as e:
+        print(f"Invite email failed: {e}")
+        return False
 
 
 def _send_telegram_admin(message: str):

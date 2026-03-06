@@ -24,7 +24,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.broker import submit_market_order, close_position as broker_close, is_configured as broker_configured, get_account as broker_get_account
 from app.scanner import run_scan, get_finviz_quotes, prepare_dataframe
 from app.validator import validate_scan_results
-from app.alerts import send_scan_alert, send_take_profit_alert, send_watchlist_alert, _send_telegram_admin
+from app.alerts import send_scan_alert, send_take_profit_alert, send_watchlist_alert, _send_telegram_admin, send_invite_email
 from app.backfill import build_historical_dataset
 from app.lstm_model import train_lstm, predict_hit_probability, get_lstm_status, get_sequence_stats
 from app.ai_agent import (
@@ -620,6 +620,53 @@ def health():
 @app.head("/")
 def root():
     return RedirectResponse("/login")
+
+
+# ---------------- INVITE ----------------
+@app.get("/invite", response_class=HTMLResponse)
+def invite_page(request: Request):
+    """Public invite page — no login required. Shows account creation link + Telegram QR."""
+    import requests as _req
+    bot_username = ""
+    token = _os.environ.get("TELEGRAM_BOT_TOKEN")
+    if token:
+        try:
+            r = _req.get(f"https://api.telegram.org/bot{token}/getMe", timeout=5)
+            if r.ok:
+                bot_username = r.json().get("result", {}).get("username", "")
+        except Exception:
+            pass
+    return templates.TemplateResponse(
+        "invite.html",
+        {"request": request, "bot_username": bot_username}
+    )
+
+
+@app.post("/users/invite")
+def users_send_invite(
+    request: Request,
+    name:  str = Form(...),
+    email: str = Form(...),
+):
+    if "user" not in request.session or not _require_admin(request):
+        return RedirectResponse("/login", status_code=303)
+
+    bot_username = ""
+    token = _os.environ.get("TELEGRAM_BOT_TOKEN")
+    if token:
+        try:
+            import requests as _req
+            r = _req.get(f"https://api.telegram.org/bot{token}/getMe", timeout=5)
+            if r.ok:
+                bot_username = r.json().get("result", {}).get("username", "")
+        except Exception:
+            pass
+
+    invite_url = str(request.base_url).rstrip("/") + "/invite"
+    ok = send_invite_email(email.strip(), name.strip(), invite_url, bot_username)
+    if ok:
+        return RedirectResponse("/users?invited=1", status_code=303)
+    return RedirectResponse("/users?invite_error=1", status_code=303)
 
 
 # ---------------- LOGIN ----------------
