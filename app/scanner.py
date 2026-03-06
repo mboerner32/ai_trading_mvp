@@ -45,17 +45,18 @@ def _tod_factor() -> float:
 # ---------------------------------------------------
 # FINVIZ FILTERS
 # v=161 = Performance view — includes Rel Volume column
-# geo:usa, current volume > 1M, price < $5, relvol > 10, today > +10%
+# ft=4  = All markets (no geo filter — includes non-US exchanges)
+# current volume > 1M, price < $5, relvol > 10, today > +10%
 # ---------------------------------------------------
 BASE_URL = (
     "https://finviz.com/screener.ashx?"
-    "v=161&f=geo_usa,sh_curvol_o1000,"
-    "sh_price_u5,sh_relvol_o10,ta_perf_d10o"
+    "v=161&f=sh_curvol_o1000,"
+    "sh_price_u5,sh_relvol_o10,ta_perf_d10o&ft=4"
 )
 BASE_URL_PREMARKET = (
     "https://finviz.com/screener.ashx?"
-    "v=161&f=geo_usa,sh_curvol_o1000,"
-    "sh_price_u5,sh_relvol_o5,ta_perf_d5o"
+    "v=161&f=sh_curvol_o1000,"
+    "sh_price_u5,sh_relvol_o5,ta_perf_d5o&ft=4"
 )
 
 _FV_HEADERS = {
