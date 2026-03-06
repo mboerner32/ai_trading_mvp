@@ -251,8 +251,15 @@ DEFAULT_SQUEEZE_WEIGHTS = {
     "institution_moderate": 2,    # 15–39% institutional ownership
     "institution_strong":   5,    # 40%+ benchmark — holds the floor
     "sector_biotech_bonus": 5,    # Healthcare/Biotech historically outperforms
+    # Optional criteria — disabled (0) by default, Auto AI can enable
+    "rsi_momentum_bonus":     0,  # RSI 50–70: healthy uptrend, not overbought
+    "macd_positive_bonus":    0,  # Positive MACD: bullish momentum crossover
+    "bb_upper_breakout":      0,  # Bollinger %B > 0.85: breaking above upper band
+    "consecutive_green_bonus": 0, # 2+ consecutive green days: sustained buying
+    "low_float_ratio_bonus":  0,  # Float < 40% of shares: tighter float, faster moves
 }
 # Max with defaults: 30+10+8+7+30+5+5+5+5 = 105 → normalised to 100
+# Optional criteria default to 0 so they don't affect the denominator until enabled
 
 
 def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
@@ -408,6 +415,36 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
         score += w.get("no_news_bonus", 5)
 
     # ------------------------------------------------------------------
+    # OPTIONAL CRITERIA — disabled by default (weight=0), Auto AI can enable
+    # ------------------------------------------------------------------
+    if w.get("rsi_momentum_bonus", 0) > 0:
+        rsi_val = safe_float(latest.get("rsi_14"))
+        if rsi_val is not None and 50 < rsi_val <= 70:
+            score += w["rsi_momentum_bonus"]
+
+    if w.get("macd_positive_bonus", 0) > 0:
+        macd_val = safe_float(latest.get("macd_norm"))
+        if macd_val is not None and macd_val > 0:
+            score += w["macd_positive_bonus"]
+
+    if w.get("bb_upper_breakout", 0) > 0:
+        bb_pct_val = safe_float(latest.get("bb_pct"))
+        if bb_pct_val is not None and bb_pct_val > 0.85:
+            score += w["bb_upper_breakout"]
+
+    if w.get("consecutive_green_bonus", 0) > 0 and len(df) >= 2:
+        today_ret = safe_float(latest.get("daily_return"))
+        prev_ret  = safe_float(df.iloc[-2].get("daily_return"))
+        if today_ret is not None and prev_ret is not None and today_ret > 0 and prev_ret > 0:
+            score += w["consecutive_green_bonus"]
+
+    if w.get("low_float_ratio_bonus", 0) > 0 and fundamentals:
+        f_shares = fundamentals.get("float_shares")
+        s_out    = fundamentals.get("shares_outstanding")
+        if f_shares and s_out and s_out > 0 and (f_shares / s_out) < 0.40:
+            score += w["low_float_ratio_bonus"]
+
+    # ------------------------------------------------------------------
     # NORMALISE TO 0–100
     # With default weights max_score = 100, so no change.
     # When AI adjusts weights, max_score re-normalises automatically.
@@ -425,7 +462,13 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
         max(w.get("institution_strong", 5),
             w.get("institution_moderate", 2), 0) +
         w.get("sector_biotech_bonus", 5) +
-        w.get("no_news_bonus", 5)
+        w.get("no_news_bonus", 5) +
+        # Optional criteria (contribute 0 when disabled)
+        w.get("rsi_momentum_bonus", 0) +
+        w.get("macd_positive_bonus", 0) +
+        w.get("bb_upper_breakout", 0) +
+        w.get("consecutive_green_bonus", 0) +
+        w.get("low_float_ratio_bonus", 0)
     )
     if max_score <= 0:
         max_score = 100

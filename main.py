@@ -272,8 +272,9 @@ def _auto_ai_optimize():
         print(f"AUTO-AI: {new_outcomes} new outcomes since last run — starting autonomous optimization")
 
         all_feedback    = get_all_feedback()
-        prior           = get_hypothesis()
-        prior_text      = prior["content"] if prior else None
+        # Use curated active rules (approved + auto-applied) as prior context so the
+        # optimization loop builds on what's actually been validated, not the raw blob.
+        prior_text      = get_active_hypothesis_text()
         autoai_w_data   = get_autoai_weights()
         current_weights = autoai_w_data["weights"] if autoai_w_data else DEFAULT_SQUEEZE_WEIGHTS.copy()
         all_trades      = get_trade_history()
@@ -288,16 +289,19 @@ def _auto_ai_optimize():
             print(f"AUTO-AI: optimization failed — {result['error']}")
             return
 
-        # Guardrail: cap weight drift at ±40% of defaults
+        # Guardrail: allow full disabling (floor=0), cap upward drift at default+40%
         new_weights = result.get("weights", current_weights)
         for key, default_val in DEFAULT_SQUEEZE_WEIGHTS.items():
             if key not in new_weights:
+                # Optional criteria (default=0) stay 0 if AI didn't mention them
                 new_weights[key] = default_val
-            max_change = default_val * AUTOAI_MAX_WEIGHT_DRIFT
-            new_weights[key] = max(
-                int(default_val - max_change),
-                min(int(default_val + max_change), int(new_weights[key]))
-            )
+            if default_val == 0:
+                # Optional criterion: AI can enable up to 20 pts, or leave at 0
+                new_weights[key] = max(0, min(20, int(new_weights[key])))
+            else:
+                # Existing criterion: allow full disable (0) or cap at default+40%
+                max_val = int(default_val * (1 + AUTOAI_MAX_WEIGHT_DRIFT))
+                new_weights[key] = max(0, min(max_val, int(new_weights[key])))
 
         hypotheses_auto    = 0
         hypotheses_pending = 0

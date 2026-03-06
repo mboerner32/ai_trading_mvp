@@ -965,7 +965,13 @@ def autonomous_optimize(
         "shares_lt10m", "shares_lt30m", "shares_lt100m",
         "no_news_bonus", "high_cash_bonus",
         "institution_moderate", "institution_strong",
+        "sector_biotech_bonus",
     ]
+    OPTIONAL_KEYS = [
+        "rsi_momentum_bonus", "macd_positive_bonus", "bb_upper_breakout",
+        "consecutive_green_bonus", "low_float_ratio_bonus",
+    ]
+    ALL_KEYS = REQUIRED_KEYS + OPTIONAL_KEYS
 
     # ---- Format backtest section (reuse same logic as optimize_complex_ai_weights) ----
     if opt_data and opt_data.get("total_trades", 0) >= 5:
@@ -1021,27 +1027,37 @@ Shares: <1M: {fmt(so.get("<1M"))} | 1-5M: {fmt(so.get("1-5M"))} | 5-10M: {fmt(so
     else:
         trades_section = "CLOSED PAPER TRADES: None yet."
 
-    current_display = {k: current_weights.get(k, 0) for k in REQUIRED_KEYS}
+    current_display = {k: current_weights.get(k, 0) for k in ALL_KEYS}
 
     prompt = f"""You are autonomously evolving a self-improving stock trading model for low-float microcap momentum setups targeting 20%+ intraday spikes.
 
 You have TWO tasks:
 
 TASK 1 — HYPOTHESIS EVOLUTION: Generate pattern rules supported by the evidence. Assign a confidence score (0-100) to each.
-TASK 2 — WEIGHT OPTIMIZATION: Recommend new scoring weights for all 16 required keys. Assign an overall confidence score (0-100).
+TASK 2 — CRITERIA & WEIGHT OPTIMIZATION: Decide which scoring criteria to keep, remove, or add. Set weight=0 to disable a criterion, 1-50 to enable it.
 
-## Current Auto AI Weights (integer scale 0-50; scorer normalises to 0-100 automatically)
+## Current Auto AI Weights (0 = disabled, 1–50 = enabled; scorer normalises to 0–100 automatically)
 {json.dumps(current_display, indent=2)}
 
-Weight definitions:
-- rel_vol_50x/25x/10x/5x: relative volume tiers (highest matching tier scores, must be ordered descending)
-- daily_sweet_20_40/daily_ok_10_20/daily_ok_40_100: daily gain tiers
-- sideways_chop: 10-day range <20% (compression before move)
-- yesterday_green: prior day closed positive
-- shares_lt10m/lt30m/lt100m: float/shares tiers (must be ordered descending)
-- no_news_bonus: no recent news catalyst (organic move)
-- high_cash_bonus: cash/share > price
-- institution_moderate/strong: institutional ownership tiers
+## Scoring Criteria Control
+EXISTING CRITERIA — set to 0 to remove if evidence shows it reduces win rate or % return:
+  rel_vol_50x, rel_vol_25x, rel_vol_10x, rel_vol_5x  [relative volume tiers, keep descending order]
+  daily_sweet_20_40, daily_ok_10_20, daily_ok_40_100  [daily gain tiers]
+  shares_lt10m, shares_lt30m, shares_lt100m            [share count tiers, keep descending order]
+  sideways_chop    10-day price range <20%: consolidation before breakout
+  yesterday_green  Prior day closed positive
+  no_news_bonus    No recent news: organic move, not headline-chasing
+  high_cash_bonus  Cash per share > stock price: balance sheet safety
+  institution_moderate  15-39% institutional ownership
+  institution_strong    40%+ institutional ownership: holds the floor
+  sector_biotech_bonus  Healthcare / Biotech sector
+
+OPTIONAL CRITERIA — disabled by default (weight=0), set 1-20 to enable if evidence supports:
+  rsi_momentum_bonus      RSI 50-70: healthy uptrend, not yet overbought
+  macd_positive_bonus     Positive MACD: bullish momentum crossover confirmed
+  bb_upper_breakout       Bollinger %B > 0.85: price breaking above upper Bollinger Band
+  consecutive_green_bonus 2+ consecutive green days: sustained buying pressure
+  low_float_ratio_bonus   Float < 40% of shares outstanding: tight float amplifies moves
 
 ## Evidence
 {backtest_section}
@@ -1060,15 +1076,15 @@ Weight definitions:
 - Weight confidence < 75: weights will be logged but NOT applied
 
 ## Constraints
-- All weight values must be integers 0-50
+- All weight values must be integers 0-50 (optional criteria: max 20)
 - Tier ordering: rel_vol_50x >= rel_vol_25x >= rel_vol_10x >= rel_vol_5x
 - Tier ordering: shares_lt10m >= shares_lt30m >= shares_lt100m
-- Include all 16 required weight keys in the output JSON
+- Include ALL 22 keys in the output weights dict (set unwanted ones to 0)
 
 ## Required Output Format
 Respond with ONLY a valid JSON object (no markdown, no code fences, no other text):
 
-{{"hypotheses": [{{"text": "specific pattern rule", "source": "historical|feedback|both", "confidence": 85}}, {{"text": "another rule", "source": "historical", "confidence": 72}}], "weights": {{"rel_vol_50x": 30, "rel_vol_25x": 22, "rel_vol_10x": 15, "rel_vol_5x": 7, "daily_sweet_20_40": 10, "daily_ok_10_20": 5, "daily_ok_40_100": 5, "sideways_chop": 8, "yesterday_green": 7, "shares_lt10m": 30, "shares_lt30m": 18, "shares_lt100m": 8, "no_news_bonus": 5, "high_cash_bonus": 5, "institution_moderate": 2, "institution_strong": 5}}, "weight_confidence": 82, "rationale": "2-3 sentences citing specific evidence that drove changes", "summary": "one sentence max 20 words", "suggestions": ["new signal idea 1", "new signal idea 2", "new signal idea 3"]}}"""
+{{"hypotheses": [{{"text": "specific pattern rule", "source": "historical|feedback|both", "confidence": 85}}], "weights": {{"rel_vol_50x": 30, "rel_vol_25x": 22, "rel_vol_10x": 15, "rel_vol_5x": 7, "daily_sweet_20_40": 10, "daily_ok_10_20": 5, "daily_ok_40_100": 5, "sideways_chop": 8, "yesterday_green": 7, "shares_lt10m": 30, "shares_lt30m": 18, "shares_lt100m": 8, "no_news_bonus": 5, "high_cash_bonus": 5, "institution_moderate": 2, "institution_strong": 5, "sector_biotech_bonus": 5, "rsi_momentum_bonus": 0, "macd_positive_bonus": 0, "bb_upper_breakout": 0, "consecutive_green_bonus": 0, "low_float_ratio_bonus": 0}}, "weight_confidence": 82, "rationale": "2-3 sentences citing specific evidence that drove changes", "summary": "one sentence max 20 words", "suggestions": ["new signal idea 1", "new signal idea 2"]}}"""
 
     try:
         message = client.messages.create(
@@ -1095,10 +1111,12 @@ Respond with ONLY a valid JSON object (no markdown, no code fences, no other tex
                 else:
                     raise ValueError(f"Could not parse JSON from response: {text[:300]}")
 
-        # Validate and clamp all required weight keys
+        # Validate and clamp all weight keys
         weights = result.get("weights", {})
         for key in REQUIRED_KEYS:
             weights[key] = max(0, min(50, int(weights.get(key, current_weights.get(key, 5)))))
+        for key in OPTIONAL_KEYS:
+            weights[key] = max(0, min(20, int(weights.get(key, 0))))
 
         # Enforce tier ordering constraints
         weights["rel_vol_25x"]  = min(weights["rel_vol_25x"],  weights["rel_vol_50x"])
