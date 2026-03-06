@@ -1155,6 +1155,121 @@ Respond with ONLY a valid JSON object (no markdown, no code fences, no other tex
         }
 
 
+def chat_with_model(message: str, history: list, context: dict) -> dict:
+    """
+    Multi-turn chat with the AI model advisor.
+
+    history: list of {"role": "user"|"assistant", "content": str}
+    context: dict with hypothesis_rules, squeeze_weights, autoai_weights, opt_data, feedback, closed_trades
+
+    Returns {"reply": str, "actions": list[dict]}
+    Each action dict has at minimum: "action" key + whatever fields that action needs.
+    """
+    import json as _json
+
+    # ---- Format context sections ----
+    rules = context.get("hypothesis_rules", [])
+    if rules:
+        rule_lines = []
+        for r in rules:
+            status_tag = f"[{r.get('status','?').upper()}]"
+            ai_tag = " [AUTO-AI]" if r.get("auto_applied") else ""
+            conf = f" conf={r['confidence_score']}%" if r.get("confidence_score") else ""
+            rule_lines.append(f"  #{r['id']} {status_tag}{ai_tag}{conf}: {r.get('rule_text','')}")
+        rules_section = "HYPOTHESIS RULES:\n" + "\n".join(rule_lines)
+    else:
+        rules_section = "HYPOTHESIS RULES: None yet."
+
+    sq_w = context.get("squeeze_weights")
+    ai_w = context.get("autoai_weights")
+    weights_section = ""
+    if sq_w:
+        weights_section += f"COMPLEX+AI WEIGHTS (last updated {sq_w.get('updated_at','?')[:10]}):\n{_json.dumps(sq_w.get('weights', {}))}\n"
+    if ai_w:
+        weights_section += f"AUTO AI WEIGHTS (last updated {ai_w.get('updated_at','?')[:10]}):\n{_json.dumps(ai_w.get('weights', {}))}\n"
+    if not weights_section:
+        weights_section = "WEIGHTS: Using defaults (no custom weights saved yet)."
+
+    opt = context.get("opt_data") or {}
+    if opt.get("total_trades", 0) >= 5:
+        perf_section = f"BACKTEST: {opt['total_trades']} trades with known outcomes."
+    else:
+        perf_section = "BACKTEST: Insufficient data (<5 trades with outcomes)."
+
+    fb = context.get("feedback", [])
+    if fb:
+        fb_lines = [f"  - {f.get('symbol','?')} [{f.get('outcome_tag','')}]: {(f.get('user_text') or '')[:100]}" for f in fb]
+        feedback_section = "RECENT FEEDBACK:\n" + "\n".join(fb_lines)
+    else:
+        feedback_section = "RECENT FEEDBACK: None."
+
+    trades = context.get("closed_trades", [])
+    if trades:
+        t_lines = [f"  - {t.get('symbol','?')}: {t.get('pnl_pct') or t.get('realized_pnl') or 0:+.1f}%" for t in trades]
+        trades_section = "RECENT CLOSED TRADES:\n" + "\n".join(t_lines)
+    else:
+        trades_section = "RECENT CLOSED TRADES: None yet."
+
+    system_prompt = f"""You are an AI trading model advisor for a microcap momentum scanner targeting 20%+ intraday spikes.
+Your role: help the admin explore hypotheses, understand what's working, and decide how to update the model.
+Be concise, direct, and evidence-based.
+
+When you want to suggest an executable action, put it on its own line as valid JSON with an "action" key:
+{{"action": "activate_rule", "rule_id": 12, "label": "Activate: 'RSI 50-70 outperforms'"}}
+{{"action": "reject_rule", "rule_id": 8, "label": "Reject: 'no_news_bonus shows no edge'"}}
+{{"action": "add_rule", "text": "Specific pattern rule text here", "source": "discussion", "label": "Add new rule: brief description"}}
+{{"action": "update_weights", "model": "complex", "weights": {{}}, "rationale": "...", "summary": "one sentence", "label": "Update Complex+AI weights"}}
+{{"action": "update_weights", "model": "autoai", "weights": {{}}, "rationale": "...", "summary": "one sentence", "label": "Update Auto AI weights"}}
+
+Only suggest actions backed by evidence. For weight updates, include only the keys you want to change.
+
+## Current System State
+{rules_section}
+
+{weights_section}
+{perf_section}
+
+{feedback_section}
+
+{trades_section}"""
+
+    messages = []
+    for h in history:
+        if h.get("role") in ("user", "assistant") and h.get("content"):
+            messages.append({"role": h["role"], "content": h["content"]})
+    messages.append({"role": "user", "content": message})
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1000,
+            system=system_prompt,
+            messages=messages,
+        )
+        raw = response.content[0].text.strip()
+
+        # Parse out action JSON lines from the reply
+        reply_lines = []
+        actions = []
+        for line in raw.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("{") and stripped.endswith("}"):
+                try:
+                    obj = _json.loads(stripped)
+                    if "action" in obj:
+                        actions.append(obj)
+                        continue
+                except Exception:
+                    pass
+            reply_lines.append(line)
+
+        reply = "\n".join(reply_lines).strip()
+        return {"reply": reply, "actions": actions}
+
+    except Exception as e:
+        return {"reply": f"Sorry, I encountered an error: {e}", "actions": []}
+
+
 def _fetch_historical_factors(symbol: str, move_date: date) -> str | None:
     """
     Fetches actual yfinance data for symbol around move_date and returns

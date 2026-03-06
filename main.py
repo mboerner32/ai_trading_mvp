@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, Request, Form, BackgroundTasks
 from fastapi.responses import Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
@@ -41,6 +41,7 @@ from app.ai_agent import (
     optimize_complex_ai_weights,
     parse_rules_from_synthesis,
     autonomous_optimize,
+    chat_with_model,
 )
 from app.scoring_engine import DEFAULT_SQUEEZE_WEIGHTS, score_stock_squeeze
 from app.database import (
@@ -120,6 +121,9 @@ from app.database import (
     get_autoai_weights,
     save_autoai_weights,
     get_model_comparison_stats,
+    save_chat_suggestion,
+    get_chat_suggestions,
+    dismiss_chat_suggestion,
 )
 
 app = FastAPI()
@@ -1765,6 +1769,155 @@ def autoai_status(request: Request):
     rules = get_hypothesis_rules()
     auto_active = sum(1 for r in rules if r.get("auto_applied") and r["status"] == "active")
     return {"last_run": last_run, "auto_active_rules": auto_active}
+
+
+@app.post("/api/chat")
+async def api_chat(request: Request):
+    """AI model advisor chat endpoint. All logged-in users."""
+    if "user" not in request.session:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    body = await request.json()
+    message = (body.get("message") or "").strip()
+    history = body.get("history") or []
+    if not message:
+        return JSONResponse({"error": "Empty message"}, status_code=400)
+
+    context = {
+        "hypothesis_rules": get_hypothesis_rules(),
+        "squeeze_weights":  get_squeeze_weights(),
+        "autoai_weights":   get_autoai_weights(),
+        "opt_data":         get_optimization_data(),
+        "feedback":         get_all_feedback()[-8:],
+        "closed_trades":    [t for t in get_trade_history() if t.get("exit_price")][-10:],
+    }
+    result = chat_with_model(message, history, context)
+    return JSONResponse(result)
+
+
+@app.post("/api/chat/execute-action")
+async def api_chat_execute(request: Request):
+    """Execute an action suggested by the AI advisor. Admin only."""
+    if "user" not in request.session:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    if not _require_admin(request):
+        return JSONResponse({"error": "Admin only"}, status_code=403)
+    body = await request.json()
+    action = body.get("action")
+
+    if action == "activate_rule":
+        ok = update_rule_status(int(body["rule_id"]), "active")
+        return JSONResponse({"ok": ok, "message": "Rule activated." if ok else "Rule not found."})
+
+    elif action == "reject_rule":
+        ok = update_rule_status(int(body["rule_id"]), "rejected")
+        return JSONResponse({"ok": ok, "message": "Rule rejected." if ok else "Rule not found."})
+
+    elif action == "add_rule":
+        text = (body.get("text") or "").strip()
+        if not text:
+            return JSONResponse({"ok": False, "message": "Rule text is empty."})
+        save_hypothesis_rules([{"text": text, "source": body.get("source", "chat")}])
+        return JSONResponse({"ok": True, "message": "Rule added as pending — review it on the Analytics page."})
+
+    elif action == "update_weights":
+        model  = body.get("model", "complex")
+        weights    = body.get("weights") or {}
+        rationale  = body.get("rationale", "")
+        summary    = body.get("summary", "Updated via AI chat")
+        if not weights:
+            return JSONResponse({"ok": False, "message": "No weights provided."})
+        if model == "autoai":
+            # Merge with existing Auto AI weights so only changed keys are updated
+            existing = get_autoai_weights()
+            base = existing["weights"].copy() if existing else DEFAULT_SQUEEZE_WEIGHTS.copy()
+            base.update({k: int(v) for k, v in weights.items()})
+            save_autoai_weights(base, rationale, [], summary)
+        else:
+            existing = get_squeeze_weights()
+            base = existing["weights"].copy() if existing else DEFAULT_SQUEEZE_WEIGHTS.copy()
+            base.update({k: int(v) for k, v in weights.items()})
+            save_squeeze_weights(base, rationale, [], summary)
+            save_weight_changelog(base, rationale, [], summary)
+        model_label = "Auto AI" if model == "autoai" else "Complex+AI"
+        return JSONResponse({"ok": True, "message": f"{model_label} weights updated."})
+
+    return JSONResponse({"ok": False, "message": f"Unknown action: {action}"}, status_code=400)
+
+
+@app.post("/api/chat/suggest-action")
+async def api_chat_suggest(request: Request):
+    """Non-admin: queue an AI-suggested action for admin review."""
+    if "user" not in request.session:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    body = await request.json()
+    action = body.get("action") or {}
+    note = body.get("note", "")
+    if not action:
+        return JSONResponse({"ok": False, "message": "No action provided."})
+    suggestion_id = save_chat_suggestion(request.session["user"], action, note)
+    return JSONResponse({"ok": True, "message": "Suggestion sent to admin for review.", "id": suggestion_id})
+
+
+@app.get("/api/chat/suggestions")
+def api_get_suggestions(request: Request):
+    """Admin: get pending suggestions from non-admin users."""
+    if "user" not in request.session:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    if not _require_admin(request):
+        return JSONResponse({"error": "Admin only"}, status_code=403)
+    return JSONResponse({"suggestions": get_chat_suggestions("pending")})
+
+
+@app.post("/api/chat/suggestions/{suggestion_id}/approve")
+async def api_approve_suggestion(request: Request, suggestion_id: int):
+    """Admin: approve a suggestion — executes the action then marks it approved."""
+    if "user" not in request.session or not _require_admin(request):
+        return JSONResponse({"error": "Admin only"}, status_code=403)
+    suggestions = get_chat_suggestions("pending")
+    suggestion = next((s for s in suggestions if s["id"] == suggestion_id), None)
+    if not suggestion:
+        return JSONResponse({"ok": False, "message": "Suggestion not found."}, status_code=404)
+    # Execute the action (reuse same logic as execute-action)
+    action_body = suggestion["action"]
+    fake_request = request  # borrow session; action logic uses body not session
+    body = action_body
+    action = body.get("action")
+    ok_msg = "Approved and executed."
+    if action == "activate_rule":
+        update_rule_status(int(body["rule_id"]), "active")
+    elif action == "reject_rule":
+        update_rule_status(int(body["rule_id"]), "rejected")
+    elif action == "add_rule":
+        save_hypothesis_rules([{"text": body.get("text",""), "source": body.get("source","chat")}])
+    elif action == "update_weights":
+        model = body.get("model","complex")
+        weights = body.get("weights") or {}
+        rationale = body.get("rationale","")
+        summary = body.get("summary","Approved via chat suggestion")
+        if model == "autoai":
+            existing = get_autoai_weights()
+            base = existing["weights"].copy() if existing else DEFAULT_SQUEEZE_WEIGHTS.copy()
+            base.update({k: int(v) for k, v in weights.items()})
+            save_autoai_weights(base, rationale, [], summary)
+        else:
+            existing = get_squeeze_weights()
+            base = existing["weights"].copy() if existing else DEFAULT_SQUEEZE_WEIGHTS.copy()
+            base.update({k: int(v) for k, v in weights.items()})
+            save_squeeze_weights(base, rationale, [], summary)
+            save_weight_changelog(base, rationale, [], summary)
+    else:
+        ok_msg = f"Unknown action type: {action}"
+    dismiss_chat_suggestion(suggestion_id, "approved")
+    return JSONResponse({"ok": True, "message": ok_msg})
+
+
+@app.post("/api/chat/suggestions/{suggestion_id}/dismiss")
+async def api_dismiss_suggestion(request: Request, suggestion_id: int):
+    """Admin: dismiss a suggestion without executing."""
+    if "user" not in request.session or not _require_admin(request):
+        return JSONResponse({"error": "Admin only"}, status_code=403)
+    dismiss_chat_suggestion(suggestion_id, "dismissed")
+    return JSONResponse({"ok": True, "message": "Suggestion dismissed."})
 
 
 @app.post("/admin/test-autoai")

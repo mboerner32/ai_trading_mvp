@@ -291,6 +291,18 @@ def init_db():
             full_response             TEXT
         )
     """)
+
+    # Chat suggestions: non-admin users can queue action suggestions for admin review
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_suggestions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            suggested_by TEXT NOT NULL,
+            suggested_at TEXT NOT NULL,
+            action_json  TEXT NOT NULL,
+            note         TEXT,
+            status       TEXT NOT NULL DEFAULT 'pending'
+        )
+    """)
     conn.commit()
 
     conn.close()
@@ -2347,3 +2359,59 @@ def save_autoai_weights(weights: dict, rationale: str = "",
         """, (key, value, now))
     conn.commit()
     conn.close()
+
+
+# ---------------- CHAT SUGGESTIONS ----------------
+def save_chat_suggestion(suggested_by: str, action: dict, note: str = "") -> int:
+    """Save a non-admin user's suggested action for admin review. Returns new row id."""
+    import json as _json
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO chat_suggestions (suggested_by, suggested_at, action_json, note, status)
+        VALUES (?, ?, ?, ?, 'pending')
+    """, (suggested_by, datetime.utcnow().isoformat(), _json.dumps(action), note or ""))
+    row_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def get_chat_suggestions(status: str = "pending") -> list:
+    """Return chat suggestions filtered by status, newest first."""
+    import json as _json
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, suggested_by, suggested_at, action_json, note, status
+        FROM chat_suggestions WHERE status = ? ORDER BY id DESC
+    """, (status,))
+    rows = cursor.fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        try:
+            action = _json.loads(r["action_json"])
+        except Exception:
+            action = {}
+        result.append({
+            "id": r["id"],
+            "suggested_by": r["suggested_by"],
+            "suggested_at": r["suggested_at"],
+            "action": action,
+            "note": r["note"],
+            "status": r["status"],
+        })
+    return result
+
+
+def dismiss_chat_suggestion(suggestion_id: int, status: str = "dismissed") -> bool:
+    """Mark a suggestion as dismissed or approved."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE chat_suggestions SET status = ? WHERE id = ?", (status, suggestion_id))
+    ok = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return ok
