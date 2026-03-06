@@ -785,6 +785,14 @@ _scheduler.add_job(_check_watchlist, "cron", day_of_week="mon-fri",
                    hour="10-15", minute="15,45")
 _scheduler.start()
 
+# Warm up yfinance crumb on startup so the first scheduled scan doesn't hit a 401.
+# Yahoo Finance rotates crumbs periodically; this forces a fresh fetch at boot time.
+try:
+    yf.download("SPY", period="1d", interval="1d", progress=False, auto_adjust=False)
+    print("STARTUP: yfinance crumb refreshed ✓")
+except Exception as _yf_err:
+    print(f"STARTUP: yfinance warm-up failed (non-fatal) — {_yf_err}")
+
 # Log API key status at startup so it's visible in Render logs
 if _os.environ.get("ANTHROPIC_API_KEY"):
     print("STARTUP: ANTHROPIC_API_KEY is set ✓")
