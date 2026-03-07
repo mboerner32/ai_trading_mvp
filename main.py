@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.broker import submit_market_order, close_position as broker_close, is_configured as broker_configured, get_account as broker_get_account
-from app.scanner import run_scan, get_finviz_quotes, prepare_dataframe
+from app.scanner import run_scan, run_scan_5m, get_finviz_quotes, prepare_dataframe
 from app.validator import validate_scan_results
 from app.alerts import send_scan_alert, send_take_profit_alert, send_watchlist_alert, _send_telegram_admin, send_invite_email
 from app.backfill import build_historical_dataset
@@ -684,6 +684,54 @@ def _intraday_scan():
         print(f"INTRADAY SCAN: failed — {e}")
 
 
+def _fivemin_spike_scan():
+    """
+    5m Spike scan — runs every 5 minutes 10:00–15:30 ET Mon–Fri.
+    Detects stocks with current 5-min bar volume >= 10x their 10-day avg at
+    this time slot. Alerts + auto paper-trades new high scorers (>= 75).
+    """
+    global _alerted_today, _alerted_date
+
+    et_now    = datetime.datetime.now(pytz.timezone("America/New_York"))
+    today_str = et_now.date().isoformat()
+
+    # Hard stop at 15:30 ET
+    if et_now.hour > 15 or (et_now.hour == 15 and et_now.minute > 30):
+        return
+
+    if today_str != _alerted_date:
+        _alerted_today = set()
+        _alerted_date  = today_str
+
+    print(f"5M SPIKE SCAN: running at {et_now.strftime('%H:%M')} ET...")
+    try:
+        data = run_scan_5m()
+        save_scan(data["results"], "fivemin")
+        save_scan_cache("fivemin", data["results"], data["summary"])
+
+        new_alerts = [
+            r for r in data["results"]
+            if r.get("score", 0) >= 75 and r.get("symbol") not in _alerted_today
+        ]
+        if new_alerts:
+            _enrich_high_scorers(new_alerts, mode="fivemin")
+            new_alerts = [
+                r for r in new_alerts
+                if r.get("score", 0) >= 75 and r.get("symbol") not in _alerted_today
+            ]
+            send_scan_alert(new_alerts, f"5m Spike {et_now.strftime('%H:%M')}")
+            _auto_paper_trade(new_alerts, today_str)
+            for r in new_alerts:
+                _alerted_today.add(r.get("symbol"))
+
+        print(
+            f"5M SPIKE SCAN: {len(data['results'])} results, "
+            f"{len(new_alerts)} new alert(s)"
+        )
+    except Exception as e:
+        print(f"5M SPIKE SCAN: failed — {e}")
+
+
 def _check_watchlist():
     """
     Re-score today's near-miss watchlist symbols every 15 min.
@@ -783,6 +831,9 @@ _scheduler.add_job(_intraday_scan,   "cron", day_of_week="mon-fri",
 # Watchlist near-miss re-check at the midpoints (:15 and :45) of each intraday hour
 _scheduler.add_job(_check_watchlist, "cron", day_of_week="mon-fri",
                    hour="10-15", minute="15,45")
+# 5m Spike scan every 5 minutes during market hours (10:00–15:30 ET)
+_scheduler.add_job(_fivemin_spike_scan, "cron", day_of_week="mon-fri",
+                   hour="10-15", minute="0,5,10,15,20,25,30,35,40,45,50,55")
 _scheduler.start()
 
 # Warm up yfinance crumb on startup so the first scheduled scan doesn't hit a 401.
@@ -919,7 +970,7 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
         scan_data = {"results": cached["results"], "summary": cached["summary"]}
         cache_age = cached["cache_age_minutes"]
     else:
-        scan_data = run_scan(mode=mode)
+        scan_data = run_scan_5m() if mode == "fivemin" else run_scan(mode=mode)
         scan_id_map = save_scan(scan_data["results"], mode)
         update_returns()
         save_scan_cache(mode, scan_data["results"], scan_data["summary"])

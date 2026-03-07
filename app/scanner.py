@@ -58,6 +58,11 @@ BASE_URL_PREMARKET = (
     "v=161&f=sh_curvol_o1000,"
     "sh_price_u5,sh_relvol_o5,ta_perf_d5o&ft=4"
 )
+# 5m Spike mode — broader universe, no relvol pre-filter (we compute it ourselves)
+BASE_URL_5M = (
+    "https://finviz.com/screener.ashx?"
+    "v=111&f=geo_usa,sh_curvol_o1000,sh_price_u5&ft=4"
+)
 
 _FV_HEADERS = {
     "User-Agent": (
@@ -571,4 +576,225 @@ def run_scan(mode="standard", premarket: bool = False):
 
     results = sorted(results, key=lambda x: x["score"], reverse=True)
 
+    return {"results": results, "summary": summary}
+
+
+# ---------------------------------------------------
+# 5M SPIKE MODE
+# Detects stocks where current 5-min bar volume >= 10x
+# the 10-day average volume at that same time-of-day slot.
+# ---------------------------------------------------
+
+def get_finviz_tickers_5m() -> list:
+    """
+    Fetch the broader 5m Spike universe from FinViz.
+    No relvol pre-filter — we compute 5m relvol ourselves.
+    Returns tickers list only.
+    """
+    tickers = []
+    page    = 1
+    print("5m Spike: pulling FinViz universe...")
+    while True:
+        url      = f"{BASE_URL_5M}&r={(page - 1) * 20 + 1}"
+        response = requests.get(url, headers=_FV_HEADERS, timeout=15)
+        if response.status_code != 200:
+            break
+        page_tickers, _ = _parse_finviz_page(response.text)
+        if not page_tickers:
+            break
+        tickers.extend(page_tickers)
+        if len(page_tickers) < 20:
+            break
+        page += 1
+    print(f"5m Spike: {len(tickers)} FinViz candidates")
+    return tickers
+
+
+def compute_5m_relvol(tickers: list) -> dict:
+    """
+    For each ticker, compute: current 5-min bar volume / 10-day avg volume
+    at the same time-of-day slot.
+
+    Returns {symbol: float}. Symbols with insufficient history are omitted.
+    """
+    import pytz as _pytz
+    et      = _pytz.timezone("America/New_York")
+    now_et  = datetime.datetime.now(et)
+
+    # Round down to nearest 5-min boundary
+    slot_minute = (now_et.minute // 5) * 5
+    slot_hour   = now_et.hour
+
+    print(f"5m Spike: computing relvol for slot {slot_hour:02d}:{slot_minute:02d} ET, "
+          f"{len(tickers)} symbol(s)...")
+
+    try:
+        raw = yf.download(
+            tickers if len(tickers) > 1 else tickers[0],
+            period="60d",
+            interval="5m",
+            progress=False,
+            auto_adjust=False,
+            group_by="ticker",
+        )
+    except Exception as e:
+        print(f"5m Spike: 5m batch download failed — {e}")
+        return {}
+
+    relvol_5m = {}
+
+    for sym in tickers:
+        try:
+            if len(tickers) == 1:
+                sym_df = raw.copy() if not raw.empty else None
+            else:
+                if sym not in raw.columns.get_level_values(0):
+                    continue
+                sym_df = raw[sym].copy()
+
+            if sym_df is None or sym_df.empty:
+                continue
+
+            # Normalise MultiIndex columns (same pattern as prepare_dataframe)
+            if isinstance(sym_df.columns, pd.MultiIndex):
+                _price_fields = {'Open', 'High', 'Low', 'Close', 'Volume'}
+                lvl0 = set(sym_df.columns.get_level_values(0))
+                sym_df.columns = (
+                    sym_df.columns.get_level_values(0) if lvl0 & _price_fields
+                    else sym_df.columns.get_level_values(-1)
+                )
+            sym_df = sym_df.loc[:, ~sym_df.columns.duplicated()]
+
+            if "Volume" not in sym_df.columns:
+                continue
+
+            # Convert to ET for time-of-day matching
+            if sym_df.index.tzinfo is None:
+                sym_df.index = sym_df.index.tz_localize("UTC").tz_convert(et)
+            else:
+                sym_df.index = sym_df.index.tz_convert(et)
+
+            slot_bars = sym_df[
+                (sym_df.index.hour   == slot_hour) &
+                (sym_df.index.minute == slot_minute)
+            ]["Volume"].dropna()
+
+            if len(slot_bars) < 2:
+                continue
+
+            today_vol = float(slot_bars.iloc[-1])
+            if today_vol == 0:
+                continue
+
+            hist_avg = float(slot_bars.iloc[:-1].tail(10).mean())
+            if hist_avg <= 0:
+                continue
+
+            relvol_5m[sym] = round(today_vol / hist_avg, 2)
+
+        except Exception as e:
+            print(f"5m Spike: relvol error for {sym} — {e}")
+
+    qualifying = sum(1 for v in relvol_5m.values() if v >= 10)
+    print(f"5m Spike: relvol computed for {len(relvol_5m)} symbols, "
+          f"{qualifying} with >=10x")
+    return relvol_5m
+
+
+def run_scan_5m() -> dict:
+    """
+    5m Spike scan. Fetches a broad FinViz universe, computes 5-min relative
+    volume for each symbol, and scores only those with relvol >= 10x using
+    the existing squeeze scorer. The 5m relvol is injected via
+    fundamentals["finviz_relvol"] so the scorer uses it without modification.
+    """
+    tickers = get_finviz_tickers_5m()
+    results = []
+    summary = {"total_scanned": 0, "qualified": 0}
+
+    if not tickers:
+        return {"results": results, "summary": summary}
+
+    live_quotes = get_finviz_quotes(tickers)
+
+    # 6-month daily OHLCV for the squeeze scorer (RSI, MACD, Bollinger, etc.)
+    print(f"5m Spike: downloading 6-month daily data for {len(tickers)} symbol(s)...")
+    try:
+        raw_daily = yf.download(
+            tickers if len(tickers) > 1 else tickers[0],
+            period="6mo",
+            interval="1d",
+            progress=False,
+            auto_adjust=False,
+            group_by="ticker",
+        )
+    except Exception as e:
+        print(f"5m Spike: daily download failed — {e}")
+        return {"results": results, "summary": summary}
+
+    dfs = {}
+    if len(tickers) == 1:
+        if not raw_daily.empty:
+            dfs[tickers[0]] = raw_daily.copy()
+    else:
+        for sym in tickers:
+            try:
+                sym_df = raw_daily[sym].copy()
+                if not sym_df.empty:
+                    dfs[sym] = sym_df
+            except Exception:
+                pass
+
+    # Compute 5m relvol for all tickers
+    relvol_5m = compute_5m_relvol(tickers)
+
+    # Fundamentals in parallel
+    def _fetch_fund(symbol):
+        return symbol, get_fundamentals(symbol)
+
+    fundamentals_map = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        for sym, fund in executor.map(_fetch_fund, tickers):
+            fundamentals_map[sym] = fund
+
+    weights_data   = get_squeeze_weights()
+    active_weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS
+
+    for symbol in tickers:
+        summary["total_scanned"] += 1
+
+        rv5m = relvol_5m.get(symbol)
+        if rv5m is None or rv5m < 10:
+            continue   # does not meet 5m spike threshold
+
+        if symbol not in dfs:
+            continue
+
+        try:
+            df           = prepare_dataframe(dfs[symbol])
+            fundamentals = fundamentals_map.get(symbol) or {}
+
+            # Inject live FinViz quote data
+            if symbol in live_quotes:
+                q = live_quotes[symbol]
+                if q.get("price")             is not None: fundamentals["finviz_price"]       = q["price"]
+                if q.get("change_pct")        is not None: fundamentals["finviz_change_pct"]  = q["change_pct"]
+                if q.get("volume")            is not None: fundamentals["finviz_volume"]       = q["volume"]
+                if q.get("shares_outstanding") is not None: fundamentals["shares_outstanding"] = q["shares_outstanding"]
+                if q.get("float_shares")      is not None: fundamentals["float_shares"]        = q["float_shares"]
+                if q.get("institution_pct")   is not None: fundamentals["institution_pct"]     = q["institution_pct"]
+
+            # KEY: override daily relvol with computed 5m relvol
+            fundamentals["finviz_relvol"] = rv5m
+
+            result = score_stock_squeeze(symbol, df, fundamentals, weights=active_weights)
+            if result:
+                result["relvol_source"] = "5m"
+                results.append(result)
+                summary["qualified"] += 1
+
+        except Exception as e:
+            print(f"5m Spike: error scoring {symbol} — {e}")
+
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
     return {"results": results, "summary": summary}
