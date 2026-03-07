@@ -313,11 +313,32 @@ def init_db():
             status       TEXT NOT NULL DEFAULT 'pending'
         )
     """)
+
+    # Weight versions: every weight change gets a versioned snapshot for A/B tracking
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS weight_versions (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_type TEXT    NOT NULL,
+            weights    TEXT    NOT NULL,
+            summary    TEXT,
+            rationale  TEXT,
+            source     TEXT,
+            goal       TEXT,
+            created_at TEXT    NOT NULL
+        )
+    """)
     conn.commit()
 
     # Migration: per-signal fired state for backtest tracking
     try:
         cursor.execute("ALTER TABLE scans ADD COLUMN signals_json TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # Migration: link each scan to the weight version active at scan time
+    try:
+        cursor.execute("ALTER TABLE scans ADD COLUMN weights_version_id INTEGER")
         conn.commit()
     except sqlite3.OperationalError:
         pass  # column already exists
@@ -443,25 +464,29 @@ def update_password(username: str, new_password: str):
 
 
 # ---------------- HOLDING PERFORMANCE ----------------
-def get_holding_performance():
+def _mode_clause(modes):
+    """Return (sql_snippet, params) for an optional mode IN filter."""
+    if modes:
+        placeholders = ",".join("?" * len(modes))
+        return f" AND mode IN ({placeholders})", list(modes)
+    return "", []
+
+
+def get_holding_performance(modes=None):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-
-    cursor.execute("""
+    mc, mp = _mode_clause(modes)
+    cursor.execute(f"""
         SELECT next_day_return, three_day_return
         FROM scans
-        WHERE next_day_return IS NOT NULL
-    """)
-
+        WHERE next_day_return IS NOT NULL{mc}
+    """, mp)
     rows = cursor.fetchall()
     conn.close()
-
     if not rows:
         return None
-
     day1 = [r[0] for r in rows if r[0] is not None]
     day3 = [r[1] for r in rows if r[1] is not None]
-
     return {
         "avg_day1": round(sum(day1)/len(day1), 2) if day1 else 0,
         "avg_day3": round(sum(day3)/len(day3), 2) if day3 else 0
@@ -469,44 +494,37 @@ def get_holding_performance():
 
 
 # ---------------- EQUITY CURVE ----------------
-def get_equity_curve(starting_capital=10000):
+def get_equity_curve(starting_capital=10000, modes=None):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT next_day_return
-        FROM scans
-        WHERE next_day_return IS NOT NULL
+    mc, mp = _mode_clause(modes)
+    cursor.execute(f"""
+        SELECT next_day_return FROM scans
+        WHERE next_day_return IS NOT NULL{mc}
         ORDER BY id ASC
-    """)
-
+    """, mp)
     rows = cursor.fetchall()
     conn.close()
-
     if not rows:
         return None
-
     capital = starting_capital
     equity = []
-
     for (ret,) in rows:
         capital *= (1 + ret / 100)
         equity.append(round(capital, 2))
-
     return equity
 
 
 # ---------------- SCORE BUCKETS ----------------
-def get_score_buckets():
+def get_score_buckets(modes=None):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-
-    cursor.execute("""
+    mc, mp = _mode_clause(modes)
+    cursor.execute(f"""
         SELECT score, next_day_return, days_to_20pct
         FROM scans
-        WHERE next_day_return IS NOT NULL
-    """)
-
+        WHERE next_day_return IS NOT NULL{mc}
+    """, mp)
     rows = cursor.fetchall()
     conn.close()
 
@@ -741,9 +759,12 @@ def update_returns():
 # ---------------- SAVE SCAN ----------------
 def save_scan(results: list, mode: str) -> dict:
     """Saves scan results and returns {symbol: scan_id} for AI rec persistence."""
+    # Determine which model type's version to stamp (fivemin uses squeeze weights)
+    model_type = "autoai" if mode == "autoai" else "squeeze"
+    version_id = get_current_version_id(model_type)
+
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-
     timestamp = datetime.utcnow().isoformat()
     scan_ids = {}
 
@@ -756,8 +777,8 @@ def save_scan(results: list, mode: str) -> dict:
                 timestamp, symbol, score, recommendation, mode,
                 relative_volume, today_return, shares_outstanding,
                 news_recent, next_day_return, three_day_return, scan_price,
-                signals_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                signals_json, weights_version_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             timestamp,
             r.get("symbol"),
@@ -772,6 +793,7 @@ def save_scan(results: list, mode: str) -> dict:
             None,
             r.get("price"),
             signals_json_str,
+            version_id,
         ))
         scan_ids[r.get("symbol")] = cursor.lastrowid
 
@@ -1086,22 +1108,15 @@ _ALL_SIGNAL_KEYS = [
 ]
 
 
-def get_per_signal_stats() -> dict:
+def get_per_signal_stats(modes=None) -> dict:
     """
     For each of the 22 signal keys, compute performance stats across scans
     where that signal fired AND outcomes are known (next_day_return IS NOT NULL).
-
-    Returns:
-        {
-            "baseline": {"count", "win_rate", "hit_20pct", "avg_return"},
-            "signals": [{"key", "count", "win_rate", "hit_20pct", "avg_return",
-                         "vs_baseline_hit"}, ...] sorted by hit_20pct desc
-        }
-    Signals with fewer than 5 fires are included (caller filters display).
-    Returns {"baseline": None, "signals": []} if no data yet.
+    Optional modes filter restricts to specific scan modes (e.g. ['fivemin']).
     """
     conn = _connect()
     cursor = conn.cursor()
+    mc, mp = _mode_clause(modes)
 
     def _stats(rows):
         if not rows:
@@ -1116,12 +1131,10 @@ def get_per_signal_stats() -> dict:
             "avg_return": round(sum(nd_vals) / len(nd_vals), 2),
         }
 
-    cursor.execute("""
-        SELECT next_day_return, days_to_20pct
-        FROM scans
-        WHERE next_day_return IS NOT NULL
-          AND signals_json IS NOT NULL
-    """)
+    cursor.execute(f"""
+        SELECT next_day_return, days_to_20pct FROM scans
+        WHERE next_day_return IS NOT NULL AND signals_json IS NOT NULL{mc}
+    """, mp)
     baseline_rows = cursor.fetchall()
 
     if not baseline_rows:
@@ -1133,10 +1146,10 @@ def get_per_signal_stats() -> dict:
     signal_results = []
     for key in _ALL_SIGNAL_KEYS:
         cursor.execute(
-            "SELECT next_day_return, days_to_20pct FROM scans "
-            "WHERE next_day_return IS NOT NULL AND signals_json IS NOT NULL "
-            "AND json_extract(signals_json, '$.' || ?) = 1",
-            (key,)
+            f"SELECT next_day_return, days_to_20pct FROM scans "
+            f"WHERE next_day_return IS NOT NULL AND signals_json IS NOT NULL{mc} "
+            f"AND json_extract(signals_json, '$.' || ?) = 1",
+            mp + [key]
         )
         rows = cursor.fetchall()
         s = _stats(rows)
@@ -1534,12 +1547,14 @@ def get_active_hypothesis_text(mode: str = None) -> str | None:
 
 # ---------------- COMPLEX + AI WEIGHT STORAGE ----------------
 def save_squeeze_weights(weights: dict, rationale: str = "",
-                         suggestions: list = None, summary: str = ""):
-    """Persist AI-optimized squeeze weights to the settings table."""
+                         suggestions: list = None, summary: str = "",
+                         source: str = "manual", goal: str = ""):
+    """Persist AI-optimized squeeze weights to the settings table and create a version snapshot."""
+    save_weight_version("squeeze", weights, summary=summary, rationale=rationale,
+                        source=source, goal=goal)
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     now = datetime.utcnow().isoformat()
-
     for key, value in [
         ("squeeze_weights",             json.dumps(weights)),
         ("squeeze_weights_rationale",   rationale),
@@ -1552,7 +1567,6 @@ def save_squeeze_weights(weights: dict, rationale: str = "",
             ON CONFLICT(key) DO UPDATE SET value = excluded.value,
                                            updated_at = excluded.updated_at
         """, (key, value, now))
-
     conn.commit()
     conn.close()
 
@@ -1640,6 +1654,105 @@ def save_weight_changelog(summary: str, rationale: str, weights: dict):
     )
     conn.commit()
     conn.close()
+
+
+def save_weight_version(model_type: str, weights: dict, summary: str = "",
+                        rationale: str = "", source: str = "manual",
+                        goal: str = "") -> int:
+    """Insert a versioned weight snapshot and update the active version setting.
+    Returns the new version_id."""
+    now = datetime.utcnow().isoformat()
+    conn = _connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO weight_versions (model_type, weights, summary, rationale, source, goal, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (model_type, json.dumps(weights), summary or "", rationale or "",
+         source or "manual", goal or "", now)
+    )
+    version_id = cursor.lastrowid
+    # Track the active version_id in settings so save_scan() can stamp it
+    cursor.execute("""
+        INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    """, (f"current_{model_type}_version_id", str(version_id), now))
+    conn.commit()
+    conn.close()
+    return version_id
+
+
+def get_current_version_id(model_type: str) -> int | None:
+    """Return the current active weight version ID for a model type, or None."""
+    conn = _connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = ?",
+                   (f"current_{model_type}_version_id",))
+    row = cursor.fetchone()
+    conn.close()
+    if row and row[0]:
+        try:
+            return int(row[0])
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def get_version_performance_stats(model_type: str = None) -> list:
+    """
+    Returns performance metrics per weight version, ordered newest first.
+    Each entry has the version metadata plus win_rate, hit_20pct, avg_return,
+    avg_days_to_20pct, and scan_count computed from scans linked to that version.
+    Only versions with at least 1 scan with known outcomes are included.
+    """
+    conn = _connect()
+    cursor = conn.cursor()
+
+    type_filter = "AND wv.model_type = ?" if model_type else ""
+    params = [model_type] if model_type else []
+
+    cursor.execute(f"""
+        SELECT
+            wv.id,
+            wv.model_type,
+            wv.summary,
+            wv.source,
+            wv.goal,
+            wv.created_at,
+            COUNT(s.id)                                                    AS scan_count,
+            AVG(s.next_day_return)                                         AS avg_return,
+            100.0 * SUM(CASE WHEN s.next_day_return > 0 THEN 1 ELSE 0 END)
+                  / NULLIF(COUNT(s.id), 0)                                 AS win_rate,
+            100.0 * SUM(CASE WHEN s.days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)
+                  / NULLIF(COUNT(s.id), 0)                                 AS hit_20pct,
+            AVG(CASE WHEN s.days_to_20pct IS NOT NULL THEN s.days_to_20pct END) AS avg_days_to_20pct
+        FROM weight_versions wv
+        LEFT JOIN scans s ON s.weights_version_id = wv.id
+                          AND s.next_day_return IS NOT NULL
+        WHERE 1=1 {type_filter}
+        GROUP BY wv.id
+        ORDER BY wv.id DESC
+        LIMIT 30
+    """, params)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    results = []
+    for r in rows:
+        results.append({
+            "id":               r[0],
+            "model_type":       r[1],
+            "summary":          r[2] or "",
+            "source":           r[3] or "manual",
+            "goal":             r[4] or "",
+            "created_at":       (r[5] or "")[:16].replace("T", " "),
+            "scan_count":       r[6] or 0,
+            "avg_return":       round(r[7], 2) if r[7] is not None else None,
+            "win_rate":         round(r[8], 1) if r[8] is not None else None,
+            "hit_20pct":        round(r[9], 1) if r[9] is not None else None,
+            "avg_days_to_20pct": round(r[10], 1) if r[10] is not None else None,
+        })
+    return results
 
 
 def get_weight_changelog(limit: int = 20) -> list:
@@ -2246,42 +2359,36 @@ def get_ai_decision_accuracy() -> dict | None:
 
 
 # ---------------- SELF-LEARNING LOOP ----------------
-def get_live_scan_stats() -> dict:
-    """Stats on live scan outcomes for the self-learning tracker on the analytics page."""
+def get_live_scan_stats(modes=None) -> dict:
+    """Stats on live scan outcomes for the self-learning tracker on the analytics page.
+    Optional modes filter restricts to specific scan modes (e.g. ['fivemin']).
+    Without a filter, excludes only 'historical' mode scans."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    cursor.execute("SELECT COUNT(*) FROM scans WHERE mode != 'historical'")
-    total = cursor.fetchone()[0]
-
-    cursor.execute(
-        "SELECT COUNT(*) FROM scans WHERE mode != 'historical' AND next_day_return IS NOT NULL"
-    )
-    labeled = cursor.fetchone()[0]
+    if modes:
+        placeholders = ",".join("?" * len(modes))
+        base_clause = f"mode IN ({placeholders})"
+        base_params = list(modes)
+    else:
+        base_clause = "mode != 'historical'"
+        base_params = []
 
     three_days_ago = (datetime.utcnow() - timedelta(days=2)).isoformat()
-    cursor.execute("""
-        SELECT COUNT(*) FROM scans
-        WHERE mode != 'historical' AND next_day_return IS NULL AND timestamp >= ?
-    """, (three_days_ago,))
-    pending = cursor.fetchone()[0]  # too recent to label yet
 
-    cursor.execute("""
-        SELECT COUNT(*) FROM scans
-        WHERE mode != 'historical' AND next_day_return IS NULL AND timestamp < ?
-    """, (three_days_ago,))
-    awaiting = cursor.fetchone()[0]  # old enough, will be labeled next update_returns() call
-
-    cursor.execute("""
-        SELECT COUNT(*) FROM scans
-        WHERE mode != 'historical' AND days_to_20pct IS NOT NULL
-    """)
+    cursor.execute(f"SELECT COUNT(*) FROM scans WHERE {base_clause}", base_params)
+    total = cursor.fetchone()[0]
+    cursor.execute(f"SELECT COUNT(*) FROM scans WHERE {base_clause} AND next_day_return IS NOT NULL", base_params)
+    labeled = cursor.fetchone()[0]
+    cursor.execute(f"SELECT COUNT(*) FROM scans WHERE {base_clause} AND next_day_return IS NULL AND timestamp >= ?",
+                   base_params + [three_days_ago])
+    pending = cursor.fetchone()[0]
+    cursor.execute(f"SELECT COUNT(*) FROM scans WHERE {base_clause} AND next_day_return IS NULL AND timestamp < ?",
+                   base_params + [three_days_ago])
+    awaiting = cursor.fetchone()[0]
+    cursor.execute(f"SELECT COUNT(*) FROM scans WHERE {base_clause} AND days_to_20pct IS NOT NULL", base_params)
     hit_20 = cursor.fetchone()[0]
-
-    cursor.execute("""
-        SELECT AVG(days_to_20pct) FROM scans
-        WHERE mode != 'historical' AND days_to_20pct IS NOT NULL
-    """)
+    cursor.execute(f"SELECT AVG(days_to_20pct) FROM scans WHERE {base_clause} AND days_to_20pct IS NOT NULL", base_params)
     avg_days_row = cursor.fetchone()
     avg_days = round(avg_days_row[0], 1) if avg_days_row[0] else None
 
@@ -2292,13 +2399,13 @@ def get_live_scan_stats() -> dict:
     conn.close()
     hit_rate = round(hit_20 / labeled * 100, 1) if labeled > 0 else 0
     return {
-        "total":          total,
-        "labeled":        labeled,
-        "pending":        pending,
-        "awaiting":       awaiting,
-        "hit_20_count":   hit_20,
-        "hit_rate":       hit_rate,
-        "avg_days_to_20": avg_days,
+        "total":           total,
+        "labeled":         labeled,
+        "pending":         pending,
+        "awaiting":        awaiting,
+        "hit_20_count":    hit_20,
+        "hit_rate":        hit_rate,
+        "avg_days_to_20":  avg_days,
         "last_auto_learn": last_learn,
     }
 
@@ -2472,8 +2579,11 @@ def get_autoai_weights():
 
 
 def save_autoai_weights(weights: dict, rationale: str = "",
-                        suggestions: list = None, summary: str = ""):
-    """Persist Auto AI autonomous weights to the settings table (separate from squeeze weights)."""
+                        suggestions: list = None, summary: str = "",
+                        source: str = "autoai", goal: str = ""):
+    """Persist Auto AI autonomous weights to the settings table and create a version snapshot."""
+    save_weight_version("autoai", weights, summary=summary, rationale=rationale,
+                        source=source, goal=goal)
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     now = datetime.utcnow().isoformat()

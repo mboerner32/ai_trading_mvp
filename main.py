@@ -126,6 +126,9 @@ from app.database import (
     get_chat_suggestions,
     dismiss_chat_suggestion,
     get_per_signal_stats,
+    save_weight_version,
+    get_current_version_id,
+    get_version_performance_stats,
 )
 
 app = FastAPI()
@@ -1045,36 +1048,52 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
 
 
 # ---------------- ANALYTICS ----------------
+_DAILY_MODES = ["squeeze", "autoai", "strict", "standard"]
+_FIVEMIN_MODES = ["fivemin"]
+
 @app.get("/analytics", response_class=HTMLResponse)
 def analytics(request: Request):
 
     if "user" not in request.session:
         return RedirectResponse("/login")
 
+    active_tab = request.query_params.get("tab", "daily")
+
     return templates.TemplateResponse(
         "analytics.html",
         {
             "request": request,
-            "score_buckets": get_score_buckets(),
-            "holding_perf": get_holding_performance(),
-            "equity_curve": get_equity_curve(),
+            "active_tab": active_tab,
+            "user": request.session["user"],
+            # --- shared / tab-independent ---
             "weight_changelog": get_weight_changelog(),
             "risk_metrics": get_risk_metrics(),
             "historical_count": get_historical_count(),
             "backfill_status": get_backfill_status(),
-            "user": request.session["user"],
             "complex_ai_weights": get_squeeze_weights(),
             "hypothesis": get_hypothesis(),
             "hypothesis_rules": get_hypothesis_rules(),
             "pending_rule_count": get_pending_rule_count(),
-            "live_scan_stats": get_live_scan_stats(),
             "lstm_status": get_lstm_status(),
             "seq_stats": get_sequence_stats(),
             "model_validation": get_model_validation_stats(),
             "autoai_log": get_autoai_log(limit=20),
             "autoai_weights": get_autoai_weights(),
             "model_comparison": get_model_comparison_stats(),
-            "per_signal_stats": get_per_signal_stats(),
+            # --- Tab 1: Daily Models ---
+            "score_buckets":    get_score_buckets(modes=_DAILY_MODES),
+            "holding_perf":     get_holding_performance(modes=_DAILY_MODES),
+            "equity_curve":     get_equity_curve(modes=_DAILY_MODES),
+            "live_scan_stats":  get_live_scan_stats(modes=_DAILY_MODES),
+            "per_signal_stats": get_per_signal_stats(modes=_DAILY_MODES),
+            # --- Tab 2: 5m Spike ---
+            "fm_score_buckets":    get_score_buckets(modes=_FIVEMIN_MODES),
+            "fm_holding_perf":     get_holding_performance(modes=_FIVEMIN_MODES),
+            "fm_equity_curve":     get_equity_curve(modes=_FIVEMIN_MODES),
+            "fm_live_scan_stats":  get_live_scan_stats(modes=_FIVEMIN_MODES),
+            "fm_per_signal_stats": get_per_signal_stats(modes=_FIVEMIN_MODES),
+            # --- Tab 3: Version Tracker ---
+            "version_stats": get_version_performance_stats(),
         }
     )
 
@@ -1236,23 +1255,31 @@ def optimize_weights(request: Request):
         "analytics.html",
         {
             "request": request,
-            "score_buckets": get_score_buckets(),
-            "holding_perf": get_holding_performance(),
-            "equity_curve": get_equity_curve(),
             "weight_changelog": get_weight_changelog(),
             "risk_metrics": get_risk_metrics(),
             "historical_count": get_historical_count(),
             "backfill_status": get_backfill_status(),
             "user": request.session["user"],
+            "active_tab": "daily",
             "weight_analysis": analysis,
             "opt_data": opt_data,
             "complex_ai_weights": get_squeeze_weights(),
             "hypothesis": get_hypothesis(),
-            "live_scan_stats": get_live_scan_stats(),
             "lstm_status": get_lstm_status(),
             "seq_stats": get_sequence_stats(),
             "model_validation": get_model_validation_stats(),
-            "per_signal_stats": get_per_signal_stats(),
+            "model_comparison": get_model_comparison_stats(),
+            "score_buckets":       get_score_buckets(modes=_DAILY_MODES),
+            "holding_perf":        get_holding_performance(modes=_DAILY_MODES),
+            "equity_curve":        get_equity_curve(modes=_DAILY_MODES),
+            "live_scan_stats":     get_live_scan_stats(modes=_DAILY_MODES),
+            "per_signal_stats":    get_per_signal_stats(modes=_DAILY_MODES),
+            "fm_score_buckets":    get_score_buckets(modes=_FIVEMIN_MODES),
+            "fm_holding_perf":     get_holding_performance(modes=_FIVEMIN_MODES),
+            "fm_equity_curve":     get_equity_curve(modes=_FIVEMIN_MODES),
+            "fm_live_scan_stats":  get_live_scan_stats(modes=_FIVEMIN_MODES),
+            "fm_per_signal_stats": get_per_signal_stats(modes=_FIVEMIN_MODES),
+            "version_stats":       get_version_performance_stats(),
         }
     )
 
@@ -1581,14 +1608,25 @@ def optimize_complex(request: Request):
             "historical_count": get_historical_count(),
             "backfill_status": get_backfill_status(),
             "user": request.session["user"],
+            "active_tab": "daily",
             "complex_ai_result": opt_result,
             "complex_ai_weights": get_squeeze_weights(),
             "hypothesis": hypothesis_data,
-            "live_scan_stats": get_live_scan_stats(),
             "lstm_status": get_lstm_status(),
             "seq_stats": get_sequence_stats(),
             "model_validation": get_model_validation_stats(),
-            "per_signal_stats": get_per_signal_stats(),
+            "model_comparison": get_model_comparison_stats(),
+            "score_buckets":       get_score_buckets(modes=_DAILY_MODES),
+            "holding_perf":        get_holding_performance(modes=_DAILY_MODES),
+            "equity_curve":        get_equity_curve(modes=_DAILY_MODES),
+            "live_scan_stats":     get_live_scan_stats(modes=_DAILY_MODES),
+            "per_signal_stats":    get_per_signal_stats(modes=_DAILY_MODES),
+            "fm_score_buckets":    get_score_buckets(modes=_FIVEMIN_MODES),
+            "fm_holding_perf":     get_holding_performance(modes=_FIVEMIN_MODES),
+            "fm_equity_curve":     get_equity_curve(modes=_FIVEMIN_MODES),
+            "fm_live_scan_stats":  get_live_scan_stats(modes=_FIVEMIN_MODES),
+            "fm_per_signal_stats": get_per_signal_stats(modes=_FIVEMIN_MODES),
+            "version_stats":       get_version_performance_stats(),
         }
     )
 
@@ -1926,12 +1964,12 @@ async def api_chat_execute(request: Request):
             existing = get_autoai_weights()
             base = existing["weights"].copy() if existing else DEFAULT_SQUEEZE_WEIGHTS.copy()
             base.update({k: int(v) for k, v in weights.items()})
-            save_autoai_weights(base, rationale, [], summary)
+            save_autoai_weights(base, rationale, [], summary, source="ai_chat")
         else:
             existing = get_squeeze_weights()
             base = existing["weights"].copy() if existing else DEFAULT_SQUEEZE_WEIGHTS.copy()
             base.update({k: int(v) for k, v in weights.items()})
-            save_squeeze_weights(base, rationale, [], summary)
+            save_squeeze_weights(base, rationale, [], summary, source="ai_chat")
             save_weight_changelog(summary, rationale, base)
         model_label = "Auto AI" if model == "autoai" else "Complex+AI"
         return JSONResponse({"ok": True, "message": f"{model_label} weights updated."})
@@ -1948,12 +1986,12 @@ async def api_chat_execute(request: Request):
             existing = get_autoai_weights()
             base = existing["weights"].copy() if existing else DEFAULT_SQUEEZE_WEIGHTS.copy()
             base.update({k: int(v) for k, v in weights.items()})
-            save_autoai_weights(base, rationale, [], summary)
+            save_autoai_weights(base, rationale, [], summary, source="ai_chat", goal=goal)
         else:
             existing = get_squeeze_weights()
             base = existing["weights"].copy() if existing else DEFAULT_SQUEEZE_WEIGHTS.copy()
             base.update({k: int(v) for k, v in weights.items()})
-            save_squeeze_weights(base, rationale, [], summary)
+            save_squeeze_weights(base, rationale, [], summary, source="ai_chat", goal=goal)
             save_weight_changelog(summary, rationale, base)
         goal_label = {"combined": "Win Rate + Speed + Upside", "win_rate": "Win Rate", "speed": "Speed-to-Target", "upside": "Max Upside"}.get(goal, goal or "bundle")
         model_label = "Auto AI" if model == "autoai" else "Complex+AI"

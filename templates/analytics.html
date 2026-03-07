@@ -161,7 +161,43 @@
 
 <div class="container">
 
-    <h2 style="margin-bottom:30px;">Backtesting Analytics</h2>
+    <h2 style="margin-bottom:16px;">Backtesting Analytics</h2>
+
+    <!-- TAB BAR -->
+    <div style="display:flex; gap:4px; margin-bottom:28px; border-bottom:2px solid #e5e7eb;">
+        <button onclick="switchTab('daily')" id="tab-btn-daily"
+            style="padding:9px 20px; border:none; border-radius:8px 8px 0 0; font-size:14px; font-weight:600; cursor:pointer; background:{% if active_tab=='daily' %}#4f46e5{% else %}#f3f4f6{% endif %}; color:{% if active_tab=='daily' %}white{% else %}#6b7280{% endif %};">
+            Daily Models
+        </button>
+        <button onclick="switchTab('fivemin')" id="tab-btn-fivemin"
+            style="padding:9px 20px; border:none; border-radius:8px 8px 0 0; font-size:14px; font-weight:600; cursor:pointer; background:{% if active_tab=='fivemin' %}#b45309{% else %}#f3f4f6{% endif %}; color:{% if active_tab=='fivemin' %}white{% else %}#6b7280{% endif %};">
+            5m Spike
+        </button>
+        <button onclick="switchTab('versions')" id="tab-btn-versions"
+            style="padding:9px 20px; border:none; border-radius:8px 8px 0 0; font-size:14px; font-weight:600; cursor:pointer; background:{% if active_tab=='versions' %}#0f766e{% else %}#f3f4f6{% endif %}; color:{% if active_tab=='versions' %}white{% else %}#6b7280{% endif %};">
+            Version Tracker
+        </button>
+    </div>
+    <script>
+    var _activeTab = '{{ active_tab }}';
+    function switchTab(name) {
+        ['daily','fivemin','versions'].forEach(function(t) {
+            var panel = document.getElementById('tabpanel-' + t);
+            var btn   = document.getElementById('tab-btn-' + t);
+            if (panel) panel.style.display = (t === name) ? '' : 'none';
+            if (btn) {
+                var active_bg  = {daily:'#4f46e5', fivemin:'#b45309', versions:'#0f766e'};
+                btn.style.background = (t === name) ? active_bg[t] : '#f3f4f6';
+                btn.style.color      = (t === name) ? 'white' : '#6b7280';
+            }
+        });
+        _activeTab = name;
+    }
+    document.addEventListener('DOMContentLoaded', function() { switchTab(_activeTab); });
+    </script>
+
+    <!-- ======================================================= TAB: DAILY MODELS -->
+    <div id="tabpanel-daily">
 
     <!-- KPI CARDS -->
     <div class="kpi-grid">
@@ -1423,6 +1459,295 @@ new Chart(document.getElementById('equityChart'), {
 })();
 </script>
 {% endif %}
+
+    </div><!-- /tabpanel-daily -->
+
+    <!-- ======================================================= TAB: 5m SPIKE -->
+    <div id="tabpanel-fivemin" style="display:none;">
+
+    <div style="background:linear-gradient(90deg,#fef3c7,#fffbeb); border:1px solid #fcd34d; border-radius:10px; padding:14px 20px; margin-bottom:28px;">
+        <div style="font-weight:700; font-size:14px; color:#92400e; margin-bottom:4px;">5m Spike Model — Intraday Relative Volume</div>
+        <div style="font-size:12px; color:#b45309; line-height:1.6;">
+            Scans for stocks with ≥10x relative volume on the 5-minute bar vs the 10-day avg at the same time slot.
+            Runs every 5 min during market hours (10:00–15:30 ET). Stats below are isolated to fivemin mode scans only.
+        </div>
+    </div>
+
+    <!-- 5m KPI CARDS -->
+    <div class="kpi-grid" style="margin-bottom:32px;">
+        <div class="card">
+            <h3>Avg 1-Day Return</h3>
+            {% if fm_holding_perf %}
+                <p class="{{ 'positive' if fm_holding_perf.avg_day1 > 0 else 'negative' }}">{{ fm_holding_perf.avg_day1 }}%</p>
+            {% else %}<p class="neutral">—</p>{% endif %}
+        </div>
+        <div class="card">
+            <h3>Avg 3-Day Return</h3>
+            {% if fm_holding_perf %}
+                <p class="{{ 'positive' if fm_holding_perf.avg_day3 > 0 else 'negative' }}">{{ fm_holding_perf.avg_day3 }}%</p>
+            {% else %}<p class="neutral">—</p>{% endif %}
+        </div>
+        <div class="card">
+            <h3>Total Scans Tracked</h3>
+            {% set fm_total = namespace(n=0) %}
+            {% for bucket, data in fm_score_buckets.items() %}{% set fm_total.n = fm_total.n + data.trades %}{% endfor %}
+            <p class="neutral">{{ fm_total.n }}</p>
+        </div>
+        <div class="card">
+            <h3>Hit 20%+ Rate</h3>
+            {% if fm_live_scan_stats and fm_live_scan_stats.labeled > 0 %}
+                <p class="{{ 'positive' if fm_live_scan_stats.hit_rate >= 20 else 'neutral' }}">{{ fm_live_scan_stats.hit_rate }}%</p>
+            {% else %}<p class="neutral">—</p>{% endif %}
+        </div>
+        <div class="card">
+            <h3>Avg Days to 20%</h3>
+            {% if fm_live_scan_stats and fm_live_scan_stats.avg_days_to_20 %}
+                <p class="neutral">{{ fm_live_scan_stats.avg_days_to_20 }}d</p>
+            {% else %}<p class="neutral">—</p>{% endif %}
+        </div>
+    </div>
+
+    <!-- 5m Score Buckets -->
+    <div class="section-title">Score Bucket Performance — 5m Spike</div>
+    <p style="color:#6b7280; font-size:13px; margin:-8px 0 16px;">Hit 20%+ = intraday high ≥20% above scan price within 10 trading days. Avg Days = speed to target.</p>
+    <table>
+        <thead><tr>
+            <th>Score</th><th>Trades</th><th>Win Rate</th><th>Avg Return</th><th>Hit 20%+</th><th>Avg Days to 20%</th>
+        </tr></thead>
+        <tbody>
+        {% for bucket in ['80-100','60-79','40-59','0-39'] %}
+        {% set b = fm_score_buckets.get(bucket, {}) %}
+        <tr>
+            <td><strong>{{ bucket }}</strong></td>
+            <td>{{ b.trades or 0 }}</td>
+            <td class="{{ 'good' if b.win_rate and b.win_rate >= 55 else ('bad' if b.win_rate and b.win_rate < 40 else '') }}">
+                {{ '%.1f' | format(b.win_rate) ~ '%' if b.win_rate else '—' }}</td>
+            <td class="{{ 'good' if b.avg_return and b.avg_return > 0 else ('bad' if b.avg_return and b.avg_return < 0 else '') }}">
+                {{ ('+'if b.avg_return and b.avg_return>0 else '')~'%.1f'|format(b.avg_return)~'%' if b.avg_return else '—' }}</td>
+            <td class="{{ 'good' if b.hit_20pct and b.hit_20pct >= 20 else '' }}">
+                {{ '%.1f' | format(b.hit_20pct) ~ '%' if b.hit_20pct else '—' }}</td>
+            <td>{{ b.avg_days_to_20pct ~ 'd' if b.avg_days_to_20pct else '—' }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    <!-- 5m Per-Signal Stats -->
+    <div class="section-title" style="margin-top:8px;">Per-Signal Backtest Performance — 5m Spike</div>
+    {% if fm_per_signal_stats and fm_per_signal_stats.baseline and fm_per_signal_stats.baseline.count >= 5 %}
+    {% set fm_baseline = fm_per_signal_stats.baseline %}
+    <p style="color:#6b7280; font-size:13px; margin:-8px 0 16px; line-height:1.6;">
+        Baseline: <strong>{{ fm_baseline.count }}</strong> scans —
+        <strong>{{ '%.0f'|format(fm_baseline.hit_20pct) }}%</strong> hit 20%+,
+        <strong>{{ '%.0f'|format(fm_baseline.win_rate) }}%</strong> win rate,
+        <strong>{{ ('+' if fm_baseline.avg_return > 0 else '') }}{{ '%.1f'|format(fm_baseline.avg_return) }}%</strong> avg return.
+    </p>
+    <div style="overflow-x:auto; margin-bottom:32px;">
+    <table style="font-size:13px; min-width:560px; width:100%;">
+        <thead><tr style="background:#fef3c7;">
+            <th style="text-align:left; color:#92400e;">Signal</th>
+            <th style="text-align:center; color:#92400e;">Fires</th>
+            <th style="text-align:center; color:#92400e;">Hit 20%+</th>
+            <th style="text-align:center; color:#92400e;">vs Baseline</th>
+            <th style="text-align:center; color:#92400e;">Win Rate</th>
+            <th style="text-align:center; color:#92400e;">Avg Return</th>
+        </tr></thead>
+        <tbody>
+        {% for s in fm_per_signal_stats.signals %}{% if s.count >= 5 %}
+        <tr style="border-top:1px solid #f3f4f6;">
+            <td style="font-family:monospace; font-size:12px; color:#374151;">{{ s.key }}</td>
+            <td style="text-align:center; color:#6b7280;">{{ s.count }}</td>
+            <td style="text-align:center; font-weight:700; color:{% if s.hit_20pct >= 35 %}#0f766e{% elif s.hit_20pct >= 20 %}#d97706{% else %}#dc2626{% endif %};">{{ '%.0f'|format(s.hit_20pct) }}%</td>
+            <td style="text-align:center; font-weight:600; color:{% if s.vs_baseline_hit > 0 %}#0f766e{% else %}#dc2626{% endif %};">{{ ('+' if s.vs_baseline_hit > 0 else '') }}{{ '%.1f'|format(s.vs_baseline_hit) }}pp</td>
+            <td style="text-align:center; font-weight:600; color:{% if s.win_rate >= 55 %}#0f766e{% elif s.win_rate >= 40 %}#d97706{% else %}#dc2626{% endif %};">{{ '%.0f'|format(s.win_rate) }}%</td>
+            <td style="text-align:center; font-weight:600; color:{% if s.avg_return > 0 %}#0f766e{% else %}#dc2626{% endif %};">{{ ('+' if s.avg_return > 0 else '') }}{{ '%.1f'|format(s.avg_return) }}%</td>
+        </tr>
+        {% endif %}{% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p style="color:#6b7280; font-size:14px; margin:0 0 32px;">No 5m signal data yet — outcomes appear 2+ trading days after scans run.</p>
+    {% endif %}
+
+    <!-- 5m Scan Stats -->
+    <div class="section-title">5m Spike Scan Status</div>
+    <div class="chart-card" style="margin-bottom:40px; padding:20px 28px;">
+        <div style="display:flex; flex-wrap:wrap; gap:24px; margin-bottom:16px; align-items:flex-end;">
+            <div style="text-align:center; min-width:80px;">
+                <div style="font-size:28px; font-weight:700; color:#1f2937;">{{ fm_live_scan_stats.total }}</div>
+                <div style="font-size:12px; color:#6b7280; margin-top:2px;">Total Scans</div>
+            </div>
+            <div style="text-align:center; min-width:80px;">
+                <div style="font-size:28px; font-weight:700; color:#0f766e;">{{ fm_live_scan_stats.labeled }}</div>
+                <div style="font-size:12px; color:#6b7280; margin-top:2px;">Outcomes Labeled</div>
+            </div>
+            <div style="text-align:center; min-width:80px;">
+                <div style="font-size:28px; font-weight:700; color:#d97706;">{{ fm_live_scan_stats.pending }}</div>
+                <div style="font-size:12px; color:#6b7280; margin-top:2px;">Pending (&lt;2 days)</div>
+            </div>
+            <div style="text-align:center; min-width:80px;">
+                <div style="font-size:28px; font-weight:700; color:#b45309;">{{ fm_live_scan_stats.hit_20_count }}</div>
+                <div style="font-size:12px; color:#6b7280; margin-top:2px;">Hit 20%+ Target</div>
+            </div>
+        </div>
+        {% if fm_equity_curve and fm_equity_curve|length > 1 %}
+        <canvas id="fmEquityChart" style="max-height:220px; margin-top:16px;"></canvas>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+        <script>
+        new Chart(document.getElementById('fmEquityChart').getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: {{ fm_equity_curve | length | tojson }} > 0 ? Array.from({length:{{ fm_equity_curve|length }}}, (_,i)=>i+1) : [],
+                datasets: [{
+                    data: {{ fm_equity_curve | tojson }},
+                    borderColor: '#b45309', backgroundColor: 'rgba(180,83,9,0.08)',
+                    borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3
+                }]
+            },
+            options: {responsive:true, plugins:{legend:{display:false}},
+                scales:{y:{beginAtZero:false, ticks:{callback:v=>'$'+v.toLocaleString()}}}}
+        });
+        </script>
+        {% endif %}
+    </div>
+
+    </div><!-- /tabpanel-fivemin -->
+
+    <!-- ======================================================= TAB: VERSION TRACKER -->
+    <div id="tabpanel-versions" style="display:none;">
+
+    <div style="background:#f0fdfa; border:1px solid #99f6e4; border-radius:10px; padding:14px 20px; margin-bottom:28px;">
+        <div style="font-weight:700; font-size:14px; color:#134e4a; margin-bottom:4px;">Version Tracker — Scientific A/B Testing</div>
+        <div style="font-size:12px; color:#0f766e; line-height:1.6;">
+            Every time weights change (via AI bundle, manual edit, or Auto AI), a versioned snapshot is saved.
+            Each scan is stamped with the active version at run time, enabling exact before/after comparison.
+            Performance metrics are computed from scans with known outcomes (2+ trading days old).
+        </div>
+    </div>
+
+    {% if version_stats %}
+    {% set vs_latest = version_stats[0] %}
+    {% set vs_prev   = version_stats[1] if version_stats|length > 1 else None %}
+
+    {% if vs_prev and vs_latest.scan_count >= 5 and vs_prev.scan_count >= 5 %}
+    <!-- BEFORE / AFTER COMPARISON CARD -->
+    <div class="section-title">Latest vs Previous Version</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:32px;">
+        {% for vs, label, bg, border, textcol in [
+            (vs_prev, 'Previous — v' ~ vs_prev.id, '#f9fafb', '#e5e7eb', '#6b7280'),
+            (vs_latest, 'Current — v' ~ vs_latest.id, '#f0fdf4', '#86efac', '#0f766e')
+        ] %}
+        <div style="background:{{ bg }}; border:1px solid {{ border }}; border-radius:10px; padding:16px 20px;">
+            <div style="font-weight:700; font-size:13px; color:{{ textcol }}; margin-bottom:12px;">
+                {{ label }} &nbsp;<span style="font-weight:400; font-size:11px; color:#9ca3af;">{{ vs.created_at }}</span>
+            </div>
+            <div style="font-size:12px; color:#6b7280; margin-bottom:10px; line-height:1.5;">{{ vs.summary or 'No summary' }}</div>
+            <div style="display:flex; gap:20px; flex-wrap:wrap;">
+                <div style="text-align:center;">
+                    <div style="font-size:20px; font-weight:700; color:{{ '#0f766e' if vs.win_rate and vs.win_rate >= 50 else ('#dc2626' if vs.win_rate else '#9ca3af') }};">
+                        {{ '%.0f'|format(vs.win_rate) ~ '%' if vs.win_rate else '—' }}</div>
+                    <div style="font-size:11px; color:#6b7280;">Win Rate</div>
+                </div>
+                <div style="text-align:center;">
+                    <div style="font-size:20px; font-weight:700; color:{{ '#0f766e' if vs.hit_20pct and vs.hit_20pct >= 20 else ('#dc2626' if vs.hit_20pct else '#9ca3af') }};">
+                        {{ '%.0f'|format(vs.hit_20pct) ~ '%' if vs.hit_20pct else '—' }}</div>
+                    <div style="font-size:11px; color:#6b7280;">Hit 20%+</div>
+                </div>
+                <div style="text-align:center;">
+                    <div style="font-size:20px; font-weight:700; color:{{ '#0f766e' if vs.avg_return and vs.avg_return > 0 else ('#dc2626' if vs.avg_return else '#9ca3af') }};">
+                        {{ ('+' if vs.avg_return and vs.avg_return > 0 else '') ~ '%.1f'|format(vs.avg_return) ~ '%' if vs.avg_return else '—' }}</div>
+                    <div style="font-size:11px; color:#6b7280;">Avg Return</div>
+                </div>
+                <div style="text-align:center;">
+                    <div style="font-size:20px; font-weight:700; color:#1f2937;">
+                        {{ vs.avg_days_to_20pct ~ 'd' if vs.avg_days_to_20pct else '—' }}</div>
+                    <div style="font-size:11px; color:#6b7280;">Avg Days to 20%</div>
+                </div>
+                <div style="text-align:center;">
+                    <div style="font-size:20px; font-weight:700; color:#6b7280;">{{ vs.scan_count }}</div>
+                    <div style="font-size:11px; color:#6b7280;">Scans w/Outcomes</div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- FULL VERSION TIMELINE TABLE -->
+    <div class="section-title">Version History</div>
+    <div style="overflow-x:auto; margin-bottom:40px;">
+    <table style="font-size:13px; min-width:780px; width:100%;">
+        <thead>
+            <tr style="background:#f0fdfa;">
+                <th style="padding:9px 12px; text-align:left; color:#0f766e; font-weight:700;">Ver</th>
+                <th style="padding:9px 12px; text-align:left; color:#0f766e; font-weight:700;">Model</th>
+                <th style="padding:9px 12px; text-align:left; color:#0f766e; font-weight:700;">Date</th>
+                <th style="padding:9px 12px; text-align:left; color:#0f766e; font-weight:700;">Summary</th>
+                <th style="padding:9px 12px; text-align:left; color:#0f766e; font-weight:700;">Source</th>
+                <th style="padding:9px 12px; text-align:center; color:#0f766e; font-weight:700;">Scans</th>
+                <th style="padding:9px 12px; text-align:center; color:#0f766e; font-weight:700;">Win Rate</th>
+                <th style="padding:9px 12px; text-align:center; color:#0f766e; font-weight:700;">Hit 20%+</th>
+                <th style="padding:9px 12px; text-align:center; color:#0f766e; font-weight:700;">Avg Return</th>
+                <th style="padding:9px 12px; text-align:center; color:#0f766e; font-weight:700;">Avg Days</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for vs in version_stats %}
+        {% set is_latest = loop.first %}
+        <tr style="border-top:1px solid #f3f4f6; {% if is_latest %}background:#f0fdf4;{% endif %}">
+            <td style="padding:9px 12px; font-weight:{% if is_latest %}700{% else %}400{% endif %}; color:{% if is_latest %}#0f766e{% else %}#6b7280{% endif %};">
+                v{{ vs.id }}{% if is_latest %} <span style="font-size:10px; background:#0f766e; color:white; border-radius:4px; padding:1px 5px; margin-left:4px;">CURRENT</span>{% endif %}
+            </td>
+            <td style="padding:9px 12px; color:#374151;">
+                {% if vs.model_type == 'autoai' %}<span style="color:#7c3aed; font-weight:600;">Auto AI</span>
+                {% else %}<span style="color:#0f766e; font-weight:600;">Complex+AI</span>{% endif %}
+            </td>
+            <td style="padding:9px 12px; color:#6b7280; font-size:12px; white-space:nowrap;">{{ vs.created_at }}</td>
+            <td style="padding:9px 12px; color:#374151; max-width:260px;">
+                <div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px;" title="{{ vs.summary }}">{{ vs.summary or '—' }}</div>
+                {% if vs.goal %}<div style="font-size:11px; margin-top:2px;">
+                    {% set goal_labels = {'combined':'Win Rate + Speed + Upside','win_rate':'Win Rate','speed':'Speed-to-Target','upside':'Max Upside'} %}
+                    <span style="background:{% if vs.goal=='combined' %}#f5f3ff{% elif vs.goal=='win_rate' %}#ecfdf5{% elif vs.goal=='speed' %}#eff6ff{% else %}#fef3c7{% endif %}; color:{% if vs.goal=='combined' %}#4c1d95{% elif vs.goal=='win_rate' %}#065f46{% elif vs.goal=='speed' %}#1e40af{% else %}#92400e{% endif %}; border-radius:4px; padding:1px 6px; font-weight:600;">
+                        {{ goal_labels.get(vs.goal, vs.goal) }}
+                    </span>
+                </div>{% endif %}
+            </td>
+            <td style="padding:9px 12px; color:#6b7280; font-size:12px;">{{ vs.source }}</td>
+            <td style="padding:9px 12px; text-align:center; color:{% if vs.scan_count >= 10 %}#1f2937{% else %}#9ca3af{% endif %};">{{ vs.scan_count }}</td>
+            <td style="padding:9px 12px; text-align:center; font-weight:600;
+                color:{% if vs.win_rate and vs.win_rate >= 55 %}#0f766e{% elif vs.win_rate and vs.win_rate >= 40 %}#d97706{% elif vs.win_rate %}#dc2626{% else %}#9ca3af{% endif %};">
+                {{ '%.0f'|format(vs.win_rate) ~ '%' if vs.win_rate else '—' }}
+            </td>
+            <td style="padding:9px 12px; text-align:center; font-weight:700;
+                color:{% if vs.hit_20pct and vs.hit_20pct >= 30 %}#0f766e{% elif vs.hit_20pct and vs.hit_20pct >= 15 %}#d97706{% elif vs.hit_20pct %}#dc2626{% else %}#9ca3af{% endif %};">
+                {{ '%.0f'|format(vs.hit_20pct) ~ '%' if vs.hit_20pct else '—' }}
+            </td>
+            <td style="padding:9px 12px; text-align:center; font-weight:600;
+                color:{% if vs.avg_return and vs.avg_return > 0 %}#0f766e{% elif vs.avg_return %}#dc2626{% else %}#9ca3af{% endif %};">
+                {{ ('+' if vs.avg_return and vs.avg_return > 0 else '') ~ '%.1f'|format(vs.avg_return) ~ '%' if vs.avg_return else '—' }}
+            </td>
+            <td style="padding:9px 12px; text-align:center; color:#1f2937;">{{ vs.avg_days_to_20pct ~ 'd' if vs.avg_days_to_20pct else '—' }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    <p style="font-size:11px; color:#9ca3af; margin-top:-32px; margin-bottom:40px; line-height:1.6;">
+        Versions with 0 scans means no scans have been run and labeled under that version yet — wait 2+ trading days after the first scan.
+        Win Rate = % of scans with positive next-day close. Hit 20%+ = intraday high ≥20% above scan price within 10 days.
+    </p>
+
+    {% else %}
+    <p style="color:#6b7280; font-size:14px; margin:0 0 32px;">
+        No versions yet — version snapshots are created automatically the first time weights are saved after this update.
+        Run a scan and apply a weight change via the AI advisor to populate this tracker.
+    </p>
+    {% endif %}
+
+    </div><!-- /tabpanel-versions -->
+
+</div><!-- /container -->
 
 <script>window.CHAT_IS_ADMIN = {{ "true" if user == "admin" else "false" }};</script>
 <script src="/static/chat_widget.js"></script>
