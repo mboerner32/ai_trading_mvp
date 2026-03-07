@@ -995,6 +995,39 @@ Shares: <1M: {fmt(so.get("<1M"))} | 1-5M: {fmt(so.get("1-5M"))} | 5-10M: {fmt(so
     else:
         backtest_section = "BACKTESTED SIGNAL PERFORMANCE: Insufficient data (<5 trades with known outcomes)."
 
+    # ---- Format per-signal stats section ----
+    per_sig = (opt_data or {}).get("per_signal_stats") if opt_data else None
+    if (per_sig and per_sig.get("baseline") and
+            per_sig["baseline"]["count"] >= 5 and per_sig.get("signals")):
+        bl = per_sig["baseline"]
+        lines = [
+            f"PER-SIGNAL BACKTEST ({bl['count']} scans · baseline: "
+            f"{bl['hit_20pct']}% hit 20%+, {bl['win_rate']}% any-gain):"
+        ]
+        qualified = [s for s in per_sig["signals"] if s["count"] >= 5]
+        for s in qualified[:10]:
+            arrow = "+" if s["vs_baseline_hit"] >= 0 else ""
+            lines.append(
+                f"  {s['key']}: {s['count']} fires | "
+                f"{s['hit_20pct']}% hit20+ ({arrow}{s['vs_baseline_hit']}pp vs baseline) | "
+                f"{s['win_rate']}% win | {s['avg_return']:+.1f}% avg"
+            )
+        bottom = [s for s in reversed(qualified) if s["count"] >= 5][:5]
+        if bottom:
+            lines.append("  [LOWEST PERFORMING:]")
+            for s in bottom:
+                arrow = "+" if s["vs_baseline_hit"] >= 0 else ""
+                lines.append(
+                    f"  {s['key']}: {s['count']} fires | "
+                    f"{s['hit_20pct']}% hit20+ ({arrow}{s['vs_baseline_hit']}pp vs baseline)"
+                )
+        per_signal_section = "\n".join(lines)
+    else:
+        per_signal_section = (
+            "PER-SIGNAL BACKTEST: Insufficient data "
+            "(need 5+ scans with signals_json AND known outcomes)."
+        )
+
     # ---- Format prior hypothesis section ----
     if prior_hypothesis:
         hyp_section = f"PRIOR HYPOTHESIS / LEARNED PATTERNS (evolve, do not discard):\n{prior_hypothesis[:1200]}"
@@ -1061,6 +1094,8 @@ OPTIONAL CRITERIA — disabled by default (weight=0), set 1-20 to enable if evid
 
 ## Evidence
 {backtest_section}
+
+{per_signal_section}
 
 {hyp_section}
 

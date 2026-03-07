@@ -445,6 +445,68 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
             score += w["low_float_ratio_bonus"]
 
     # ------------------------------------------------------------------
+    # FIRED SIGNALS — record which criteria contributed points
+    # Only keys that fired (True) are stored; omitted = did not fire.
+    # Stored as signals_json in the scans table for per-signal backtesting.
+    # ------------------------------------------------------------------
+    fired_signals = {}
+
+    if relative_volume is not None:
+        if relative_volume >= 50:     fired_signals["rel_vol_50x"]      = True
+        elif relative_volume >= 25:   fired_signals["rel_vol_25x"]      = True
+        elif relative_volume >= 10:   fired_signals["rel_vol_10x"]      = True
+        else:                         fired_signals["rel_vol_5x"]       = True
+
+    if daily_return is not None:
+        if 0.20 <= daily_return <= 0.40:    fired_signals["daily_sweet_20_40"] = True
+        elif 0.10 <= daily_return < 0.20:   fired_signals["daily_ok_10_20"]    = True
+        elif 0.40 < daily_return <= 1.00:   fired_signals["daily_ok_40_100"]   = True
+
+    if fundamentals and shares_outstanding is not None:
+        if shares_outstanding < 10_000_000:   fired_signals["shares_lt10m"]  = True
+        elif shares_outstanding < 30_000_000: fired_signals["shares_lt30m"]  = True
+        else:                                 fired_signals["shares_lt100m"] = True
+
+    if sideways_chop:    fired_signals["sideways_chop"]    = True
+    if yesterday_green:  fired_signals["yesterday_green"]  = True
+    if no_news_catalyst: fired_signals["no_news_bonus"]    = True
+    if high_cash:        fired_signals["high_cash_bonus"]  = True
+
+    if institution_pct is not None:
+        if institution_pct >= 0.40:   fired_signals["institution_strong"]   = True
+        elif institution_pct >= 0.15: fired_signals["institution_moderate"] = True
+
+    if sector == "Healthcare" or (industry and "biotech" in industry.lower()):
+        fired_signals["sector_biotech_bonus"] = True
+
+    if w.get("rsi_momentum_bonus", 0) > 0:
+        rsi_v = safe_float(latest.get("rsi_14"))
+        if rsi_v is not None and 50 < rsi_v <= 70:
+            fired_signals["rsi_momentum_bonus"] = True
+
+    if w.get("macd_positive_bonus", 0) > 0:
+        macd_v = safe_float(latest.get("macd_norm"))
+        if macd_v is not None and macd_v > 0:
+            fired_signals["macd_positive_bonus"] = True
+
+    if w.get("bb_upper_breakout", 0) > 0:
+        bb_v = safe_float(latest.get("bb_pct"))
+        if bb_v is not None and bb_v > 0.85:
+            fired_signals["bb_upper_breakout"] = True
+
+    if w.get("consecutive_green_bonus", 0) > 0 and len(df) >= 2:
+        t_r = safe_float(latest.get("daily_return"))
+        p_r = safe_float(df.iloc[-2].get("daily_return"))
+        if t_r and p_r and t_r > 0 and p_r > 0:
+            fired_signals["consecutive_green_bonus"] = True
+
+    if w.get("low_float_ratio_bonus", 0) > 0 and fundamentals:
+        fs = fundamentals.get("float_shares")
+        so = shares_outstanding
+        if fs and so and so > 0 and (fs / so) < 0.40:
+            fired_signals["low_float_ratio_bonus"] = True
+
+    # ------------------------------------------------------------------
     # NORMALISE TO 0–100
     # With default weights max_score = 100, so no change.
     # When AI adjusts weights, max_score re-normalises automatically.
@@ -515,5 +577,6 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
             "recent_decline": False,
             "over_100_percent": False,
             "sweet_spot_10_40": sweet_spot_squeeze,
+            "fired_signals": fired_signals,
         }
     }

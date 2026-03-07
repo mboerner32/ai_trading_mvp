@@ -125,6 +125,7 @@ from app.database import (
     save_chat_suggestion,
     get_chat_suggestions,
     dismiss_chat_suggestion,
+    get_per_signal_stats,
 )
 
 app = FastAPI()
@@ -1073,6 +1074,7 @@ def analytics(request: Request):
             "autoai_log": get_autoai_log(limit=20),
             "autoai_weights": get_autoai_weights(),
             "model_comparison": get_model_comparison_stats(),
+            "per_signal_stats": get_per_signal_stats(),
         }
     )
 
@@ -1250,6 +1252,7 @@ def optimize_weights(request: Request):
             "lstm_status": get_lstm_status(),
             "seq_stats": get_sequence_stats(),
             "model_validation": get_model_validation_stats(),
+            "per_signal_stats": get_per_signal_stats(),
         }
     )
 
@@ -1585,6 +1588,7 @@ def optimize_complex(request: Request):
             "lstm_status": get_lstm_status(),
             "seq_stats": get_sequence_stats(),
             "model_validation": get_model_validation_stats(),
+            "per_signal_stats": get_per_signal_stats(),
         }
     )
 

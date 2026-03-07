@@ -315,6 +315,13 @@ def init_db():
     """)
     conn.commit()
 
+    # Migration: per-signal fired state for backtest tracking
+    try:
+        cursor.execute("ALTER TABLE scans ADD COLUMN signals_json TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
     conn.close()
 
 
@@ -742,12 +749,15 @@ def save_scan(results: list, mode: str) -> dict:
 
     for r in results:
         checklist = r.get("checklist", {})
+        fired = checklist.get("fired_signals", {})
+        signals_json_str = json.dumps(fired) if fired else None
         cursor.execute("""
             INSERT INTO scans (
                 timestamp, symbol, score, recommendation, mode,
                 relative_volume, today_return, shares_outstanding,
-                news_recent, next_day_return, three_day_return, scan_price
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                news_recent, next_day_return, three_day_return, scan_price,
+                signals_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             timestamp,
             r.get("symbol"),
@@ -761,6 +771,7 @@ def save_scan(results: list, mode: str) -> dict:
             None,
             None,
             r.get("price"),
+            signals_json_str,
         ))
         scan_ids[r.get("symbol")] = cursor.lastrowid
 
@@ -1057,7 +1068,85 @@ def get_optimization_data():
         "relative_volume":    {k: bucket_stats(v) for k, v in relvol.items()},
         "daily_gain":         {k: bucket_stats(v) for k, v in gain.items()},
         "shares_outstanding": {k: bucket_stats(v) for k, v in shares.items()},
+        "per_signal_stats":   get_per_signal_stats(),
     }
+
+
+# ---------------- PER-SIGNAL BACKTEST ----------------
+
+_ALL_SIGNAL_KEYS = [
+    "rel_vol_50x", "rel_vol_25x", "rel_vol_10x", "rel_vol_5x",
+    "daily_sweet_20_40", "daily_ok_10_20", "daily_ok_40_100",
+    "sideways_chop", "yesterday_green",
+    "shares_lt10m", "shares_lt30m", "shares_lt100m",
+    "no_news_bonus", "high_cash_bonus",
+    "institution_moderate", "institution_strong", "sector_biotech_bonus",
+    "rsi_momentum_bonus", "macd_positive_bonus", "bb_upper_breakout",
+    "consecutive_green_bonus", "low_float_ratio_bonus",
+]
+
+
+def get_per_signal_stats() -> dict:
+    """
+    For each of the 22 signal keys, compute performance stats across scans
+    where that signal fired AND outcomes are known (next_day_return IS NOT NULL).
+
+    Returns:
+        {
+            "baseline": {"count", "win_rate", "hit_20pct", "avg_return"},
+            "signals": [{"key", "count", "win_rate", "hit_20pct", "avg_return",
+                         "vs_baseline_hit"}, ...] sorted by hit_20pct desc
+        }
+    Signals with fewer than 5 fires are included (caller filters display).
+    Returns {"baseline": None, "signals": []} if no data yet.
+    """
+    conn = _connect()
+    cursor = conn.cursor()
+
+    def _stats(rows):
+        if not rows:
+            return {"count": 0, "win_rate": 0.0, "hit_20pct": 0.0, "avg_return": 0.0}
+        nd_vals = [nd for nd, d20 in rows]
+        wins    = [nd for nd in nd_vals if nd > 0]
+        hits    = [d20 for nd, d20 in rows if d20 is not None]
+        return {
+            "count":      len(rows),
+            "win_rate":   round(len(wins) / len(rows) * 100, 1),
+            "hit_20pct":  round(len(hits) / len(rows) * 100, 1),
+            "avg_return": round(sum(nd_vals) / len(nd_vals), 2),
+        }
+
+    cursor.execute("""
+        SELECT next_day_return, days_to_20pct
+        FROM scans
+        WHERE next_day_return IS NOT NULL
+          AND signals_json IS NOT NULL
+    """)
+    baseline_rows = cursor.fetchall()
+
+    if not baseline_rows:
+        conn.close()
+        return {"baseline": None, "signals": []}
+
+    baseline = _stats(baseline_rows)
+
+    signal_results = []
+    for key in _ALL_SIGNAL_KEYS:
+        cursor.execute(
+            "SELECT next_day_return, days_to_20pct FROM scans "
+            "WHERE next_day_return IS NOT NULL AND signals_json IS NOT NULL "
+            "AND json_extract(signals_json, '$.' || ?) = 1",
+            (key,)
+        )
+        rows = cursor.fetchall()
+        s = _stats(rows)
+        s["key"]             = key
+        s["vs_baseline_hit"] = round(s["hit_20pct"] - baseline["hit_20pct"], 1)
+        signal_results.append(s)
+
+    conn.close()
+    signal_results.sort(key=lambda x: x["hit_20pct"], reverse=True)
+    return {"baseline": baseline, "signals": signal_results}
 
 
 # ---------------- FEEDBACK ----------------
