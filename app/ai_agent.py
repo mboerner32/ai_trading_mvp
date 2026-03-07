@@ -1266,20 +1266,22 @@ Optimization goals — in strict priority order:
 2. speed: minimize avg_days_to_20pct — fastest time to hit the +20% target
 3. upside: maximize hit_20pct — setups most likely to reach or exceed +20% (enables higher take-profit)
 
-Bundling strategy — constrained optimization:
-The goal is NOT to blindly maximize all three simultaneously. The goal is:
-  FIND the combination of weight changes that produces the LARGEST improvement in win_rate (#1)
-  WITHOUT materially degrading speed (#2) or upside (#3).
+Bundling strategy — win_rate is the hard constraint, speed and upside are bonuses:
+The single rule: no change may materially hurt win_rate. Within that constraint, maximize gains across all three goals.
 
 Evaluate each candidate signal change against all three metrics before including it:
-- Include a signal if it notably improves win_rate AND its effect on speed/upside is neutral or positive.
-- Exclude a signal if it improves win_rate but significantly worsens speed or upside.
-- A "significant" degradation means the signal's speed or upside metric is notably worse than baseline — use your judgment based on the per-signal data.
+- INCLUDE if win_rate is neutral or improves — regardless of what it does to speed/upside.
+- ACTIVELY SEEK signals that also improve speed or upside — these are bonuses, not requirements.
+- EXCLUDE only if the change would materially hurt win_rate (signal's win_rate notably below baseline).
 
-Use goal="combined" when the resulting bundle improves win_rate notably AND keeps speed+upside intact (neutral or better).
-Use a single-goal bundle (goal="win_rate") only when no candidate passes the speed/upside constraint check.
+Bundling rules:
+- goal="combined": bundle improves win_rate AND also improves speed and/or upside.
+- goal="win_rate": win_rate improves but speed and upside are unaffected or mixed.
+- goal="speed": speed improves while win_rate is intact (neutral or better).
+- goal="upside": upside improves while win_rate is intact (neutral or better).
+- Never produce a bundle that degrades win_rate, even if speed or upside would benefit greatly.
 
-Always include your constraint reasoning in the rationale: explain which signals passed/failed the check and why.
+Always include your constraint reasoning in the rationale: note each signal's effect on all three metrics and whether it passed the win_rate safety check.
 
 Bundle examples:
 {{"action": "update_weights_bundle", "goal": "combined", "model": "complex", "weights": {{"rel_vol_50x": 35, "shares_lt10m": 30}}, "rationale": "rel_vol_50x: strong win_rate (+18pp vs baseline), speed neutral (avg 2.1 days vs 2.3 baseline), upside positive (+12pp hit_20pct). shares_lt10m: win_rate +14pp, speed neutral, upside +9pp. Both pass constraint check.", "summary": "Win rate up, speed/upside preserved", "label": "Bundle (Win Rate + Speed + Upside): rel_vol_50x \u2191 + shares_lt10m \u2191"}}
