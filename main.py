@@ -1955,7 +1955,7 @@ async def api_chat_execute(request: Request):
             base.update({k: int(v) for k, v in weights.items()})
             save_squeeze_weights(base, rationale, [], summary)
             save_weight_changelog(summary, rationale, base)
-        goal_label = {"win_rate": "Win Rate", "speed": "Speed-to-Target", "upside": "Max Upside"}.get(goal, goal or "bundle")
+        goal_label = {"combined": "Win Rate + Speed + Upside", "win_rate": "Win Rate", "speed": "Speed-to-Target", "upside": "Max Upside"}.get(goal, goal or "bundle")
         model_label = "Auto AI" if model == "autoai" else "Complex+AI"
         return JSONResponse({"ok": True, "message": f"{model_label} {goal_label} bundle applied — {len(weights)} signals updated."})
 
@@ -2026,7 +2026,7 @@ async def api_approve_suggestion(request: Request, suggestion_id: int):
             save_weight_changelog(summary, rationale, base)
         model_label = "Auto AI" if model == "autoai" else "Complex+AI"
         if action == "update_weights_bundle":
-            goal_label = {"win_rate": "Win Rate", "speed": "Speed-to-Target", "upside": "Max Upside"}.get(goal, goal or "bundle")
+            goal_label = {"combined": "Win Rate + Speed + Upside", "win_rate": "Win Rate", "speed": "Speed-to-Target", "upside": "Max Upside"}.get(goal, goal or "bundle")
             ok_msg = f"{model_label} {goal_label} bundle applied — {len(weights)} signals updated."
         else:
             ok_msg = f"{model_label} weights updated."

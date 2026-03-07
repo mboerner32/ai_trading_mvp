@@ -75,8 +75,9 @@
             var actWrap = document.createElement('div');
             actWrap.style.cssText = 'display:flex; flex-direction:column; gap:6px; margin-top:6px; max-width:88%;';
 
-            // Goal color map for bundles
+            // Goal color map for bundles (priority: combined > win_rate > speed > upside)
             var goalColors = {
+                combined: { bg: '#f5f3ff', text: '#4c1d95', border: '#a78bfa' },
                 win_rate: { bg: '#ecfdf5', text: '#065f46', border: '#6ee7b7' },
                 speed:    { bg: '#eff6ff', text: '#1e40af', border: '#93c5fd' },
                 upside:   { bg: '#fef3c7', text: '#92400e', border: '#fcd34d' }
