@@ -1227,9 +1227,43 @@ def chat_with_model(message: str, history: list, context: dict) -> dict:
 
     opt = context.get("opt_data") or {}
     if opt.get("total_trades", 0) >= 5:
-        perf_section = f"BACKTEST: {opt['total_trades']} trades with known outcomes."
+        def _fmt(stats):
+            if not stats or stats["count"] == 0:
+                return "No data"
+            hit  = stats.get("hit_20pct", 0)
+            days = stats.get("avg_days_to_20pct")
+            days_str = f" (avg {days}d to target)" if days is not None else ""
+            return (f"{stats['count']} trades | "
+                    f"{hit}% hit 20%+{days_str} | "
+                    f"{stats['win_rate']}% any-gain | "
+                    f"{stats['avg_return']:+.1f}% avg return")
+        rv = opt.get("relative_volume", {})
+        dg = opt.get("daily_gain", {})
+        so = opt.get("shares_outstanding", {})
+        perf_section = f"""BACKTESTED SIGNAL PERFORMANCE ({opt['total_trades']} trades with known outcomes):
+Relative Volume: >=50x: {_fmt(rv.get(">=50x"))} | 25-50x: {_fmt(rv.get("25-50x"))} | 10-25x: {_fmt(rv.get("10-25x"))} | <10x: {_fmt(rv.get("<10x"))}
+Daily Gain: 20-40%: {_fmt(dg.get("20-40%"))} | 10-20%: {_fmt(dg.get("10-20%"))} | 40-100%: {_fmt(dg.get("40-100%"))} | <10%: {_fmt(dg.get("<10%"))}
+Shares: <1M: {_fmt(so.get("<1M"))} | 1-5M: {_fmt(so.get("1-5M"))} | 5-10M: {_fmt(so.get("5-10M"))} | 10-30M: {_fmt(so.get("10-30M"))} | 30M+: {_fmt(so.get("30M+"))}"""
+
+        per_sig = opt.get("per_signal_stats")
+        if (per_sig and per_sig.get("baseline") and
+                per_sig["baseline"]["count"] >= 5 and per_sig.get("signals")):
+            bl = per_sig["baseline"]
+            sig_lines = [
+                f"PER-SIGNAL BACKTEST ({bl['count']} scans · baseline: "
+                f"{bl['hit_20pct']}% hit 20%+, {bl['win_rate']}% any-gain):"
+            ]
+            qualified = [s for s in per_sig["signals"] if s["count"] >= 5]
+            for s in qualified[:10]:
+                arrow = "+" if s["vs_baseline_hit"] >= 0 else ""
+                sig_lines.append(
+                    f"  {s['key']}: {s['count']} fires | "
+                    f"{s['hit_20pct']}% hit20+ ({arrow}{s['vs_baseline_hit']}pp vs baseline) | "
+                    f"{s['win_rate']}% win | {s['avg_return']:+.1f}% avg"
+                )
+            perf_section += "\n" + "\n".join(sig_lines)
     else:
-        perf_section = "BACKTEST: Insufficient data (<5 trades with outcomes)."
+        perf_section = "BACKTEST: Insufficient data (<5 trades with known outcomes)."
 
     fb = context.get("feedback", [])
     if fb:
