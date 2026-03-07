@@ -1936,6 +1936,29 @@ async def api_chat_execute(request: Request):
         model_label = "Auto AI" if model == "autoai" else "Complex+AI"
         return JSONResponse({"ok": True, "message": f"{model_label} weights updated."})
 
+    elif action == "update_weights_bundle":
+        model     = body.get("model", "complex")
+        weights   = body.get("weights") or {}
+        rationale = body.get("rationale", "")
+        summary   = body.get("summary", "Bundle update via AI chat")
+        goal      = body.get("goal", "")
+        if not weights:
+            return JSONResponse({"ok": False, "message": "No weights in bundle."})
+        if model == "autoai":
+            existing = get_autoai_weights()
+            base = existing["weights"].copy() if existing else DEFAULT_SQUEEZE_WEIGHTS.copy()
+            base.update({k: int(v) for k, v in weights.items()})
+            save_autoai_weights(base, rationale, [], summary)
+        else:
+            existing = get_squeeze_weights()
+            base = existing["weights"].copy() if existing else DEFAULT_SQUEEZE_WEIGHTS.copy()
+            base.update({k: int(v) for k, v in weights.items()})
+            save_squeeze_weights(base, rationale, [], summary)
+            save_weight_changelog(summary, rationale, base)
+        goal_label = {"win_rate": "Win Rate", "speed": "Speed-to-Target", "upside": "Max Upside"}.get(goal, goal or "bundle")
+        model_label = "Auto AI" if model == "autoai" else "Complex+AI"
+        return JSONResponse({"ok": True, "message": f"{model_label} {goal_label} bundle applied — {len(weights)} signals updated."})
+
     return JSONResponse({"ok": False, "message": f"Unknown action: {action}"}, status_code=400)
 
 
@@ -1984,11 +2007,12 @@ async def api_approve_suggestion(request: Request, suggestion_id: int):
         update_rule_status(int(body["rule_id"]), "rejected")
     elif action == "add_rule":
         save_hypothesis_rules([{"text": body.get("text",""), "source": body.get("source","chat")}])
-    elif action == "update_weights":
+    elif action in ("update_weights", "update_weights_bundle"):
         model = body.get("model","complex")
         weights = body.get("weights") or {}
         rationale = body.get("rationale","")
         summary = body.get("summary","Approved via chat suggestion")
+        goal = body.get("goal", "")
         if model == "autoai":
             existing = get_autoai_weights()
             base = existing["weights"].copy() if existing else DEFAULT_SQUEEZE_WEIGHTS.copy()
@@ -2000,6 +2024,12 @@ async def api_approve_suggestion(request: Request, suggestion_id: int):
             base.update({k: int(v) for k, v in weights.items()})
             save_squeeze_weights(base, rationale, [], summary)
             save_weight_changelog(summary, rationale, base)
+        model_label = "Auto AI" if model == "autoai" else "Complex+AI"
+        if action == "update_weights_bundle":
+            goal_label = {"win_rate": "Win Rate", "speed": "Speed-to-Target", "upside": "Max Upside"}.get(goal, goal or "bundle")
+            ok_msg = f"{model_label} {goal_label} bundle applied — {len(weights)} signals updated."
+        else:
+            ok_msg = f"{model_label} weights updated."
     else:
         ok_msg = f"Unknown action type: {action}"
     dismiss_chat_suggestion(suggestion_id, "approved")

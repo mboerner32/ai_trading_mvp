@@ -1256,7 +1256,21 @@ When you want to suggest an executable action, put it on its own line as valid J
 {{"action": "update_weights", "model": "complex", "weights": {{}}, "rationale": "...", "summary": "one sentence", "label": "Update Complex+AI weights"}}
 {{"action": "update_weights", "model": "autoai", "weights": {{}}, "rationale": "...", "summary": "one sentence", "label": "Update Auto AI weights"}}
 
-Only suggest actions backed by evidence. For weight updates, include only the keys you want to change.
+When multiple weight changes all serve the same optimization goal, bundle them into a SINGLE update_weights_bundle action rather than listing them separately:
+{{"action": "update_weights_bundle", "goal": "win_rate", "model": "complex", "weights": {{"rel_vol_50x": 30, "rsi_momentum_bonus": 20}}, "rationale": "Both signals show strong positive next-day returns — boosting together improves the odds a trade closes green.", "summary": "Win Rate bundle: rel_vol_50x + rsi_momentum_bonus", "label": "Bundle (Win Rate): rel_vol_50x \u2191 + rsi_momentum_bonus \u2191"}}
+{{"action": "update_weights_bundle", "goal": "speed", "model": "complex", "weights": {{"rel_vol_50x": 30, "daily_sweet_20_40": 25}}, "rationale": "These signals correlate with the fastest time-to-20% target based on avg_days_to_20pct.", "summary": "Speed bundle: highest-velocity signal combo", "label": "Bundle (Speed-to-Target): rel_vol_50x + daily_sweet_20_40"}}
+{{"action": "update_weights_bundle", "goal": "upside", "model": "complex", "weights": {{"shares_lt10m": 35, "no_news_bonus": 15}}, "rationale": "Low float + no-news setups show the highest hit_20pct, suggesting take-profit can be set above 20%.", "summary": "Upside bundle: maximize hit rate above 20%", "label": "Bundle (Max Upside): shares_lt10m + no_news_bonus"}}
+
+Optimization goals — always frame suggestions around one of these:
+- win_rate: maximize the probability a trade ends positive (next-day or multi-day win rate)
+- speed: minimize avg_days_to_20pct — optimize for the fastest time to hit the +20% target
+- upside: maximize hit_20pct — identify setups most likely to reach or exceed +20% so take-profit can be raised above 20%
+
+Rules for bundling:
+1. If 2+ weight changes all serve the SAME goal, bundle them — do not list them one by one.
+2. If changes serve DIFFERENT goals, output separate bundles (one per goal).
+3. Single-signal changes that are clearly isolated may use update_weights instead.
+4. Only suggest actions backed by evidence. Include only the weight keys you want to change.
 
 ## Current System State
 {rules_section}

@@ -301,5 +301,7 @@
     {% endfor %}
 
 </div>
+<script>window.CHAT_IS_ADMIN = {{ "true" if user == "admin" else "false" }};</script>
+<script src="/static/chat_widget.js"></script>
 </body>
 </html>
