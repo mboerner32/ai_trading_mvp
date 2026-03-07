@@ -1261,21 +1261,29 @@ When multiple weight changes all serve the same optimization goal, bundle them i
 {{"action": "update_weights_bundle", "goal": "speed", "model": "complex", "weights": {{"rel_vol_50x": 30, "daily_sweet_20_40": 25}}, "rationale": "These signals correlate with the fastest time-to-20% target based on avg_days_to_20pct.", "summary": "Speed bundle: highest-velocity signal combo", "label": "Bundle (Speed-to-Target): rel_vol_50x + daily_sweet_20_40"}}
 {{"action": "update_weights_bundle", "goal": "upside", "model": "complex", "weights": {{"shares_lt10m": 35, "no_news_bonus": 15}}, "rationale": "Low float + no-news setups show the highest hit_20pct, suggesting take-profit can be set above 20%.", "summary": "Upside bundle: maximize hit rate above 20%", "label": "Bundle (Max Upside): shares_lt10m + no_news_bonus"}}
 
-Optimization goals — in priority order (1 = highest):
-1. win_rate: maximize the probability a trade ends positive (next-day or multi-day win rate)
-2. speed: minimize avg_days_to_20pct — optimize for the fastest time to hit the +20% target
-3. upside: maximize hit_20pct — identify setups most likely to reach or exceed +20% so take-profit can be raised above 20%
+Optimization goals — in strict priority order:
+1. win_rate (PRIMARY): maximize the probability a trade ends positive (next-day or multi-day win rate)
+2. speed: minimize avg_days_to_20pct — fastest time to hit the +20% target
+3. upside: maximize hit_20pct — setups most likely to reach or exceed +20% (enables higher take-profit)
 
-Rules for bundling:
-- IDEAL: When evidence supports it, produce ONE combined bundle that advances all three goals simultaneously. Use goal="combined" and label it "Bundle (Win Rate + Speed + Upside): ...". This is the preferred output when signals overlap across goals.
-- If a combined bundle isn't supported by the data, output separate bundles in priority order: win_rate first, then speed, then upside.
-- If a signal could serve multiple goals, assign it to the highest-priority applicable goal.
-- If 2+ changes serve the SAME goal, bundle them — never list goal-aligned changes one by one.
-- Single isolated changes that clearly belong to only one goal may use update_weights instead.
-- Only suggest actions backed by evidence. Include only the weight keys you want to change.
+Bundling strategy — constrained optimization:
+The goal is NOT to blindly maximize all three simultaneously. The goal is:
+  FIND the combination of weight changes that produces the LARGEST improvement in win_rate (#1)
+  WITHOUT materially degrading speed (#2) or upside (#3).
 
-Combined bundle example:
-{{"action": "update_weights_bundle", "goal": "combined", "model": "complex", "weights": {{"rel_vol_50x": 35, "shares_lt10m": 30, "daily_sweet_20_40": 20}}, "rationale": "rel_vol_50x improves win rate and speed; shares_lt10m drives highest hit_20pct; daily_sweet_20_40 correlates with fastest time-to-target.", "summary": "Combined bundle: win rate + speed + upside", "label": "Bundle (Win Rate + Speed + Upside): rel_vol_50x \u2191 + shares_lt10m \u2191 + daily_sweet_20_40 \u2191"}}
+Evaluate each candidate signal change against all three metrics before including it:
+- Include a signal if it notably improves win_rate AND its effect on speed/upside is neutral or positive.
+- Exclude a signal if it improves win_rate but significantly worsens speed or upside.
+- A "significant" degradation means the signal's speed or upside metric is notably worse than baseline — use your judgment based on the per-signal data.
+
+Use goal="combined" when the resulting bundle improves win_rate notably AND keeps speed+upside intact (neutral or better).
+Use a single-goal bundle (goal="win_rate") only when no candidate passes the speed/upside constraint check.
+
+Always include your constraint reasoning in the rationale: explain which signals passed/failed the check and why.
+
+Bundle examples:
+{{"action": "update_weights_bundle", "goal": "combined", "model": "complex", "weights": {{"rel_vol_50x": 35, "shares_lt10m": 30}}, "rationale": "rel_vol_50x: strong win_rate (+18pp vs baseline), speed neutral (avg 2.1 days vs 2.3 baseline), upside positive (+12pp hit_20pct). shares_lt10m: win_rate +14pp, speed neutral, upside +9pp. Both pass constraint check.", "summary": "Win rate up, speed/upside preserved", "label": "Bundle (Win Rate + Speed + Upside): rel_vol_50x \u2191 + shares_lt10m \u2191"}}
+{{"action": "update_weights_bundle", "goal": "win_rate", "model": "complex", "weights": {{"yesterday_green": 20}}, "rationale": "yesterday_green: win_rate +11pp but avg_days_to_20pct jumps to 4.8 vs 2.3 baseline — fails speed constraint. Isolated to win_rate bundle only.", "summary": "Win rate improvement, speed trade-off noted", "label": "Bundle (Win Rate): yesterday_green \u2191"}}
 
 ## Current System State
 {rules_section}
