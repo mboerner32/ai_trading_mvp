@@ -26,6 +26,8 @@ from app.scanner import run_scan, run_scan_5m, get_finviz_quotes, prepare_datafr
 from app.validator import validate_scan_results
 from app.alerts import send_scan_alert, send_take_profit_alert, send_watchlist_alert, _send_telegram_admin, send_invite_email
 from app.backfill import build_historical_dataset
+from app.backfill_5m import backfill_5m_history, get_5m_backfill_status, set_5m_backfill_status
+from app.health import run_health_checks, get_health_status
 from app.lstm_model import train_lstm, predict_hit_probability, get_lstm_status, get_sequence_stats
 from app.ai_agent import (
     recommend_position_size,
@@ -838,6 +840,8 @@ _scheduler.add_job(_check_watchlist, "cron", day_of_week="mon-fri",
 # 5m Spike scan every 5 minutes during market hours (10:00–15:30 ET)
 _scheduler.add_job(_fivemin_spike_scan, "cron", day_of_week="mon-fri",
                    hour="10-15", minute="0,5,10,15,20,25,30,35,40,45,50,55")
+# System health check every 30 minutes, all days
+_scheduler.add_job(run_health_checks, "interval", minutes=30)
 _scheduler.start()
 
 # Warm up yfinance crumb on startup so the first scheduled scan doesn't hit a 401.
@@ -1043,13 +1047,15 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
             "sizing_calibrated": sizing_stats is not None,
             "sizing_total": sizing_stats["total"] if sizing_stats else 0,
             "near_misses": get_active_watchlist(today_only=True),
+            "health_status": get_health_status(),
         }
     )
 
 
 # ---------------- ANALYTICS ----------------
 _DAILY_MODES = ["squeeze", "autoai", "strict", "standard"]
-_FIVEMIN_MODES = ["fivemin"]
+_FIVEMIN_MODES = ["fivemin", "fivemin_bt"]
+_5m_backfill_running = False
 
 @app.get("/analytics", response_class=HTMLResponse)
 def analytics(request: Request):
@@ -1092,6 +1098,7 @@ def analytics(request: Request):
             "fm_equity_curve":     get_equity_curve(modes=_FIVEMIN_MODES),
             "fm_live_scan_stats":  get_live_scan_stats(modes=_FIVEMIN_MODES),
             "fm_per_signal_stats": get_per_signal_stats(modes=_FIVEMIN_MODES),
+            "fivemin_backfill_status": get_5m_backfill_status(),
             # --- Tab 3: Version Tracker ---
             "version_stats": get_version_performance_stats(),
         }
@@ -1279,6 +1286,7 @@ def optimize_weights(request: Request):
             "fm_equity_curve":     get_equity_curve(modes=_FIVEMIN_MODES),
             "fm_live_scan_stats":  get_live_scan_stats(modes=_FIVEMIN_MODES),
             "fm_per_signal_stats": get_per_signal_stats(modes=_FIVEMIN_MODES),
+            "fivemin_backfill_status": get_5m_backfill_status(),
             "version_stats":       get_version_performance_stats(),
         }
     )
@@ -1626,12 +1634,31 @@ def optimize_complex(request: Request):
             "fm_equity_curve":     get_equity_curve(modes=_FIVEMIN_MODES),
             "fm_live_scan_stats":  get_live_scan_stats(modes=_FIVEMIN_MODES),
             "fm_per_signal_stats": get_per_signal_stats(modes=_FIVEMIN_MODES),
+            "fivemin_backfill_status": get_5m_backfill_status(),
             "version_stats":       get_version_performance_stats(),
         }
     )
 
 
 # ---------------- APPLY MODEL UPDATE ----------------
+@app.post("/revert-weights/{changelog_id}")
+def revert_weights(request: Request, changelog_id: int):
+    if "user" not in request.session or request.session["user"] != "admin":
+        return RedirectResponse("/login", status_code=303)
+    changelog = get_weight_changelog(limit=100)
+    entry = next((e for e in changelog if e["id"] == changelog_id), None)
+    if not entry or not entry["weights"]:
+        return RedirectResponse("/analytics?revert=not_found", status_code=303)
+    save_squeeze_weights(
+        entry["weights"],
+        rationale=f"Reverted to: {entry['summary'] or entry['updated_at'][:10]}",
+        summary=f"Revert to {entry['updated_at'][:10]}",
+        source="manual",
+        goal="",
+    )
+    return RedirectResponse("/analytics?revert=ok", status_code=303)
+
+
 @app.post("/apply-model-update")
 def apply_model_update(request: Request):
     if "user" not in request.session:
@@ -1751,6 +1778,64 @@ def api_backfill_status(request: Request):
     if "user" not in request.session:
         return Response(status_code=401)
     return get_backfill_status()
+
+
+# ---------------- 5m SPIKE BACKFILL ----------------
+@app.post("/backfill-5m")
+def start_5m_backfill(request: Request):
+    global _5m_backfill_running
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+
+    if _5m_backfill_running:
+        return RedirectResponse("/analytics?tab=fivemin&backfill5m=already_running", status_code=303)
+
+    def _run():
+        global _5m_backfill_running
+        _5m_backfill_running = True
+        try:
+            backfill_5m_history(max_tickers=150)
+        finally:
+            _5m_backfill_running = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return RedirectResponse("/analytics?tab=fivemin&backfill5m=started", status_code=303)
+
+
+@app.get("/api/backfill-5m-status")
+def api_5m_backfill_status(request: Request):
+    if "user" not in request.session:
+        return Response(status_code=401)
+    return get_5m_backfill_status()
+
+
+# ---------------- SYSTEM HEALTH ----------------
+@app.get("/health", response_class=HTMLResponse)
+def health_page(request: Request):
+    if "user" not in request.session:
+        return RedirectResponse("/login")
+    return templates.TemplateResponse("health.html", {
+        "request": request,
+        "user": request.session["user"],
+        "health": get_health_status(),
+    })
+
+
+@app.post("/run-health-check")
+def run_health_check_now(request: Request):
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    if request.session.get("user") != "admin":
+        return RedirectResponse("/health", status_code=303)
+    threading.Thread(target=run_health_checks, daemon=True).start()
+    return RedirectResponse("/health?ran=1", status_code=303)
+
+
+@app.get("/api/health-status")
+def api_health_status(request: Request):
+    if "user" not in request.session:
+        return Response(status_code=401)
+    return get_health_status() or {}
 
 
 @app.post("/retrain-lstm")

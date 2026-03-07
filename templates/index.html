@@ -192,6 +192,17 @@
         <a href="/validation">Validation</a>
         <a href="/account">Account</a>
         {% if user == "admin" %}<a href="/users">Users</a>{% endif %}
+        {% if health_status %}
+        {% set hs = health_status %}
+        <a href="/health" style="display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:600; text-decoration:none;
+            {% if hs.overall == 'ok' %}background:#d1fae5; color:#065f46;
+            {% elif hs.overall == 'warning' %}background:#fef3c7; color:#92400e;
+            {% else %}background:#fee2e2; color:#991b1b;{% endif %}">
+            {% if hs.overall == 'ok' %}&#x2713; All Systems OK
+            {% elif hs.overall == 'warning' %}&#x26A0; {{ hs.counts.warning }} Warning{% if hs.counts.warning != 1 %}s{% endif %}
+            {% else %}&#x25CF; {{ hs.counts.error }} Issue{% if hs.counts.error != 1 %}s{% endif %}{% endif %}
+        </a>
+        {% endif %}
         <a href="/logout" class="logout">Logout</a>
     </div>
 </div>

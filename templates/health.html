@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>System Health — AI Trading MVP</title>
+    <link rel="icon" type="image/png" href="/static/logo.png">
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; background: #f4f6f9; padding: 32px 40px; margin: 0; }
+        h2 { margin: 0 0 4px; font-size: 22px; color: #111827; }
+        .subtitle { font-size: 13px; color: #6b7280; margin-bottom: 28px; }
+        .nav { display: flex; gap: 14px; margin-bottom: 28px; flex-wrap: wrap; align-items: center; }
+        .nav a { font-size: 13px; color: #6b7280; text-decoration: none; }
+        .nav a:hover { color: #111827; }
+        .nav a.active { color: #7c3aed; font-weight: 700; }
+
+        .overall-banner {
+            border-radius: 12px; padding: 18px 24px; margin-bottom: 28px;
+            display: flex; align-items: center; gap: 16px;
+        }
+        .overall-banner.ok     { background: #ecfdf5; border: 1px solid #6ee7b7; }
+        .overall-banner.warning{ background: #fefce8; border: 1px solid #fde68a; }
+        .overall-banner.error  { background: #fef2f2; border: 1px solid #fca5a5; }
+        .overall-icon { font-size: 28px; }
+        .overall-text h3 { margin: 0 0 3px; font-size: 16px; }
+        .overall-text p  { margin: 0; font-size: 13px; color: #6b7280; }
+
+        .counts { display: flex; gap: 16px; margin-left: auto; }
+        .count-pill {
+            padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700;
+        }
+        .count-pill.ok      { background: #d1fae5; color: #065f46; }
+        .count-pill.warning { background: #fef3c7; color: #92400e; }
+        .count-pill.error   { background: #fee2e2; color: #991b1b; }
+        .count-pill.skipped { background: #f3f4f6; color: #6b7280; }
+
+        .checks-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+        .check-card {
+            background: white; border-radius: 10px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+            padding: 16px 18px;
+            border-left: 4px solid #e5e7eb;
+        }
+        .check-card.ok      { border-left-color: #34d399; }
+        .check-card.warning { border-left-color: #fbbf24; }
+        .check-card.error   { border-left-color: #f87171; }
+        .check-card.skipped { border-left-color: #d1d5db; }
+
+        .check-header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+        .check-icon { font-size: 16px; flex-shrink: 0; }
+        .check-name { font-weight: 700; font-size: 14px; color: #111827; }
+        .check-message { font-size: 13px; color: #374151; margin-bottom: 4px; }
+        .check-detail  { font-size: 12px; color: #9ca3af; line-height: 1.4; }
+
+        .run-btn {
+            background: #7c3aed; color: white; border: none; border-radius: 8px;
+            padding: 9px 20px; font-size: 13px; font-weight: 600; cursor: pointer;
+        }
+        .run-btn:hover { background: #6d28d9; }
+        .run-btn:disabled { background: #a78bfa; cursor: not-allowed; }
+
+        .meta { font-size: 12px; color: #9ca3af; margin-top: 24px; }
+        .meta strong { color: #6b7280; }
+    </style>
+</head>
+<body>
+
+<div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/analytics">Analytics</a>
+    <a href="/trades">Trades</a>
+    <a href="/feedback">Feedback</a>
+    <a href="/health" class="active">System Health</a>
+    <a href="/logout" style="margin-left:auto;">Logout</a>
+</div>
+
+<h2>System Health</h2>
+<div class="subtitle">Diagnostics across all major subsystems — scanner, labeling, alerts, paper trading, and AI.</div>
+
+{% if health %}
+
+{% set oi = '✅' if health.overall == 'ok' else ('⚠️' if health.overall == 'warning' else '🔴') %}
+{% set ol = 'All Systems Operational' if health.overall == 'ok' else ('Attention Required' if health.overall == 'warning' else 'Issues Detected') %}
+{% set od = health.counts.ok ~ ' passing, ' ~ health.counts.warning ~ ' warning(s), ' ~ health.counts.error ~ ' error(s)' %}
+
+<div class="overall-banner {{ health.overall }}">
+    <div class="overall-icon">{{ oi }}</div>
+    <div class="overall-text">
+        <h3>{{ ol }}</h3>
+        <p>{{ od }} &nbsp;·&nbsp; Last checked {{ health.checked_at[:16].replace('T', ' ') }} UTC</p>
+    </div>
+    <div class="counts">
+        {% if health.counts.ok > 0 %}
+        <span class="count-pill ok">{{ health.counts.ok }} OK</span>
+        {% endif %}
+        {% if health.counts.warning > 0 %}
+        <span class="count-pill warning">{{ health.counts.warning }} Warning</span>
+        {% endif %}
+        {% if health.counts.error > 0 %}
+        <span class="count-pill error">{{ health.counts.error }} Error</span>
+        {% endif %}
+        {% if health.counts.skipped > 0 %}
+        <span class="count-pill skipped">{{ health.counts.skipped }} Skipped</span>
+        {% endif %}
+    </div>
+</div>
+
+<div class="checks-grid">
+{% for check in health.checks %}
+{% set icon = '✅' if check.status == 'ok' else ('⚠️' if check.status == 'warning' else ('⏭️' if check.status == 'skipped' else '🔴')) %}
+<div class="check-card {{ check.status }}">
+    <div class="check-header">
+        <span class="check-icon">{{ icon }}</span>
+        <span class="check-name">{{ check.name }}</span>
+    </div>
+    <div class="check-message">{{ check.message }}</div>
+    {% if check.detail %}
+    <div class="check-detail">{{ check.detail }}</div>
+    {% endif %}
+</div>
+{% endfor %}
+</div>
+
+{% else %}
+<div style="background:white; border-radius:10px; padding:32px; text-align:center; color:#6b7280; margin-bottom:28px;">
+    No health data yet — run the first check below.
+</div>
+{% endif %}
+
+{% if user == 'admin' %}
+<form method="post" action="/run-health-check">
+    <button class="run-btn" type="submit">&#x27F3; Run Health Check Now</button>
+</form>
+<p class="meta">Health checks also run automatically <strong>every 30 minutes</strong> via the scheduler.
+Checks cover: DB connectivity, scanner activity, return labeling, scan price recording,
+5m scanner, FinViz connectivity, Telegram bot, Alpaca paper trading, AI optimizer,
+weight version tracking, feedback uploads, and LSTM model.</p>
+{% endif %}
+
+<script>window.CHAT_IS_ADMIN = {{ 'true' if user == 'admin' else 'false' }};</script>
+<script src="/static/chat_widget.js"></script>
+
+</body>
+</html>

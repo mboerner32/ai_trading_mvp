@@ -1759,17 +1759,18 @@ def get_weight_changelog(limit: int = 20) -> list:
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT updated_at, summary, rationale, weights FROM weight_changelog ORDER BY id DESC LIMIT ?",
+        "SELECT id, updated_at, summary, rationale, weights FROM weight_changelog ORDER BY id DESC LIMIT ?",
         (limit,)
     )
     rows = cursor.fetchall()
     conn.close()
     return [
         {
-            "updated_at": r[0],
-            "summary":    r[1],
-            "rationale":  r[2],
-            "weights":    json.loads(r[3]) if r[3] else {},
+            "id":         r[0],
+            "updated_at": r[1],
+            "summary":    r[2],
+            "rationale":  r[3],
+            "weights":    json.loads(r[4]) if r[4] else {},
         }
         for r in rows
     ]
