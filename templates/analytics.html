@@ -266,30 +266,35 @@
             {% endif %}
         </div>
 
-        {% if model_validation and model_validation.by_decision %}
         <div class="card">
             <h3>AI Call Accuracy</h3>
-            {% set t  = model_validation.by_decision.get('TRADE') %}
-            {% set nt = model_validation.by_decision.get('NO_TRADE') %}
-            {% if t %}
-            <div style="font-size:13px; margin-bottom:6px;">
-                <span style="color:#10b981; font-weight:600;">TRADE</span>
-                &nbsp;{{ t.hit_20pct }}% hit 20%
-                <span style="color:#6b7280; font-size:11px;">({{ t.count }} calls)</span>
-            </div>
+            {% if model_validation and model_validation.by_decision %}
+                {% set t  = model_validation.by_decision.get('TRADE') %}
+                {% set nt = model_validation.by_decision.get('NO_TRADE') %}
+                {% if t %}
+                <div style="font-size:13px; margin-bottom:6px;">
+                    <span style="color:#10b981; font-weight:600;">TRADE</span>
+                    &nbsp;{{ t.hit_20pct }}% hit 20%
+                    <span style="color:#6b7280; font-size:11px;">({{ t.count }} calls)</span>
+                </div>
+                {% endif %}
+                {% if nt %}
+                <div style="font-size:13px;">
+                    <span style="color:#ef4444; font-weight:600;">NO TRADE</span>
+                    &nbsp;{{ nt.hit_20pct }}% were real moves missed
+                    <span style="color:#6b7280; font-size:11px;">({{ nt.count }} calls)</span>
+                </div>
+                {% endif %}
+                <div style="font-size:10px; color:#6b7280; margin-top:6px;">
+                    {{ model_validation.total }} resolved calls total
+                </div>
+            {% else %}
+                <p style="font-size:12px; color:#9ca3af; margin:0;">
+                    Accumulating data — need 10+ live scans with AI recs
+                    that are 3+ days old. Check back soon.
+                </p>
             {% endif %}
-            {% if nt %}
-            <div style="font-size:13px;">
-                <span style="color:#ef4444; font-weight:600;">NO TRADE</span>
-                &nbsp;{{ nt.hit_20pct }}% were real moves missed
-                <span style="color:#6b7280; font-size:11px;">({{ nt.count }} calls)</span>
-            </div>
-            {% endif %}
-            <div style="font-size:10px; color:#6b7280; margin-top:6px;">
-                {{ model_validation.total }} resolved calls total
-            </div>
         </div>
-        {% endif %}
 
     </div>
 
@@ -342,7 +347,20 @@
         Win Rate = next-day positive return. Hit 20%+ = spiked ≥20% within 10 trading days (~2 weeks).
     </p>
 
-    {% if model_comparison %}
+    {% if not model_comparison %}
+    <div style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:10px;
+                padding:20px 24px; color:#6b7280; font-size:13px; line-height:1.7;">
+        <strong style="color:#374151;">No TRADE call data yet.</strong>
+        AI TRADE/NO_TRADE decisions are logged on every live scan. Outcomes
+        (next-day return, 20%+ hit) are filled in automatically after 3 trading days.
+        This section will populate as scans age — check back in a few days.
+        <br><br>
+        <strong>What this will show:</strong> TRADE calls vs NO_TRADE calls —
+        hit rate, win rate, avg return, and breakdown by confidence level (HIGH / MEDIUM / LOW)
+        and score bucket (75-89, 90+). Use this to tune the score threshold and
+        confidence filter on auto-paper-trades.
+    </div>
+    {% else %}
 
     {# --- Overall summary row --- #}
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px;">
@@ -486,10 +504,6 @@
         Rows show — until that model has outcomes in that score bucket.
     </p>
 
-    {% else %}
-    <p style="color:#6b7280; font-size:14px; margin:0 0 32px;">
-        No comparison data yet — run Auto AI mode scans and wait 2+ days for outcomes to be labeled.
-    </p>
     {% endif %}
 
     <!-- PER-SIGNAL BACKTEST PERFORMANCE -->
@@ -1465,6 +1479,21 @@
                 </button>
             </form>
 
+            <form method="post" action="/backfill-signals">
+                <button type="submit"
+                        {% if signals_backfill_running %}disabled{% endif %}
+                        style="background:{% if signals_backfill_running %}#9ca3af{% else %}#0369a1{% endif %};
+                               color:white; border:none; padding:10px 22px; border-radius:8px;
+                               cursor:{% if signals_backfill_running %}default{% else %}pointer{% endif %};
+                               font-size:14px; font-weight:600;">
+                    {% if signals_backfill_running %}
+                        Backfilling Signals…
+                    {% else %}
+                        Backfill Signal Features
+                    {% endif %}
+                </button>
+            </form>
+
             <div id="backfillStatus" style="font-size:13px; color:#6b7280;">
                 {% if backfill_status.status == 'running' %}
                     Processing {{ backfill_status.processed }}/{{ backfill_status.total }} tickers
@@ -1472,6 +1501,9 @@
                 {% elif backfill_status.status == 'complete' %}
                     Last run: {{ backfill_status.saved }} examples saved from
                     {{ backfill_status.total }} tickers.
+                {% endif %}
+                {% if signals_backfill_running %}
+                    &nbsp;·&nbsp; <span style="color:#0369a1;">Re-scoring historical rows for signals_json…</span>
                 {% endif %}
             </div>
         </div>

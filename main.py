@@ -25,7 +25,7 @@ from app.broker import submit_market_order, close_position as broker_close, is_c
 from app.scanner import run_scan, run_scan_5m, get_finviz_quotes, prepare_dataframe
 from app.validator import validate_scan_results
 from app.alerts import send_scan_alert, send_take_profit_alert, send_watchlist_alert, _send_telegram_admin, send_invite_email
-from app.backfill import build_historical_dataset
+from app.backfill import build_historical_dataset, backfill_signals_for_historical
 from app.backfill_5m import backfill_5m_history, get_5m_backfill_status, set_5m_backfill_status
 from app.health import run_health_checks, get_health_status
 from app.lstm_model import train_lstm, predict_hit_probability, get_lstm_status, get_sequence_stats
@@ -177,6 +177,7 @@ seed_users()
 
 # In-process flag so the backfill guard is reliable even if DB status got stuck
 _backfill_running = False
+_signals_backfill_running = False
 _lstm_training    = False
 
 # Alert deduplication — tracks symbols already alerted today; resets each trading day
@@ -1117,6 +1118,7 @@ def analytics(request: Request):
             "risk_metrics": get_risk_metrics(),
             "historical_count": get_historical_count(),
             "backfill_status": get_backfill_status(),
+            "signals_backfill_running": _signals_backfill_running,
             "complex_ai_weights": get_squeeze_weights(),
             "hypothesis": get_hypothesis(),
             "hypothesis_rules": get_hypothesis_rules(),
@@ -1310,6 +1312,7 @@ def optimize_weights(request: Request):
             "risk_metrics": get_risk_metrics(),
             "historical_count": get_historical_count(),
             "backfill_status": get_backfill_status(),
+            "signals_backfill_running": _signals_backfill_running,
             "user": request.session["user"],
             "active_tab": "daily",
             "weight_analysis": analysis,
@@ -1662,6 +1665,7 @@ def optimize_complex(request: Request):
             "risk_metrics": get_risk_metrics(),
             "historical_count": get_historical_count(),
             "backfill_status": get_backfill_status(),
+            "signals_backfill_running": _signals_backfill_running,
             "user": request.session["user"],
             "active_tab": "daily",
             "complex_ai_result": opt_result,
@@ -1821,6 +1825,28 @@ def start_backfill(request: Request):
     threading.Thread(target=_run, kwargs={"weights": weights}, daemon=True).start()
 
     return RedirectResponse("/analytics?backfill=started", status_code=303)
+
+
+@app.post("/backfill-signals")
+def start_signals_backfill(request: Request):
+    """Re-score all historical rows to populate signals_json for XGBoost training."""
+    global _signals_backfill_running
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    if _signals_backfill_running:
+        return RedirectResponse("/analytics?signals_backfill=already_running", status_code=303)
+
+    def _run():
+        global _signals_backfill_running
+        _signals_backfill_running = True
+        try:
+            n = backfill_signals_for_historical(max_workers=2)
+            print(f"SIGNALS BACKFILL: complete — {n} rows updated")
+        finally:
+            _signals_backfill_running = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return RedirectResponse("/analytics?signals_backfill=started", status_code=303)
 
 
 @app.get("/api/backfill-status")

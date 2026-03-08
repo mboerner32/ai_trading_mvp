@@ -284,6 +284,118 @@ def _load_us_tickers(path: str = "us_tickers.txt", max_count: int = 2000) -> lis
         return []
 
 
+def backfill_signals_for_historical(max_workers: int = 2) -> int:
+    """
+    For each historical scan row without signals_json:
+      1. Download full OHLCV for the symbol (yfinance max period)
+      2. Re-run score_stock_squeeze() at the matching scan date
+      3. Persist fired_signals as signals_json
+
+    This gives XGBoost 3,500+ labeled training rows with full signal features.
+    Skips rows that already have signals_json set (safe to re-run).
+    Returns number of rows updated.
+    """
+    import json
+    from app.scoring_engine import score_stock_squeeze
+
+    # Unique symbols that still need signals_json
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT DISTINCT symbol FROM scans
+        WHERE mode = 'historical' AND signals_json IS NULL
+    """)
+    symbols = [r[0] for r in cursor.fetchall()]
+    conn.close()
+
+    if not symbols:
+        print("Signal backfill: all historical rows already have signals_json")
+        return 0
+
+    print(f"Signal backfill: {len(symbols)} symbols to re-score")
+    updated_total = 0
+
+    def _process_one(symbol):
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, timestamp FROM scans
+                WHERE mode = 'historical' AND signals_json IS NULL AND symbol = ?
+            """, (symbol,))
+            rows = cursor.fetchall()
+            conn.close()
+            if not rows:
+                return 0
+
+            df = yf.download(symbol, period="max", interval="1d",
+                             progress=False, auto_adjust=False)
+            if df.empty or len(df) < 30:
+                return 0
+            df = prepare_dataframe(df)
+
+            fundamentals = {}
+            try:
+                info = yf.Ticker(symbol).fast_info
+                fundamentals["shares_outstanding"] = getattr(info, "shares", None)
+            except Exception:
+                pass
+            try:
+                full_info = yf.Ticker(symbol).info
+                fundamentals["sector"]       = full_info.get("sector")
+                fundamentals["industry"]     = full_info.get("industry")
+                fundamentals["float_shares"] = full_info.get("floatShares")
+                fundamentals["institution_pct"] = full_info.get("heldPercentInstitutions")
+            except Exception:
+                pass
+
+            date_index = {str(idx)[:10]: i for i, idx in enumerate(df.index)}
+
+            updates = []
+            for scan_id, timestamp in rows:
+                date_str = str(timestamp)[:10]
+                idx = date_index.get(date_str)
+                if idx is None or idx < 1:
+                    continue
+                df_slice = df.iloc[:idx + 1]
+                result = score_stock_squeeze(symbol, df_slice, fundamentals)
+                if result:
+                    fired = result.get("checklist", {}).get("fired_signals", {})
+                    updates.append((json.dumps(fired) if fired else "{}", scan_id))
+
+            if updates:
+                conn = sqlite3.connect(DB_NAME)
+                cursor = conn.cursor()
+                cursor.executemany(
+                    "UPDATE scans SET signals_json = ? WHERE id = ?", updates
+                )
+                conn.commit()
+                conn.close()
+                return len(updates)
+            return 0
+
+        except Exception as e:
+            print(f"Signal backfill: error on {symbol} — {e}")
+            return 0
+        finally:
+            try:
+                del df
+            except NameError:
+                pass
+            gc.collect()
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_process_one, sym): sym for sym in symbols}
+        for i, future in enumerate(as_completed(futures), 1):
+            updated_total += future.result()
+            if i % 20 == 0 or i == len(symbols):
+                print(f"Signal backfill: {i}/{len(symbols)} symbols done, "
+                      f"{updated_total} rows updated")
+
+    print(f"Signal backfill: complete — {updated_total} rows updated")
+    return updated_total
+
+
 def build_historical_dataset(max_workers=2, weights=None):
     """
     Process seed + Finviz + us_tickers.txt + previously seen tickers in parallel.
