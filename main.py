@@ -15,7 +15,7 @@ import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, Request, Form, BackgroundTasks
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -2549,6 +2549,24 @@ def feedback_export(request: Request):
         content=content,
         media_type="application/json",
         headers={"Content-Disposition": "attachment; filename=feedback_backup.json"},
+    )
+
+
+@app.get("/export-db")
+def export_db(request: Request):
+    """Download the live SQLite database for offline analysis."""
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    import os
+    db_path = os.environ.get("DB_PATH", "scan_history.db")
+    if not os.path.exists(db_path):
+        return Response("Database file not found", status_code=404)
+    from datetime import date
+    filename = f"scan_history_{date.today().isoformat()}.db"
+    return FileResponse(
+        path=db_path,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 
