@@ -28,8 +28,8 @@ from datetime import datetime
 import numpy as np
 
 SEQUENCE_LEN    = 20          # 20 trading days of history per input window
-FEATURES        = 10          # features per time step (see extract_features())
-FEATURES_VER    = 2           # bump this whenever the feature set changes
+FEATURES        = 12          # features per time step (see extract_features())
+FEATURES_VER    = 3           # bump this whenever the feature set changes
 MODEL_PATH      = "lstm_model.pt"
 SEQ_DATA_PATH   = "lstm_sequences.npz"
 
@@ -38,12 +38,16 @@ SEQ_DATA_PATH   = "lstm_sequences.npz"
 # Feature extraction
 # ---------------------------------------------------------------------------
 
-def extract_features(row) -> list | None:
+def extract_features(row, shares_outstanding=None, sector=None) -> list | None:
     """
-    Extract 10 normalised features from a prepared_dataframe row.
+    Extract 12 normalised features from a prepared_dataframe row.
+    Features 1-10: daily OHLCV/technical signals.
+    Features 11-12: static fundamentals (shares outstanding, biotech sector flag).
     Returns None if any required field is missing/invalid.
     """
     try:
+        import math
+
         def _f(val, default=0.0):
             try:
                 v = float(val)
@@ -61,11 +65,19 @@ def extract_features(row) -> list | None:
         return_3d       = np.clip(_f(row.get("return_3d")),  -1.0, 1.0)
         range_10d       = np.clip(_f(row.get("range_10d")),   0.0, 2.0)
 
-        # New technical indicator features
+        # Technical indicator features
         rsi_14    = np.clip(_f(row.get("rsi_14"),   50.0), 0.0, 100.0) / 100.0
         macd_norm = np.clip(_f(row.get("macd_norm"), 0.0), -0.05, 0.05) / 0.05
         bb_width  = np.clip(_f(row.get("bb_width"),  0.1),  0.0, 0.5)  / 0.5
         bb_pct    = np.clip(_f(row.get("bb_pct"),    0.5),  0.0, 1.0)
+
+        # Static fundamental features (broadcast across all timesteps)
+        # log10(shares_M): <10M≈0, 10-30M≈0.33, 30-100M≈0.67; clipped [-1, 1]
+        if shares_outstanding and shares_outstanding > 0:
+            log_shares = float(np.clip(math.log10(shares_outstanding / 1e6) / 3, -1.0, 1.0))
+        else:
+            log_shares = 0.0   # neutral / unknown
+        is_biotech = 1.0 if sector and "health" in sector.lower() else 0.0
 
         return [
             float(daily_return),
@@ -78,6 +90,8 @@ def extract_features(row) -> list | None:
             float(macd_norm),
             float(bb_width),
             float(bb_pct),
+            log_shares,
+            is_biotech,
         ]
     except Exception:
         return None
@@ -106,7 +120,12 @@ def build_sequences_from_backfill(seq_inputs: list) -> int:
         sym = ex.get("symbol")
         ts  = ex.get("timestamp", "")[:10]
         if sym and ts:
-            by_symbol.setdefault(sym, []).append((ts, ex.get("days_to_20pct")))
+            by_symbol.setdefault(sym, []).append((
+                ts,
+                ex.get("days_to_20pct"),
+                ex.get("shares_outstanding"),
+                ex.get("sector"),
+            ))
 
     X_list, y_list = [], []
 
@@ -124,7 +143,7 @@ def build_sequences_from_backfill(seq_inputs: list) -> int:
                 for i, idx in enumerate(df.index)
             }
 
-            for scan_date_str, days_to_20pct in entries:
+            for scan_date_str, days_to_20pct, shares_outstanding, sector in entries:
                 idx = date_index.get(scan_date_str)
                 if idx is None or idx < SEQUENCE_LEN:
                     continue
@@ -132,7 +151,7 @@ def build_sequences_from_backfill(seq_inputs: list) -> int:
                 seq = []
                 valid = True
                 for j in range(idx - SEQUENCE_LEN, idx):
-                    feats = extract_features(df.iloc[j])
+                    feats = extract_features(df.iloc[j], shares_outstanding, sector)
                     if feats is None:
                         valid = False
                         break
@@ -283,10 +302,13 @@ def load_lstm():
         return None
 
 
-def predict_hit_probability(symbol: str) -> float | None:
+def predict_hit_probability(symbol: str,
+                            shares_outstanding: int = None,
+                            sector: str = None) -> float | None:
     """
-    Fetch the last 3 months of OHLCV for symbol, extract the most recent
-    SEQUENCE_LEN-day window, run the LSTM, and return a 0–1 probability.
+    Fetch the last 3 months of OHLCV for symbol, extract the 20-day window
+    ending the day before today (matching training distribution), run the LSTM,
+    and return a 0–1 probability.
     Returns None on any error (model not trained, bad data, etc.).
     """
     try:
@@ -300,21 +322,25 @@ def predict_hit_probability(symbol: str) -> float | None:
 
         df = yf.download(symbol, period="3mo", interval="1d",
                          progress=False, auto_adjust=False)
-        if df.empty or len(df) < SEQUENCE_LEN:
+        # Need SEQUENCE_LEN + 1 rows so we can exclude today (last row)
+        if df.empty or len(df) < SEQUENCE_LEN + 1:
             return None
 
         df = prepare_dataframe(df)
-        if len(df) < SEQUENCE_LEN:
+        if len(df) < SEQUENCE_LEN + 1:
             return None
+
+        # Exclude today's incomplete candle — matches training window convention
+        df = df.iloc[:-1]
 
         seq = []
         for j in range(len(df) - SEQUENCE_LEN, len(df)):
-            feats = extract_features(df.iloc[j])
+            feats = extract_features(df.iloc[j], shares_outstanding, sector)
             if feats is None:
                 return None
             seq.append(feats)
 
-        x = torch.tensor([seq], dtype=torch.float32)   # (1, 20, 6)
+        x = torch.tensor([seq], dtype=torch.float32)
         with torch.no_grad():
             prob = model(x).item()
 

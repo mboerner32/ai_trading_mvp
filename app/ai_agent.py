@@ -936,6 +936,7 @@ def autonomous_optimize(
     current_weights: dict,
     prior_hypothesis: str = None,
     closed_trades: list = None,
+    hypothesis_rules: list = None,
 ) -> dict:
     """
     Single Claude Sonnet call that combines hypothesis synthesis + weight optimization
@@ -1028,6 +1029,33 @@ Shares: <1M: {fmt(so.get("<1M"))} | 1-5M: {fmt(so.get("1-5M"))} | 5-10M: {fmt(so
             "(need 5+ scans with signals_json AND known outcomes)."
         )
 
+    # ---- Format hypotheses-to-test section ----
+    # Includes user observations + any pending rules waiting for AI validation
+    to_test = []
+    if hypothesis_rules:
+        for r in hypothesis_rules:
+            if r.get("status") in ("pending", "active") and r.get("source") in (
+                "user_observation", "user", "feedback", "historical"
+            ):
+                to_test.append(r)
+    if to_test:
+        lines = [
+            "HYPOTHESES TO TEST (validate each with signal/backtest evidence — be explicit):"
+        ]
+        for i, r in enumerate(to_test[:8], 1):
+            status = r.get("status", "pending").upper()
+            lines.append(f"  H{i} [{status}] {r['rule_text'][:300]}")
+        lines.append(
+            "For each hypothesis: cite the relevant signal key (e.g. first_hour_vol_20m), "
+            "its hit_20pct and vs_baseline from PER-SIGNAL BACKTEST above, "
+            "and state VALIDATED / REJECTED / INSUFFICIENT_DATA with reasoning."
+        )
+        hypotheses_to_test_section = "\n".join(lines)
+    else:
+        hypotheses_to_test_section = (
+            "HYPOTHESES TO TEST: None pending — generate new ones from the evidence above."
+        )
+
     # ---- Format prior hypothesis section ----
     if prior_hypothesis:
         hyp_section = f"PRIOR HYPOTHESIS / LEARNED PATTERNS (evolve, do not discard):\n{prior_hypothesis[:1200]}"
@@ -1064,10 +1092,11 @@ Shares: <1M: {fmt(so.get("<1M"))} | 1-5M: {fmt(so.get("1-5M"))} | 5-10M: {fmt(so
 
     prompt = f"""You are autonomously evolving a self-improving stock trading model for low-float microcap momentum setups targeting 20%+ intraday spikes.
 
-You have TWO tasks:
+You have THREE tasks:
 
-TASK 1 — HYPOTHESIS EVOLUTION: Generate pattern rules supported by the evidence. Assign a confidence score (0-100) to each.
-TASK 2 — CRITERIA & WEIGHT OPTIMIZATION: Decide which scoring criteria to keep, remove, or add. Set weight=0 to disable a criterion, 1-50 to enable it.
+TASK 1 — HYPOTHESIS TESTING: Validate or reject each hypothesis listed under "HYPOTHESES TO TEST" using the per-signal backtest data. Generate new hypotheses from patterns you observe in the data that are NOT already listed.
+TASK 2 — HYPOTHESIS EVOLUTION: Combine tested + new hypotheses into updated pattern rules. Assign a confidence score (0-100) to each.
+TASK 3 — CRITERIA & WEIGHT OPTIMIZATION: Decide which scoring criteria to keep, remove, or add based on validated evidence. Set weight=0 to disable, 1-50 to enable.
 
 ## Current Auto AI Weights (0 = disabled, 1–50 = enabled; scorer normalises to 0–100 automatically)
 {json.dumps(current_display, indent=2)}
@@ -1091,6 +1120,9 @@ OPTIONAL CRITERIA — disabled by default (weight=0), set 1-20 to enable if evid
   bb_upper_breakout       Bollinger %B > 0.85: price breaking above upper Bollinger Band
   consecutive_green_bonus 2+ consecutive green days: sustained buying pressure
   low_float_ratio_bonus   Float < 40% of shares outstanding: tight float amplifies moves
+
+## Hypotheses to Validate
+{hypotheses_to_test_section}
 
 ## Evidence
 {backtest_section}

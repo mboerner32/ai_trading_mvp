@@ -154,13 +154,17 @@ def _process_ticker(symbol, weights=None):
 
         df = prepare_dataframe(df)
 
-        # Fetch current shares outstanding + float (best available proxy for historical)
+        # Fetch shares outstanding and sector (best available proxy for historical)
         shares_outstanding = None
         float_shares = None
+        sector = None
         try:
             info = yf.Ticker(symbol).fast_info
             shares_outstanding = getattr(info, "shares", None)
-            # fast_info doesn't have floatShares — skip to avoid large dict download
+        except Exception:
+            pass
+        try:
+            sector = yf.Ticker(symbol).info.get("sector")
         except Exception:
             pass
 
@@ -237,6 +241,7 @@ def _process_ticker(symbol, weights=None):
                 "days_to_20pct":      days_to_20pct,
                 "range_10d":          round(range_10d, 4) if range_10d is not None else None,
                 "yesterday_green":    int(yesterday_green),
+                "sector":             sector,
             })
 
         return examples
@@ -269,9 +274,19 @@ def _get_db_tickers():
         return []
 
 
+def _load_us_tickers(path: str = "us_tickers.txt", max_count: int = 2000) -> list:
+    """Load tickers from flat text file. Filters to 1-5 char alpha-only tickers."""
+    try:
+        with open(path) as f:
+            raw = [line.strip().upper() for line in f if line.strip()]
+        return [t for t in raw if 1 <= len(t) <= 5 and t.isalpha()][:max_count]
+    except Exception:
+        return []
+
+
 def build_historical_dataset(max_workers=2, weights=None):
     """
-    Process all seed + dynamically fetched + previously seen tickers in parallel.
+    Process seed + Finviz + us_tickers.txt + previously seen tickers in parallel.
     Saves qualifying labeled examples into the scans table (mode='historical').
     Returns count of examples saved.
 
@@ -285,22 +300,27 @@ def build_historical_dataset(max_workers=2, weights=None):
 
     # Fetch dynamic universe from Finviz (price < $10, avg vol > 200K)
     try:
-        dynamic_tickers = fetch_backfill_universe(max_tickers=500)
+        dynamic_tickers = fetch_backfill_universe(max_tickers=1000)
     except Exception as e:
         print(f"Backfill: dynamic universe fetch failed — {e}")
         dynamic_tickers = []
 
-    # Merge seed + dynamic + known tickers, deduplicated, seed list first
+    # Load broad US ticker universe for extra coverage
+    us_tickers = _load_us_tickers()
+
+    # Merge seed + dynamic + us_tickers + known tickers, deduplicated, seed list first
     seen = set()
     all_tickers = []
-    for t in SEED_TICKERS + dynamic_tickers + db_tickers:
+    for t in SEED_TICKERS + dynamic_tickers + us_tickers + db_tickers:
         if t not in seen:
             seen.add(t)
             all_tickers.append(t)
 
     total = len(all_tickers)
     set_backfill_status("running", 0, total, 0)
-    print(f"Backfill: starting — {total} tickers to process")
+    print(f"Backfill: starting — {total} tickers "
+          f"(seed={len(SEED_TICKERS)}, finviz={len(dynamic_tickers)}, "
+          f"us_tickers={len(us_tickers)}, db={len(db_tickers)})")
 
     batch = []          # full example dicts — flushed every 50 tickers
     seq_inputs = []     # lightweight tuples for LSTM — kept for full run
@@ -323,9 +343,11 @@ def build_historical_dataset(max_workers=2, weights=None):
                 batch.extend(result)
                 for ex in result:
                     seq_inputs.append({
-                        "symbol":       ex["symbol"],
-                        "timestamp":    ex["timestamp"],
-                        "days_to_20pct": ex.get("days_to_20pct"),
+                        "symbol":            ex["symbol"],
+                        "timestamp":         ex["timestamp"],
+                        "days_to_20pct":     ex.get("days_to_20pct"),
+                        "shares_outstanding": ex.get("shares_outstanding"),
+                        "sector":            ex.get("sector"),
                     })
 
             # Update status on every ticker so progress bar stays live

@@ -252,6 +252,8 @@ DEFAULT_SQUEEZE_WEIGHTS = {
     "institution_strong":   5,    # 40%+ benchmark — holds the floor
     "sector_biotech_bonus": 5,    # Healthcare/Biotech historically outperforms
     # Optional criteria — disabled (0) by default, Auto AI can enable
+    # NOTE: first_hour_vol_20m is tracked in fired_signals for hypothesis testing
+    # but NOT applied as a weight until AI validates it from backtesting evidence
     "rsi_momentum_bonus":     0,  # RSI 50–70: healthy uptrend, not overbought
     "macd_positive_bonus":    0,  # Positive MACD: bullish momentum crossover
     "bb_upper_breakout":      0,  # Bollinger %B > 0.85: breaking above upper band
@@ -414,6 +416,11 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
     if no_news_catalyst:
         score += w.get("no_news_bonus", 5)
 
+    # First-hour volume: data collected for hypothesis testing, not scored yet
+    first_hour_vol     = (fundamentals or {}).get("first_hour_vol")
+    first_hour_vol_20m = first_hour_vol is not None and first_hour_vol >= 20_000_000
+    # (score not applied — AI must validate this hypothesis first)
+
     # ------------------------------------------------------------------
     # OPTIONAL CRITERIA — disabled by default (weight=0), Auto AI can enable
     # ------------------------------------------------------------------
@@ -506,6 +513,9 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
         if fs and so and so > 0 and (fs / so) < 0.40:
             fired_signals["low_float_ratio_bonus"] = True
 
+    if first_hour_vol_20m:
+        fired_signals["first_hour_vol_20m"] = True
+
     # ------------------------------------------------------------------
     # NORMALISE TO 0–100
     # With default weights max_score = 100, so no change.
@@ -570,6 +580,8 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
             "sector": sector,
             "industry": industry,
             "no_news_catalyst": no_news_catalyst,
+            "first_hour_vol": first_hour_vol,
+            "first_hour_vol_20m": first_hour_vol_20m,
             # template compatibility aliases
             "high_cash": high_cash,
             "cash_per_share": round(cash_per_share, 2) if cash_per_share else None,

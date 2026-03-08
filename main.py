@@ -29,6 +29,10 @@ from app.backfill import build_historical_dataset
 from app.backfill_5m import backfill_5m_history, get_5m_backfill_status, set_5m_backfill_status
 from app.health import run_health_checks, get_health_status
 from app.lstm_model import train_lstm, predict_hit_probability, get_lstm_status, get_sequence_stats
+from app.lstm_5m import (
+    train_lstm_5m, predict_5m_hit_probability,
+    get_lstm_5m_status, get_5m_sequence_stats, build_5m_sequences,
+)
 from app.ai_agent import (
     recommend_position_size,
     predict_price_target,
@@ -131,7 +135,10 @@ from app.database import (
     save_weight_version,
     get_current_version_id,
     get_version_performance_stats,
+    save_bundle_as_rule,
+    save_scan_candidates,
 )
+from app.ml_optimizer import train_xgb_weights, get_xgb_status
 
 app = FastAPI()
 
@@ -182,34 +189,33 @@ _auto_trade_date:  str = ""
 
 # ---------------- SCHEDULER ----------------
 def _autoclose_take_profit() -> list:
-    """Close open positions that have hit their per-trade take-profit target."""
+    """Close open positions that have hit their per-trade take-profit target (+20% by default)."""
     positions = get_open_positions()
-    closed = []
-    now = datetime.datetime.now()
+    closed       = []
+    take_profits = []
+
     for pos in positions:
-        # Grace period: never auto-close a trade opened less than 5 minutes ago
-        try:
-            opened_dt = datetime.datetime.fromisoformat(pos["opened_at"].replace(" ", "T"))
-            if (now - opened_dt).total_seconds() < 300:
-                continue
-        except Exception:
-            pass
-        price = _fetch_current_price(pos["symbol"], pos["entry_price"])
-        pnl_pct = (price - pos["entry_price"]) / pos["entry_price"] * 100
-        take_profit_target = pos.get("take_profit_pct", 20.0)
-        if pnl_pct >= take_profit_target:
+        price   = _fetch_current_price(pos["symbol"], pos["entry_price"])
+        entry   = pos["entry_price"]
+        pnl_pct = (price - entry) / entry * 100
+
+        tp_target = pos.get("take_profit_pct", 20.0)
+        if pnl_pct >= tp_target:
             result = close_trade(pos["trade_id"], price)
             if result:
                 broker_close(pos["symbol"])
-                closed.append({
+                entry_data = {
                     "symbol":       pos["symbol"],
-                    "entry_price":  pos["entry_price"],
+                    "entry_price":  entry,
                     "exit_price":   round(price, 4),
                     "realized_pnl": result["realized_pnl"],
                     "pnl_pct":      round(pnl_pct, 1),
-                })
-    if closed:
-        send_take_profit_alert(closed)
+                }
+                closed.append(entry_data)
+                take_profits.append(entry_data)
+
+    if take_profits:
+        send_take_profit_alert(take_profits)
     return closed
 
 
@@ -306,17 +312,26 @@ def _auto_ai_optimize():
         all_trades      = get_trade_history()
         closed_trades   = [t for t in all_trades if t.get("exit_price") is not None]
 
+        all_rules = get_hypothesis_rules()
         result = autonomous_optimize(
             opt_data, all_feedback, current_weights,
-            prior_text, closed_trades[-20:]
+            prior_text, closed_trades[-20:],
+            hypothesis_rules=all_rules,
         )
 
         if "error" in result and not result.get("hypotheses"):
             print(f"AUTO-AI: optimization failed — {result['error']}")
             return
 
-        # Guardrail: allow full disabling (floor=0), cap upward drift at default+40%
-        new_weights = result.get("weights", current_weights)
+        # XGBoost auto-transition: if enough labeled live data exists, use ML weights
+        # instead of Claude's weight suggestions (Claude still runs for hypotheses above)
+        xgb_weights = train_xgb_weights()
+        if xgb_weights:
+            print(f"AUTO-AI: XGBoost model active — using ML-derived weights")
+            new_weights = xgb_weights
+        else:
+            # Guardrail: allow full disabling (floor=0), cap upward drift at default+40%
+            new_weights = result.get("weights", current_weights)
         for key, default_val in DEFAULT_SQUEEZE_WEIGHTS.items():
             if key not in new_weights:
                 # Optional criteria (default=0) stay 0 if AI didn't mention them
@@ -439,7 +454,20 @@ def _enrich_high_scorers(results: list, mode: str = None) -> list:
 
     def _enrich_one(stock):
         try:
-            lstm_prob = predict_hit_probability(stock["symbol"])
+            checklist = stock.get("checklist", {})
+            if mode == "fivemin":
+                # Use the 5m-specific intraday LSTM
+                lstm_prob = predict_5m_hit_probability(
+                    stock["symbol"],
+                    shares_outstanding=checklist.get("shares_outstanding"),
+                    sector=checklist.get("sector"),
+                )
+            else:
+                lstm_prob = predict_hit_probability(
+                    stock["symbol"],
+                    shares_outstanding=checklist.get("shares_outstanding"),
+                    sector=checklist.get("sector"),
+                )
             stock["lstm_prob"] = lstm_prob
             ticker_history = get_ticker_scan_history(stock["symbol"])
             news = get_stock_news(stock["symbol"])
@@ -457,12 +485,13 @@ def _enrich_high_scorers(results: list, mode: str = None) -> list:
     return results
 
 
-def _auto_paper_trade(results: list, today_str: str):
+def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze"):
     """
     Open paper trades for TRADE calls (HIGH or MEDIUM confidence) found in enriched scan results.
     Limits to 3 auto-trades per trading day. Skips symbols already in open positions.
     Mirrors each trade to Alpaca paper account if configured.
     Sends a Telegram notification for each auto-trade opened.
+
     """
     global _auto_trade_count, _auto_trade_date
 
@@ -496,7 +525,7 @@ def _auto_paper_trade(results: list, today_str: str):
         confidence    = tc.get("confidence", "")
         result = open_trade(
             symbol, entry_price, position_size,
-            f"auto-trade: {confidence} confidence AI call", 20.0
+            f"auto-trade: {confidence} confidence AI call", 20.0,
         )
         if result:
             _auto_trade_count += 1
@@ -510,7 +539,8 @@ def _auto_paper_trade(results: list, today_str: str):
 
             _send_telegram_admin(
                 f"<b>Auto-Trade Opened: {symbol}</b>\n"
-                f"Entry: ${entry_price:.4f} · Score: {r['score']}/100 · ${position_size}{alpaca_str}\n"
+                f"Entry: ${entry_price:.4f} · Score: {r['score']}/100 · ${position_size}"
+                f" · Target +20%{alpaca_str}\n"
                 f"<i>{tc.get('rationale', '')}</i>"
             )
             print(f"AUTO-TRADE: opened {symbol} at ${entry_price:.4f} "
@@ -535,6 +565,7 @@ def _scheduled_scan():
         try:
             data = run_scan(mode=mode)
             save_scan(data["results"], mode)
+            save_scan_candidates(data["results"], mode)
             save_scan_cache(mode, data["results"], data["summary"])
             print(f"SCHEDULER: {mode} scan complete ({len(data['results'])} results)")
             if mode in ("autoai", "squeeze"):
@@ -566,6 +597,7 @@ def _premarket_scan():
     print("SCHEDULER: Running pre-market scan...")
     try:
         data = run_scan(mode="squeeze", premarket=True)
+        save_scan(data["results"], "squeeze")   # persist for hypothesis testing
         save_scan_cache("squeeze", data["results"], data["summary"])
         send_scan_alert(data["results"], "Complex + AI (pre-market)")
         print(f"SCHEDULER: pre-market scan complete ({len(data['results'])} results)")
@@ -713,6 +745,8 @@ def _fivemin_spike_scan():
     try:
         data = run_scan_5m()
         save_scan(data["results"], "fivemin")
+        # Save ALL screened candidates (including low-score) for hypothesis observation pool
+        save_scan_candidates(data["results"], "fivemin")
         save_scan_cache("fivemin", data["results"], data["summary"])
 
         new_alerts = [
@@ -726,7 +760,7 @@ def _fivemin_spike_scan():
                 if r.get("score", 0) >= 75 and r.get("symbol") not in _alerted_today
             ]
             send_scan_alert(new_alerts, f"5m Spike {et_now.strftime('%H:%M')}")
-            _auto_paper_trade(new_alerts, today_str)
+            _auto_paper_trade(new_alerts, today_str, mode="fivemin")
             for r in new_alerts:
                 _alerted_today.add(r.get("symbol"))
 
@@ -999,8 +1033,15 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
             stock["ai_target"] = predict_price_target(stock, sizing_stats, hypothesis_text)
         else:
             stock["ai_target"] = {"target_pct": 20, "rationale": ""}
-        # Local LSTM inference — fast, no API cost
-        lstm_prob = predict_hit_probability(stock["symbol"])
+        # Local LSTM inference — only for high-scorers (each call downloads 3mo of data)
+        lstm_prob = None
+        if stock["score"] >= 75:
+            checklist = stock.get("checklist", {})
+            lstm_prob = predict_hit_probability(
+                stock["symbol"],
+                shares_outstanding=checklist.get("shares_outstanding"),
+                sector=checklist.get("sector"),
+            )
         stock["lstm_prob"] = lstm_prob
 
         ticker_history = get_ticker_scan_history(stock["symbol"])
@@ -1082,6 +1123,7 @@ def analytics(request: Request):
             "pending_rule_count": get_pending_rule_count(),
             "lstm_status": get_lstm_status(),
             "seq_stats": get_sequence_stats(),
+            "xgb_status": get_xgb_status(),
             "model_validation": get_model_validation_stats(),
             "autoai_log": get_autoai_log(limit=20),
             "autoai_weights": get_autoai_weights(),
@@ -1099,6 +1141,8 @@ def analytics(request: Request):
             "fm_live_scan_stats":  get_live_scan_stats(modes=_FIVEMIN_MODES),
             "fm_per_signal_stats": get_per_signal_stats(modes=_FIVEMIN_MODES),
             "fivemin_backfill_status": get_5m_backfill_status(),
+            "lstm_5m_status": get_lstm_5m_status(),
+            "seq_5m_stats": get_5m_sequence_stats(),
             # --- Tab 3: Version Tracker ---
             "version_stats": get_version_performance_stats(),
         }
@@ -1274,6 +1318,7 @@ def optimize_weights(request: Request):
             "hypothesis": get_hypothesis(),
             "lstm_status": get_lstm_status(),
             "seq_stats": get_sequence_stats(),
+            "xgb_status": get_xgb_status(),
             "model_validation": get_model_validation_stats(),
             "model_comparison": get_model_comparison_stats(),
             "score_buckets":       get_score_buckets(modes=_DAILY_MODES),
@@ -1287,6 +1332,8 @@ def optimize_weights(request: Request):
             "fm_live_scan_stats":  get_live_scan_stats(modes=_FIVEMIN_MODES),
             "fm_per_signal_stats": get_per_signal_stats(modes=_FIVEMIN_MODES),
             "fivemin_backfill_status": get_5m_backfill_status(),
+            "lstm_5m_status": get_lstm_5m_status(),
+            "seq_5m_stats": get_5m_sequence_stats(),
             "version_stats":       get_version_performance_stats(),
         }
     )
@@ -1622,6 +1669,7 @@ def optimize_complex(request: Request):
             "hypothesis": hypothesis_data,
             "lstm_status": get_lstm_status(),
             "seq_stats": get_sequence_stats(),
+            "xgb_status": get_xgb_status(),
             "model_validation": get_model_validation_stats(),
             "model_comparison": get_model_comparison_stats(),
             "score_buckets":       get_score_buckets(modes=_DAILY_MODES),
@@ -1635,6 +1683,8 @@ def optimize_complex(request: Request):
             "fm_live_scan_stats":  get_live_scan_stats(modes=_FIVEMIN_MODES),
             "fm_per_signal_stats": get_per_signal_stats(modes=_FIVEMIN_MODES),
             "fivemin_backfill_status": get_5m_backfill_status(),
+            "lstm_5m_status": get_lstm_5m_status(),
+            "seq_5m_stats": get_5m_sequence_stats(),
             "version_stats":       get_version_performance_stats(),
         }
     )
@@ -1862,6 +1912,66 @@ def retrain_lstm(request: Request):
     return RedirectResponse("/analytics?lstm=training", status_code=303)
 
 
+_lstm_5m_training = False
+
+@app.post("/build-5m-sequences")
+def build_5m_sequences_endpoint(request: Request):
+    """Build 5m training sequences from 60d historical 5m data, then train the 5m LSTM."""
+    global _lstm_5m_training
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    if _lstm_5m_training:
+        return RedirectResponse("/analytics?tab=fivemin&lstm5m=already_training", status_code=303)
+
+    def _run():
+        global _lstm_5m_training
+        _lstm_5m_training = True
+        try:
+            from app.backfill import SEED_TICKERS
+            from app.universe import fetch_backfill_universe
+            try:
+                extra = fetch_backfill_universe(max_tickers=500)
+            except Exception:
+                extra = []
+            tickers = list(dict.fromkeys(SEED_TICKERS + extra))
+            n = build_5m_sequences(tickers)
+            print(f"5m SEQUENCES: built {n} sequences")
+            if n >= 30:
+                stats = train_lstm_5m()
+                print(f"5m LSTM: trained — {stats}")
+        except Exception as e:
+            print(f"5m SEQUENCES: failed — {e}")
+        finally:
+            _lstm_5m_training = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return RedirectResponse("/analytics?tab=fivemin&lstm5m=building", status_code=303)
+
+
+@app.post("/retrain-lstm-5m")
+def retrain_lstm_5m_endpoint(request: Request):
+    """Re-train the 5m LSTM on existing lstm_sequences_5m.npz."""
+    global _lstm_5m_training
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    if _lstm_5m_training:
+        return RedirectResponse("/analytics?tab=fivemin&lstm5m=already_training", status_code=303)
+
+    def _run():
+        global _lstm_5m_training
+        _lstm_5m_training = True
+        try:
+            stats = train_lstm_5m()
+            print(f"RETRAIN 5m LSTM: complete — {stats}")
+        except Exception as e:
+            print(f"RETRAIN 5m LSTM: failed — {e}")
+        finally:
+            _lstm_5m_training = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return RedirectResponse("/analytics?tab=fivemin&lstm5m=training", status_code=303)
+
+
 @app.get("/api/hypothesis-status")
 def api_hypothesis_status(request: Request):
     """Polling endpoint — returns hypothesis updated_at so the frontend
@@ -2078,6 +2188,8 @@ async def api_chat_execute(request: Request):
             base.update({k: int(v) for k, v in weights.items()})
             save_squeeze_weights(base, rationale, [], summary, source="ai_chat", goal=goal)
             save_weight_changelog(summary, rationale, base)
+        opt_data = get_optimization_data()
+        save_bundle_as_rule(goal, weights, rationale, summary, opt_data)
         goal_label = {"combined": "Win Rate + Speed + Upside", "win_rate": "Win Rate", "speed": "Speed-to-Target", "upside": "Max Upside"}.get(goal, goal or "bundle")
         model_label = "Auto AI" if model == "autoai" else "Complex+AI"
         return JSONResponse({"ok": True, "message": f"{model_label} {goal_label} bundle applied — {len(weights)} signals updated."})
@@ -2150,6 +2262,8 @@ async def api_approve_suggestion(request: Request, suggestion_id: int):
         model_label = "Auto AI" if model == "autoai" else "Complex+AI"
         if action == "update_weights_bundle":
             goal_label = {"combined": "Win Rate + Speed + Upside", "win_rate": "Win Rate", "speed": "Speed-to-Target", "upside": "Max Upside"}.get(goal, goal or "bundle")
+            opt_data = get_optimization_data()
+            save_bundle_as_rule(goal, weights, rationale, summary, opt_data)
             ok_msg = f"{model_label} {goal_label} bundle applied — {len(weights)} signals updated."
         else:
             ok_msg = f"{model_label} weights updated."

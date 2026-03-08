@@ -58,10 +58,11 @@ BASE_URL_PREMARKET = (
     "v=161&f=sh_curvol_o1000,"
     "sh_price_u5,sh_relvol_o5,ta_perf_d5o&ft=4"
 )
-# 5m Spike mode — broader universe, no relvol pre-filter (we compute it ourselves)
+# 5m Spike mode — pre-filtered for relvol>10x, price<$5, up today, US-only
 BASE_URL_5M = (
     "https://finviz.com/screener.ashx?"
-    "v=111&f=geo_usa,sh_curvol_o1000,sh_price_u5&ft=4"
+    "v=111&f=geo_usa,sh_curvol_o1000,sh_price_u5,sh_relvol_o10,ta_perf_dup"
+    "&ft=4&ar=180"
 )
 
 _FV_HEADERS = {
@@ -612,10 +613,12 @@ def get_finviz_tickers_5m() -> list:
 
 def compute_5m_relvol(tickers: list) -> dict:
     """
-    For each ticker, compute: current 5-min bar volume / 10-day avg volume
-    at the same time-of-day slot.
+    For each ticker, compute:
+      - relvol:          current 5-min bar volume / 10-day avg at same time slot
+      - first_hour_vol:  cumulative volume 9:30–10:30 ET today (first trading hour)
 
-    Returns {symbol: float}. Symbols with insufficient history are omitted.
+    Returns {symbol: {"relvol": float, "first_hour_vol": float|None}}.
+    Symbols with insufficient history are omitted.
     """
     import pytz as _pytz
     et      = _pytz.timezone("America/New_York")
@@ -624,6 +627,8 @@ def compute_5m_relvol(tickers: list) -> dict:
     # Round down to nearest 5-min boundary
     slot_minute = (now_et.minute // 5) * 5
     slot_hour   = now_et.hour
+
+    today_date = now_et.date()
 
     print(f"5m Spike: computing relvol for slot {slot_hour:02d}:{slot_minute:02d} ET, "
           f"{len(tickers)} symbol(s)...")
@@ -641,7 +646,7 @@ def compute_5m_relvol(tickers: list) -> dict:
         print(f"5m Spike: 5m batch download failed — {e}")
         return {}
 
-    relvol_5m = {}
+    results_5m = {}
 
     for sym in tickers:
         try:
@@ -655,7 +660,7 @@ def compute_5m_relvol(tickers: list) -> dict:
             if sym_df is None or sym_df.empty:
                 continue
 
-            # Normalise MultiIndex columns (same pattern as prepare_dataframe)
+            # Normalise MultiIndex columns
             if isinstance(sym_df.columns, pd.MultiIndex):
                 _price_fields = {'Open', 'High', 'Low', 'Close', 'Volume'}
                 lvl0 = set(sym_df.columns.get_level_values(0))
@@ -668,12 +673,13 @@ def compute_5m_relvol(tickers: list) -> dict:
             if "Volume" not in sym_df.columns:
                 continue
 
-            # Convert to ET for time-of-day matching
+            # Convert to ET
             if sym_df.index.tzinfo is None:
                 sym_df.index = sym_df.index.tz_localize("UTC").tz_convert(et)
             else:
                 sym_df.index = sym_df.index.tz_convert(et)
 
+            # --- per-slot relvol ---
             slot_bars = sym_df[
                 (sym_df.index.hour   == slot_hour) &
                 (sym_df.index.minute == slot_minute)
@@ -690,15 +696,32 @@ def compute_5m_relvol(tickers: list) -> dict:
             if hist_avg <= 0:
                 continue
 
-            relvol_5m[sym] = round(today_vol / hist_avg, 2)
+            relvol = round(today_vol / hist_avg, 2)
+
+            # --- first-hour cumulative volume (9:30–10:30 ET, today only) ---
+            first_hour_vol = None
+            try:
+                today_bars = sym_df[sym_df.index.date == today_date]
+                fh_bars = today_bars[
+                    ((today_bars.index.hour == 9)  & (today_bars.index.minute >= 30)) |
+                    ((today_bars.index.hour == 10) & (today_bars.index.minute <= 25))
+                ]["Volume"].dropna()
+                if len(fh_bars) >= 2:  # at least 2 bars = 10+ minutes in
+                    first_hour_vol = int(fh_bars.sum())
+            except Exception:
+                pass
+
+            results_5m[sym] = {"relvol": relvol, "first_hour_vol": first_hour_vol}
 
         except Exception as e:
             print(f"5m Spike: relvol error for {sym} — {e}")
 
-    qualifying = sum(1 for v in relvol_5m.values() if v >= 10)
-    print(f"5m Spike: relvol computed for {len(relvol_5m)} symbols, "
-          f"{qualifying} with >=10x")
-    return relvol_5m
+    qualifying    = sum(1 for v in results_5m.values() if v["relvol"] >= 10)
+    high_vol_cnt  = sum(1 for v in results_5m.values()
+                        if v["first_hour_vol"] and v["first_hour_vol"] >= 20_000_000)
+    print(f"5m Spike: {len(results_5m)} symbols computed — "
+          f"{qualifying} ≥10x relvol, {high_vol_cnt} with ≥20M first-hour vol")
+    return results_5m
 
 
 def run_scan_5m() -> dict:
@@ -763,8 +786,13 @@ def run_scan_5m() -> dict:
     for symbol in tickers:
         summary["total_scanned"] += 1
 
-        rv5m = relvol_5m.get(symbol)
-        if rv5m is None or rv5m < 10:
+        spike_data = relvol_5m.get(symbol)
+        if spike_data is None:
+            continue
+        rv5m          = spike_data["relvol"]
+        first_hour_vol = spike_data.get("first_hour_vol")
+
+        if rv5m < 10:
             continue   # does not meet 5m spike threshold
 
         if symbol not in dfs:
@@ -777,19 +805,23 @@ def run_scan_5m() -> dict:
             # Inject live FinViz quote data
             if symbol in live_quotes:
                 q = live_quotes[symbol]
-                if q.get("price")             is not None: fundamentals["finviz_price"]       = q["price"]
-                if q.get("change_pct")        is not None: fundamentals["finviz_change_pct"]  = q["change_pct"]
-                if q.get("volume")            is not None: fundamentals["finviz_volume"]       = q["volume"]
+                if q.get("price")              is not None: fundamentals["finviz_price"]       = q["price"]
+                if q.get("change_pct")         is not None: fundamentals["finviz_change_pct"]  = q["change_pct"]
+                if q.get("volume")             is not None: fundamentals["finviz_volume"]       = q["volume"]
                 if q.get("shares_outstanding") is not None: fundamentals["shares_outstanding"] = q["shares_outstanding"]
-                if q.get("float_shares")      is not None: fundamentals["float_shares"]        = q["float_shares"]
-                if q.get("institution_pct")   is not None: fundamentals["institution_pct"]     = q["institution_pct"]
+                if q.get("float_shares")       is not None: fundamentals["float_shares"]        = q["float_shares"]
+                if q.get("institution_pct")    is not None: fundamentals["institution_pct"]     = q["institution_pct"]
 
-            # KEY: override daily relvol with computed 5m relvol
+            # Override daily relvol with computed 5m relvol
             fundamentals["finviz_relvol"] = rv5m
+            # Inject first-hour volume for scoring signal
+            if first_hour_vol is not None:
+                fundamentals["first_hour_vol"] = first_hour_vol
 
             result = score_stock_squeeze(symbol, df, fundamentals, weights=active_weights)
             if result:
-                result["relvol_source"] = "5m"
+                result["relvol_source"]  = "5m"
+                result["first_hour_vol"] = first_hour_vol
                 results.append(result)
                 summary["qualified"] += 1
 

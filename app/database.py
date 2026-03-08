@@ -161,6 +161,19 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # column already exists
 
+    # Migration: stop loss + trailing stop support
+    for col in [
+        "ALTER TABLE trades ADD COLUMN stop_loss_pct REAL DEFAULT NULL",
+        "ALTER TABLE trades ADD COLUMN trade_mode TEXT DEFAULT NULL",
+        "ALTER TABLE trades ADD COLUMN high_watermark REAL DEFAULT NULL",
+        "ALTER TABLE trades ADD COLUMN close_reason TEXT DEFAULT NULL",
+    ]:
+        try:
+            cursor.execute(col)
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
     # Migration: AI trade recommendation stored per scan
     try:
         cursor.execute("ALTER TABLE scans ADD COLUMN ai_trade_rec TEXT")
@@ -284,6 +297,12 @@ def init_db():
         conn.commit()
     except sqlite3.OperationalError:
         pass
+    # Migration: projection_json — stores AI-validated projected impact for bundle rules
+    try:
+        cursor.execute("ALTER TABLE hypothesis_rules ADD COLUMN projection_json TEXT DEFAULT NULL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
     # ---------------- AUTOAI LOG TABLE ----------------
     cursor.execute("""
@@ -343,6 +362,44 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # column already exists
 
+    conn.close()
+    _seed_user_observations()
+
+
+# ---------------- SEED USER OBSERVATIONS ----------------
+# Observations submitted by users that the AI should test against backtest data.
+# Stored as 'pending' hypothesis rules so they appear in the registry and get
+# picked up by autonomous_optimize() for evidence-based validation.
+_USER_OBSERVATIONS = [
+    {
+        "text": (
+            "HYPOTHESIS: Stocks with ≥20M cumulative volume in the first trading hour (9:30–10:30 ET) "
+            "are significantly more likely to hit 20%+ intraday. "
+            "Observed in all manually analyzed 5m spike winners. "
+            "Signal tracked as first_hour_vol_20m in fired_signals — validate against backtest data."
+        ),
+        "source": "user_observation",
+    },
+]
+
+def _seed_user_observations():
+    """Insert user-submitted observations as pending hypothesis rules if they don't already exist."""
+    conn = sqlite3.connect(DB_NAME, timeout=10)
+    cursor = conn.cursor()
+    now = datetime.utcnow().isoformat()
+    for obs in _USER_OBSERVATIONS:
+        cursor.execute(
+            "SELECT COUNT(*) FROM hypothesis_rules WHERE source = ? AND rule_text LIKE ?",
+            (obs["source"], obs["text"][:60] + "%")
+        )
+        if cursor.fetchone()[0] == 0:
+            cursor.execute(
+                """INSERT INTO hypothesis_rules
+                   (rule_text, source, status, generation, created_at, confidence_score, auto_applied)
+                   VALUES (?, ?, 'pending', 0, ?, 0, 0)""",
+                (obs["text"], obs["source"], now)
+            )
+    conn.commit()
     conn.close()
 
 
@@ -802,6 +859,59 @@ def save_scan(results: list, mode: str) -> dict:
     return scan_ids
 
 
+def save_scan_candidates(candidates: list, mode: str):
+    """
+    Save ALL stocks seen by the FinViz screener (even unscored / low-score ones)
+    with mode='candidate_<mode>' so outcomes can be labeled later and the AI can
+    test hypotheses against the full observation pool, not just high-scoring results.
+    Skips any symbol already saved in the last 6 hours to avoid duplication.
+    """
+    if not candidates:
+        return
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    timestamp = datetime.utcnow().isoformat()
+    candidate_mode = f"candidate_{mode}"
+    cutoff = (datetime.utcnow() - timedelta(hours=6)).isoformat()
+
+    for c in candidates:
+        symbol = c.get("symbol")
+        if not symbol:
+            continue
+        # Skip if already saved recently (duplicate suppression)
+        cursor.execute(
+            "SELECT COUNT(*) FROM scans WHERE symbol=? AND mode=? AND timestamp > ?",
+            (symbol, candidate_mode, cutoff)
+        )
+        if cursor.fetchone()[0] > 0:
+            continue
+        fired = c.get("fired_signals", {})
+        signals_json_str = json.dumps(fired) if fired else None
+        cursor.execute("""
+            INSERT INTO scans (
+                timestamp, symbol, score, recommendation, mode,
+                relative_volume, today_return, shares_outstanding,
+                news_recent, next_day_return, three_day_return, scan_price,
+                signals_json, weights_version_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            timestamp,
+            symbol,
+            c.get("score", 0),
+            c.get("recommendation", "CANDIDATE"),
+            candidate_mode,
+            c.get("relative_volume"),
+            c.get("daily_return_pct"),
+            c.get("shares_outstanding"),
+            0, None, None,
+            c.get("price"),
+            signals_json_str,
+            None,
+        ))
+    conn.commit()
+    conn.close()
+
+
 def update_scan_ai_rec(scan_id: int, decision: str, confidence: str, rationale: str):
     """Persists the AI trade recommendation to the scans table."""
     import json
@@ -855,7 +965,8 @@ POSITION_SIZE = 1000.0
 
 
 def open_trade(symbol: str, price: float, position_size: float = POSITION_SIZE,
-               notes: str = "", take_profit_pct: float = 20.0):
+               notes: str = "", take_profit_pct: float = 20.0,
+               stop_loss_pct: float = None, trade_mode: str = None):
     if price <= 0 or position_size <= 0:
         return None
 
@@ -879,10 +990,12 @@ def open_trade(symbol: str, price: float, position_size: float = POSITION_SIZE,
     )
     cursor.execute("""
         INSERT INTO trades (symbol, entry_price, shares, position_size, status,
-                            opened_at, notes, take_profit_pct)
-        VALUES (?, ?, ?, ?, 'open', ?, ?, ?)
+                            opened_at, notes, take_profit_pct,
+                            stop_loss_pct, trade_mode, high_watermark)
+        VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)
     """, (symbol, round(price, 4), round(shares, 6), position_size,
-          opened_at, notes or "", take_profit_pct))
+          opened_at, notes or "", take_profit_pct,
+          stop_loss_pct, trade_mode, round(price, 4)))
 
     trade_id = cursor.lastrowid
     conn.commit()
@@ -943,7 +1056,8 @@ def get_open_positions():
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, symbol, entry_price, shares, position_size, opened_at,
-               COALESCE(notes, ''), COALESCE(take_profit_pct, 20.0)
+               COALESCE(notes, ''), COALESCE(take_profit_pct, 20.0),
+               stop_loss_pct, trade_mode, high_watermark
         FROM trades WHERE status = 'open'
         ORDER BY opened_at DESC
     """)
@@ -952,16 +1066,20 @@ def get_open_positions():
 
     positions = []
     for row in rows:
-        trade_id, symbol, entry_price, shares, position_size, opened_at, notes, take_profit_pct = row
+        (trade_id, symbol, entry_price, shares, position_size, opened_at,
+         notes, take_profit_pct, stop_loss_pct, trade_mode, high_watermark) = row
         positions.append({
-            "trade_id": trade_id,
-            "symbol": symbol,
-            "entry_price": entry_price,
-            "shares": shares,
-            "position_size": position_size,
-            "opened_at": opened_at,
-            "notes": notes,
+            "trade_id":        trade_id,
+            "symbol":          symbol,
+            "entry_price":     entry_price,
+            "shares":          shares,
+            "position_size":   position_size,
+            "opened_at":       opened_at,
+            "notes":           notes,
             "take_profit_pct": take_profit_pct,
+            "stop_loss_pct":   stop_loss_pct,
+            "trade_mode":      trade_mode,
+            "high_watermark":  high_watermark or entry_price,
         })
     return positions
 
@@ -1105,6 +1223,7 @@ _ALL_SIGNAL_KEYS = [
     "institution_moderate", "institution_strong", "sector_biotech_bonus",
     "rsi_momentum_bonus", "macd_positive_bonus", "bb_upper_breakout",
     "consecutive_green_bonus", "low_float_ratio_bonus",
+    "first_hour_vol_20m",
 ]
 
 
@@ -1376,20 +1495,22 @@ def save_hypothesis_rules(rules: list):
 
 def get_hypothesis_rules() -> list:
     """
-    Returns all hypothesis rules ordered newest-generation first.
-    Includes live win/loss stats derived from scans that were tagged with each rule's ID.
+    Returns all hypothesis rules sorted by projected impact (bundles with highest
+    hit_20pct delta first), then pending, then by generation.
+    Includes live win/loss stats and projection_json for bundle rules.
     """
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, rule_text, source, status, generation, created_at,
-               confidence_score, auto_applied
+               confidence_score, auto_applied, projection_json
         FROM hypothesis_rules
         ORDER BY generation DESC, id ASC
     """)
     rows = cursor.fetchall()
     results = []
-    for (rid, rule_text, source, status, generation, created_at, confidence_score, auto_applied) in rows:
+    for (rid, rule_text, source, status, generation, created_at,
+         confidence_score, auto_applied, projection_json_str) in rows:
         # Count trades and wins from scans tagged with this rule ID
         cursor.execute("""
             SELECT
@@ -1403,6 +1524,16 @@ def get_hypothesis_rules() -> list:
         total = stat[0] or 0
         wins  = stat[1] or 0
         win_rate = round(wins / total * 100, 1) if total > 0 else None
+
+        projection = None
+        proj_delta_hit = 0.0
+        if projection_json_str:
+            try:
+                projection = json.loads(projection_json_str)
+                proj_delta_hit = projection.get("delta", {}).get("hit_20pct", 0.0) or 0.0
+            except Exception:
+                pass
+
         results.append({
             "id":               rid,
             "rule_text":        rule_text,
@@ -1415,8 +1546,17 @@ def get_hypothesis_rules() -> list:
             "win_rate":         win_rate,
             "confidence_score": confidence_score,
             "auto_applied":     auto_applied or 0,
+            "projection":       projection,
+            "_proj_delta_hit":  proj_delta_hit,
         })
     conn.close()
+
+    # Sort: bundles with projection by delta desc, then rest by status (pending first) + id
+    def sort_key(r):
+        has_proj = r["projection"] is not None
+        return (0 if has_proj else 1, -r["_proj_delta_hit"], r["id"])
+
+    results.sort(key=sort_key)
     return results
 
 
@@ -1428,6 +1568,135 @@ def get_pending_rule_count() -> int:
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else 0
+
+
+def project_bundle_impact(signal_keys: list, opt_data: dict | None = None) -> dict:
+    """
+    Given a list of signal keys (e.g. ["rel_vol_50x", "shares_lt10m"]), compute
+    the projected impact of prioritising those signals, validated against the
+    per-signal backtest data.
+
+    Returns:
+      {
+        "baseline":  {hit_20pct, win_rate, avg_return, avg_days_to_20pct, count},
+        "projected": {hit_20pct, win_rate, avg_return, avg_days_to_20pct},
+        "delta":     {hit_20pct, win_rate, avg_return, avg_days_to_20pct},
+        "signals":   [{key, count, hit_20pct, win_rate, avg_return, avg_days_to_20pct, vs_baseline_hit},...],
+        "coverage":  int,   # number of signals with enough data
+        "validated": bool,  # True if >=1 signal had sufficient backtest data
+      }
+    """
+    if opt_data is None:
+        opt_data = get_optimization_data() or {}
+
+    per_sig = opt_data.get("per_signal_stats") or get_per_signal_stats()
+    baseline = (per_sig or {}).get("baseline") or {}
+    all_signals = (per_sig or {}).get("signals") or []
+
+    sig_map = {s["key"]: s for s in all_signals if s.get("count", 0) >= 5}
+    baseline_hit  = baseline.get("hit_20pct", 0) or 0
+    baseline_win  = baseline.get("win_rate",  0) or 0
+    baseline_ret  = baseline.get("avg_return", 0) or 0
+    baseline_days = baseline.get("avg_days_to_20pct") or None
+    baseline_cnt  = baseline.get("count", 0) or 0
+
+    matched = []
+    for key in signal_keys:
+        if key in sig_map:
+            matched.append(sig_map[key])
+
+    if not matched:
+        return {
+            "baseline":  {"hit_20pct": baseline_hit, "win_rate": baseline_win,
+                          "avg_return": baseline_ret, "avg_days_to_20pct": baseline_days,
+                          "count": baseline_cnt},
+            "projected": {"hit_20pct": baseline_hit, "win_rate": baseline_win,
+                          "avg_return": baseline_ret, "avg_days_to_20pct": baseline_days},
+            "delta":     {"hit_20pct": 0, "win_rate": 0, "avg_return": 0, "avg_days_to_20pct": 0},
+            "signals":   [],
+            "coverage":  0,
+            "validated": False,
+        }
+
+    # Weighted average by fire count
+    total_weight = sum(s["count"] for s in matched)
+    def wavg(field):
+        vals = [(s[field], s["count"]) for s in matched if s.get(field) is not None]
+        if not vals:
+            return None
+        return sum(v * w for v, w in vals) / sum(w for _, w in vals)
+
+    proj_hit  = round(wavg("hit_20pct") or baseline_hit, 1)
+    proj_win  = round(wavg("win_rate")  or baseline_win,  1)
+    proj_ret  = round(wavg("avg_return") or baseline_ret,  2)
+    proj_days_raw = wavg("avg_days_to_20pct")
+    proj_days = round(proj_days_raw, 1) if proj_days_raw is not None else baseline_days
+
+    delta_days = None
+    if proj_days is not None and baseline_days is not None:
+        delta_days = round(proj_days - baseline_days, 1)
+
+    return {
+        "baseline":  {"hit_20pct": baseline_hit, "win_rate": baseline_win,
+                      "avg_return": baseline_ret, "avg_days_to_20pct": baseline_days,
+                      "count": baseline_cnt},
+        "projected": {"hit_20pct": proj_hit, "win_rate": proj_win,
+                      "avg_return": proj_ret, "avg_days_to_20pct": proj_days},
+        "delta":     {
+            "hit_20pct":       round(proj_hit - baseline_hit, 1),
+            "win_rate":        round(proj_win - baseline_win,  1),
+            "avg_return":      round(proj_ret - baseline_ret,  2),
+            "avg_days_to_20pct": delta_days,
+        },
+        "signals":   [{"key": s["key"], "count": s["count"],
+                       "hit_20pct": s["hit_20pct"], "win_rate": s["win_rate"],
+                       "avg_return": s["avg_return"],
+                       "avg_days_to_20pct": s.get("avg_days_to_20pct"),
+                       "vs_baseline_hit": s["vs_baseline_hit"]} for s in matched],
+        "coverage":  len(matched),
+        "validated": len(matched) >= 1,
+    }
+
+
+def save_bundle_as_rule(goal: str, weights: dict, rationale: str,
+                        summary: str, opt_data: dict | None = None) -> int:
+    """
+    Save an AI-suggested weight bundle as a hypothesis rule with AI-validated
+    projected impact metrics. The rule is created as 'active' (bundle already applied).
+    Returns the new rule id.
+    """
+    # Derive signal keys from weight keys (they map 1:1 to per-signal keys)
+    signal_keys = list(weights.keys())
+    projection = project_bundle_impact(signal_keys, opt_data)
+
+    goal_labels = {
+        "combined": "Win Rate + Speed + Upside",
+        "win_rate": "Win Rate",
+        "speed":    "Speed to Target",
+        "upside":   "Max Upside",
+    }
+    goal_label = goal_labels.get(goal, goal.title())
+    signals_str = " + ".join(signal_keys)
+
+    rule_text = (
+        f"[BUNDLE — {goal_label}] {signals_str}\n"
+        f"{rationale}\n"
+        f"Signals adjusted: {', '.join(f'{k}={v}' for k, v in weights.items())}"
+    )
+
+    now = datetime.utcnow().isoformat()
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO hypothesis_rules
+            (rule_text, source, status, generation, created_at,
+             confidence_score, auto_applied, projection_json)
+        VALUES (?, 'ai_chat_bundle', 'active', 0, ?, 85, 1, ?)
+    """, (rule_text, now, json.dumps(projection)))
+    rule_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return rule_id
 
 
 def update_rule_status(rule_id: int, status: str) -> bool:
