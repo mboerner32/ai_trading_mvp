@@ -191,13 +191,17 @@ def _send_telegram(message: str):
             print(f"Telegram alert error → {chat_id}: {e}")
 
 
-def send_scan_alert(results: list, mode: str, min_score: int = 75):
+def send_scan_alert(results: list, mode: str, min_score: int = 75,
+                    ai_trade_only: bool = False):
     """
     Email + Telegram top-scoring stocks from a scan.
     Only sends if at least one stock scores >= min_score.
+    If ai_trade_only=True, only stocks where AI called TRADE are included.
     Includes AI call, confidence, LSTM prob, and rationale when available.
     """
     top = [r for r in results if r.get("score", 0) >= min_score]
+    if ai_trade_only:
+        top = [r for r in top if (r.get("ai_trade_call") or {}).get("decision") == "TRADE"]
     if not top:
         return
 

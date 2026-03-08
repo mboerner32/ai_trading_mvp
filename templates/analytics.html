@@ -959,13 +959,23 @@
     </div>
 
     <!-- HYPOTHESIS RULES REGISTRY -->
-    <div class="section-title" style="color:#7c3aed; display:flex; align-items:center; gap:10px;">
-        Hypothesis Rules Registry
+    <div class="section-title" style="color:#7c3aed; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <span id="rules-registry">Hypothesis Rules Registry</span>
         {% if pending_rule_count > 0 %}
         <span style="background:#dc2626; color:white; border-radius:12px; padding:1px 9px;
                      font-size:12px; font-weight:700; line-height:1.6;">
             {{ pending_rule_count }} pending
         </span>
+        {% endif %}
+        {% if user == 'admin' %}
+        <form method="post" action="/refresh-projections" style="margin-left:auto;">
+            <button type="submit"
+                    style="background:#ede9fe; color:#5b21b6; border:1px solid #c4b5fd;
+                           padding:4px 12px; border-radius:6px; font-size:12px;
+                           font-weight:600; cursor:pointer;">
+                ↻ Refresh Projections
+            </button>
+        </form>
         {% endif %}
     </div>
 

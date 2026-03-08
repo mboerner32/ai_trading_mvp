@@ -132,6 +132,7 @@ from app.database import (
     get_chat_suggestions,
     dismiss_chat_suggestion,
     get_per_signal_stats,
+    refresh_bundle_projections,
     save_weight_version,
     get_current_version_id,
     get_version_performance_stats,
@@ -440,7 +441,7 @@ def _auto_ai_optimize():
 
 def _enrich_high_scorers(results: list, mode: str = None) -> list:
     """
-    For each stock scoring >= 75, add lstm_prob and ai_trade_call to the result dict.
+    For each stock scoring >= 50, add lstm_prob and ai_trade_call to the result dict.
     Called during scheduled and intraday scans so alerts carry full AI context.
     Runs in parallel (max 4 workers); gracefully skips on error.
     mode is passed through to get_active_hypothesis_text() so Auto AI uses its own
@@ -448,34 +449,38 @@ def _enrich_high_scorers(results: list, mode: str = None) -> list:
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    hypothesis_text = get_active_hypothesis_text(mode=mode)
-    sizing_stats    = get_sizing_stats()
-    ai_accuracy     = get_ai_decision_accuracy()
-    high_scorers    = [r for r in results if r.get("score", 0) >= 75]
+    hypothesis_text  = get_active_hypothesis_text(mode=mode)
+    sizing_stats     = get_sizing_stats()
+    ai_accuracy      = get_ai_decision_accuracy()
+    _modes           = _FIVEMIN_MODES if mode == "fivemin" else _DAILY_MODES
+    _per_signal      = get_per_signal_stats(modes=_modes)
+    high_scorers     = [r for r in results if r.get("score", 0) >= 50]
 
     def _enrich_one(stock):
         try:
             checklist = stock.get("checklist", {})
-            if mode == "fivemin":
-                # Use the 5m-specific intraday LSTM
-                lstm_prob = predict_5m_hit_probability(
-                    stock["symbol"],
-                    shares_outstanding=checklist.get("shares_outstanding"),
-                    sector=checklist.get("sector"),
-                )
-            else:
-                lstm_prob = predict_hit_probability(
-                    stock["symbol"],
-                    shares_outstanding=checklist.get("shares_outstanding"),
-                    sector=checklist.get("sector"),
-                )
+            # LSTM only for high-scorers — each call downloads 3mo of data
+            lstm_prob = None
+            if stock.get("score", 0) >= 75:
+                if mode == "fivemin":
+                    lstm_prob = predict_5m_hit_probability(
+                        stock["symbol"],
+                        shares_outstanding=checklist.get("shares_outstanding"),
+                        sector=checklist.get("sector"),
+                    )
+                else:
+                    lstm_prob = predict_hit_probability(
+                        stock["symbol"],
+                        shares_outstanding=checklist.get("shares_outstanding"),
+                        sector=checklist.get("sector"),
+                    )
             stock["lstm_prob"] = lstm_prob
             ticker_history = get_ticker_scan_history(stock["symbol"])
             news = get_stock_news(stock["symbol"])
             stock["ai_trade_call"] = recommend_trade(
                 stock, hypothesis_text, sizing_stats, ticker_history,
                 lstm_prob=lstm_prob, news_headlines=news,
-                ai_accuracy=ai_accuracy
+                ai_accuracy=ai_accuracy, per_signal_stats=_per_signal
             )
         except Exception as e:
             print(f"ENRICH: {stock['symbol']} failed — {e}")
@@ -571,13 +576,14 @@ def _scheduled_scan():
             print(f"SCHEDULER: {mode} scan complete ({len(data['results'])} results)")
             if mode in ("autoai", "squeeze"):
                 label = "Auto AI" if mode == "autoai" else "Complex + AI"
-                # Enrich high-scorers with AI calls + LSTM before alerting
+                # Enrich score >= 50 with AI calls + LSTM before alerting
                 _enrich_high_scorers(data["results"], mode=mode)
-                # Track morning high-scorers so intraday scans don't re-alert them
+                # Alert only AI TRADE calls (score >= 50); track to suppress intraday re-alerts
+                send_scan_alert(data["results"], label, min_score=50, ai_trade_only=True)
                 for r in data["results"]:
-                    if r.get("score", 0) >= 75:
+                    if (r.get("score", 0) >= 50
+                            and (r.get("ai_trade_call") or {}).get("decision") == "TRADE"):
                         _alerted_today.add(r.get("symbol"))
-                send_scan_alert(data["results"], label)
                 # Auto paper-trade HIGH confidence TRADE calls (max 3/day)
                 _auto_paper_trade(data["results"], today_str)
                 # Log near-misses (40-74) to watchlist for intraday re-checking
@@ -691,20 +697,23 @@ def _intraday_scan():
         except Exception as ae:
             print(f"INTRADAY SCAN: autoai cache update failed — {ae}")
 
-        # Enrich new high-scorers with AI calls + LSTM before alerting
-        new_high = [
+        # Enrich score >= 50 stocks not yet alerted
+        new_candidates = [
             r for r in data["results"]
-            if r.get("score", 0) >= 75 and r.get("symbol") not in _alerted_today
+            if r.get("score", 0) >= 50 and r.get("symbol") not in _alerted_today
         ]
-        if new_high:
+        if new_candidates:
             _enrich_high_scorers(data["results"], mode="squeeze")
-        # Alert only on genuinely new high-scorers
+        # Alert only AI TRADE calls among new candidates
         new_alerts = [
             r for r in data["results"]
-            if r.get("score", 0) >= 75 and r.get("symbol") not in _alerted_today
+            if r.get("score", 0) >= 50
+            and (r.get("ai_trade_call") or {}).get("decision") == "TRADE"
+            and r.get("symbol") not in _alerted_today
         ]
         if new_alerts:
-            send_scan_alert(new_alerts, f"Intraday {et_now.strftime('%H:%M')}")
+            send_scan_alert(new_alerts, f"Intraday {et_now.strftime('%H:%M')}",
+                            min_score=50, ai_trade_only=True)
             _auto_paper_trade(new_alerts, today_str)
             for r in new_alerts:
                 _alerted_today.add(r.get("symbol"))
@@ -1019,11 +1028,13 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
         save_scan_cache(mode, scan_data["results"], scan_data["summary"])
         cache_age = 0
 
-    available_cash = get_portfolio_summary()["cash"]
+    available_cash  = get_portfolio_summary()["cash"]
     hypothesis_text = get_active_hypothesis_text(mode=mode)
     sizing_stats    = get_sizing_stats()
     ai_accuracy     = get_ai_decision_accuracy()
     active_rule_ids = get_active_rule_ids()
+    _modes          = _FIVEMIN_MODES if mode == "fivemin" else _DAILY_MODES
+    _per_signal     = get_per_signal_stats(modes=_modes)
 
     # Parallel AI enrichment — position sizing + price target prediction (score >= 75) + AI trade call
     def _ai_enrich(stock):
@@ -1050,7 +1061,7 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
         stock["ai_trade_call"] = recommend_trade(
             stock, hypothesis_text, sizing_stats, ticker_history,
             lstm_prob=lstm_prob, news_headlines=news,
-            ai_accuracy=ai_accuracy
+            ai_accuracy=ai_accuracy, per_signal_stats=_per_signal
         )
         scan_id = scan_id_map.get(stock.get("symbol"))
         if scan_id:
@@ -1854,6 +1865,19 @@ def api_backfill_status(request: Request):
     if "user" not in request.session:
         return Response(status_code=401)
     return get_backfill_status()
+
+
+@app.post("/refresh-projections")
+def refresh_projections(request: Request):
+    """Recompute projection_json for all bundle rules using current per-signal data."""
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    try:
+        n = refresh_bundle_projections()
+        print(f"PROJECTIONS: refreshed {n} bundle rules")
+    except Exception as e:
+        print(f"PROJECTIONS: refresh failed — {e}")
+    return RedirectResponse("/analytics#rules-registry", status_code=303)
 
 
 # ---------------- 5m SPIKE BACKFILL ----------------

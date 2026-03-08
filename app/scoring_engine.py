@@ -234,7 +234,9 @@ def score_stock(symbol: str, df, fundamentals=None):
 # max_score formula re-normalises so output stays 0–100.
 #
 DEFAULT_SQUEEZE_WEIGHTS = {
-    "rel_vol_50x":          30,   # primary signal
+    "rel_vol_500x":         40,   # extreme event (≥500x) — categorically above normal
+    "rel_vol_100x":         35,   # very high (100–499x)
+    "rel_vol_50x":          30,   # high (50–99x)
     "rel_vol_25x":          22,
     "rel_vol_10x":          15,
     "rel_vol_5x":           7,
@@ -317,9 +319,15 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
     # ------------------------------------------------------------------
     relvol_tier = "Below Threshold"
     if relative_volume is not None:
-        if relative_volume >= 50:
+        if relative_volume >= 500:
+            score += w.get("rel_vol_500x", 40)
+            relvol_tier = "Extreme (≥500x)"
+        elif relative_volume >= 100:
+            score += w.get("rel_vol_100x", 35)
+            relvol_tier = "Exceptional (≥100x)"
+        elif relative_volume >= 50:
             score += w["rel_vol_50x"]
-            relvol_tier = "Exceptional (≥50x)"
+            relvol_tier = "Very High (≥50x)"
         elif relative_volume >= 25:
             score += w["rel_vol_25x"]
             relvol_tier = "Ideal (≥25x)"
@@ -459,7 +467,9 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
     fired_signals = {}
 
     if relative_volume is not None:
-        if relative_volume >= 50:     fired_signals["rel_vol_50x"]      = True
+        if relative_volume >= 500:    fired_signals["rel_vol_500x"]     = True
+        elif relative_volume >= 100:  fired_signals["rel_vol_100x"]     = True
+        elif relative_volume >= 50:   fired_signals["rel_vol_50x"]      = True
         elif relative_volume >= 25:   fired_signals["rel_vol_25x"]      = True
         elif relative_volume >= 10:   fired_signals["rel_vol_10x"]      = True
         else:                         fired_signals["rel_vol_5x"]       = True
@@ -522,7 +532,8 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
     # When AI adjusts weights, max_score re-normalises automatically.
     # ------------------------------------------------------------------
     max_score = (
-        max(w["rel_vol_50x"], w["rel_vol_25x"], w["rel_vol_10x"],
+        max(w.get("rel_vol_500x", 40), w.get("rel_vol_100x", 35),
+            w["rel_vol_50x"], w["rel_vol_25x"], w["rel_vol_10x"],
             w.get("rel_vol_5x", 7), 0) +
         max(w["daily_sweet_20_40"], w["daily_ok_10_20"],
             w["daily_ok_40_100"], 0) +

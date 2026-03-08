@@ -1215,6 +1215,7 @@ def get_optimization_data():
 # ---------------- PER-SIGNAL BACKTEST ----------------
 
 _ALL_SIGNAL_KEYS = [
+    "rel_vol_500x", "rel_vol_100x",
     "rel_vol_50x", "rel_vol_25x", "rel_vol_10x", "rel_vol_5x",
     "daily_sweet_20_40", "daily_ok_10_20", "daily_ok_40_100",
     "sideways_chop", "yesterday_green",
@@ -1558,6 +1559,62 @@ def get_hypothesis_rules() -> list:
 
     results.sort(key=sort_key)
     return results
+
+
+def refresh_bundle_projections() -> int:
+    """
+    Recompute projection_json for all bundle rules (those that already have
+    projection_json set). Called after signals backfill so projections reflect
+    real per-signal data instead of the empty-DB values stored at creation time.
+    Returns the number of rules updated.
+    """
+    per_sig = get_per_signal_stats()
+    baseline = (per_sig or {}).get("baseline") or {}
+    if baseline.get("count", 0) < 5:
+        return 0  # not enough data yet
+
+    conn = _connect()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, rule_text, projection_json
+        FROM hypothesis_rules
+        WHERE projection_json IS NOT NULL
+    """)
+    rows = cursor.fetchall()
+    updated = 0
+    for (rid, rule_text, _) in rows:
+        # Parse signal keys from the first line: "[BUNDLE — label] key1 + key2 + ..."
+        try:
+            first_line = rule_text.split("\n")[0]
+            after_bracket = first_line.split("] ", 1)[1] if "] " in first_line else ""
+            signal_keys = [k.strip() for k in after_bracket.split(" + ") if k.strip()]
+        except Exception:
+            signal_keys = []
+
+        if not signal_keys:
+            # Fallback: extract from "Signals adjusted: key=val, ..." line
+            try:
+                for line in rule_text.split("\n"):
+                    if line.startswith("Signals adjusted:"):
+                        pairs = line.split(":", 1)[1].strip().split(", ")
+                        signal_keys = [p.split("=")[0].strip() for p in pairs if "=" in p]
+                        break
+            except Exception:
+                pass
+
+        if not signal_keys:
+            continue
+
+        projection = project_bundle_impact(signal_keys, {"per_signal_stats": per_sig})
+        cursor.execute(
+            "UPDATE hypothesis_rules SET projection_json = ? WHERE id = ?",
+            (json.dumps(projection), rid)
+        )
+        updated += 1
+
+    conn.commit()
+    conn.close()
+    return updated
 
 
 def get_pending_rule_count() -> int:

@@ -92,7 +92,11 @@ def _score(relative_volume, daily_return, range_10d,
     score = 0
 
     if relative_volume is not None:
-        if relative_volume >= 50:
+        if relative_volume >= 500:
+            score += w.get("rel_vol_500x", 40)
+        elif relative_volume >= 100:
+            score += w.get("rel_vol_100x", 35)
+        elif relative_volume >= 50:
             score += w["rel_vol_50x"]
         elif relative_volume >= 25:
             score += w["rel_vol_25x"]
@@ -125,7 +129,8 @@ def _score(relative_volume, daily_return, range_10d,
     score += w.get("no_news_bonus", 0)
 
     max_score = (
-        max(w["rel_vol_50x"], w["rel_vol_25x"], w["rel_vol_10x"], 0)
+        max(w.get("rel_vol_500x", 40), w.get("rel_vol_100x", 35),
+            w["rel_vol_50x"], w["rel_vol_25x"], w["rel_vol_10x"], 0)
         + max(w["daily_sweet_20_40"], w["daily_ok_10_20"], w["daily_ok_40_100"], 0)
         + w["sideways_chop"] + w["yesterday_green"]
         + max(w["shares_lt10m"], w["shares_lt30m"], 0)
@@ -393,6 +398,16 @@ def backfill_signals_for_historical(max_workers: int = 2) -> int:
                       f"{updated_total} rows updated")
 
     print(f"Signal backfill: complete — {updated_total} rows updated")
+
+    # Refresh bundle rule projections now that signals_json is populated
+    try:
+        from app.database import refresh_bundle_projections
+        n_proj = refresh_bundle_projections()
+        if n_proj > 0:
+            print(f"Signal backfill: refreshed projections for {n_proj} bundle rules")
+    except Exception as e:
+        print(f"Signal backfill: projection refresh failed — {e}")
+
     return updated_total
 
 

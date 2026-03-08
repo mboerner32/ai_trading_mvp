@@ -26,6 +26,7 @@ MODEL_PATH    = "ml_model.pkl"
 
 # Signal keys used as features — must match _ALL_SIGNAL_KEYS in database.py
 _SIGNAL_KEYS = [
+    "rel_vol_500x", "rel_vol_100x",
     "rel_vol_50x", "rel_vol_25x", "rel_vol_10x", "rel_vol_5x",
     "daily_sweet_20_40", "daily_ok_10_20", "daily_ok_40_100",
     "sideways_chop", "yesterday_green",

@@ -259,7 +259,8 @@ def recommend_trade(stock: dict, hypothesis: str = None,
                     ticker_history: list = None,
                     lstm_prob: float = None,
                     news_headlines: list = None,
-                    ai_accuracy: dict = None) -> dict:
+                    ai_accuracy: dict = None,
+                    per_signal_stats: dict = None) -> dict:
     """
     Makes TRADE/NO_TRADE call using five context sources:
     hypothesis, market context (day-of-week), ticker history, historical calibration,
@@ -287,7 +288,7 @@ def recommend_trade(stock: dict, hypothesis: str = None,
     # Context 2: hypothesis patterns
     hypothesis_section = ""
     if hypothesis:
-        hypothesis_section = f"\nLearned patterns:\n{hypothesis[:400].strip()}"
+        hypothesis_section = f"\nLearned patterns:\n{hypothesis[:700].strip()}"
 
     # Context 3: recent scan history for this ticker
     history_section = ""
@@ -319,14 +320,35 @@ def recommend_trade(stock: dict, hypothesis: str = None,
             lines.append(f"  • {h}")
         news_section = "\n".join(lines)
 
-    # Context 7: AI self-calibration — own historical accuracy
+    # Context 7: per-signal performance for the signals that fired on THIS stock
+    signal_perf_section = ""
+    if per_signal_stats and per_signal_stats.get("baseline"):
+        baseline = per_signal_stats["baseline"]
+        if baseline.get("count", 0) >= 5:
+            fired = checklist.get("fired_signals", {})
+            signal_rows = {s["key"]: s for s in per_signal_stats.get("signals", [])}
+            lines = []
+            for key in fired:
+                if key in signal_rows:
+                    s = signal_rows[key]
+                    if s.get("count", 0) >= 5:
+                        vs = s["hit_20pct"] - baseline["hit_20pct"]
+                        sign = "+" if vs >= 0 else ""
+                        lines.append(
+                            f"  {key}: {s['hit_20pct']}% hit 20%+ "
+                            f"({sign}{vs:.0f}pp vs {baseline['hit_20pct']}% baseline, n={s['count']})"
+                        )
+            if lines:
+                signal_perf_section = "\nFired-signal backtest performance:\n" + "\n".join(lines)
+
+    # Context 8: AI self-calibration — own historical accuracy
     accuracy_section = ""
     if ai_accuracy and ai_accuracy.get("total_resolved", 0) >= 5:
         parts = [f"\nYour past AI call accuracy ({ai_accuracy['total_resolved']} resolved calls):"]
         if "trade" in ai_accuracy:
             t = ai_accuracy["trade"]
             parts.append(
-                f"  TRADE calls: {t['hit_20pct']}% hit 20% target  |  "
+                f"  TRADE calls: {t['hit_20pct']}% hit +20% within 10 trading days  |  "
                 f"{t['missed']}% missed  ({t['count']} calls)"
             )
         if "no_trade" in ai_accuracy:
@@ -337,32 +359,48 @@ def recommend_trade(stock: dict, hypothesis: str = None,
             )
         if "trade" in ai_accuracy:
             hit_rate = ai_accuracy["trade"]["hit_20pct"]
-            if hit_rate < 40:
+            if hit_rate < 50:
                 parts.append(
-                    "  → Your TRADE calls are underperforming. "
-                    "Raise your bar — only call TRADE on the highest-conviction setups."
+                    f"  → TRADE precision is {hit_rate:.0f}% — target is 80%+. "
+                    "Only call TRADE when multiple strong signals clearly align. "
+                    "Be selective: a high-quality NO_TRADE is better than a low-conviction TRADE."
                 )
-            elif hit_rate > 65:
+            elif hit_rate < 80:
                 parts.append(
-                    "  → Your TRADE calls are performing well. "
-                    "Confidence is justified on quality setups."
+                    f"  → TRADE precision is {hit_rate:.0f}% — approaching the 80% target. "
+                    "Stay selective and keep raising the bar."
+                )
+            else:
+                parts.append(
+                    f"  → TRADE precision is {hit_rate:.0f}% — at or above the 80% target. "
+                    "Maintain this standard."
                 )
         accuracy_section = "\n".join(parts)
 
+    relvol_raw = checklist.get('relative_volume')
+    relvol_tier_label = (
+        "Extreme (≥500x)" if relvol_raw and relvol_raw >= 500 else
+        "Exceptional (≥100x)" if relvol_raw and relvol_raw >= 100 else
+        "Very High (≥50x)" if relvol_raw and relvol_raw >= 50 else
+        "Ideal (≥25x)" if relvol_raw and relvol_raw >= 25 else
+        "Good (≥10x)" if relvol_raw and relvol_raw >= 10 else
+        "Adequate (≥5x)" if relvol_raw and relvol_raw >= 5 else "Low"
+    )
+
     prompt = f"""You are a momentum trading AI making a TRADE or NO_TRADE call for a low-float microcap.
-Strategy: buy stocks showing unusual volume compression setups targeting 20%+ next-day spike.
+Strategy: buy stocks showing unusual volume compression setups. A TRADE call is correct if the stock touches +20% above the alert price within 10 trading days (~2 weeks). Target: 80%+ of TRADE calls should hit this.
 
 Stock: {stock['symbol']} | Score: {stock['score']}/100 | Price: ${stock['price']}
 Signals:
-- Relative Volume: {checklist.get('relative_volume')}x
+- Relative Volume: {relvol_raw}x [{relvol_tier_label}]
 - Shares Outstanding: {shares_str}
 - Daily gain today: {stock.get('daily_return_pct', 'N/A')}%
 - Sideways Compression: {checklist.get('sideways_chop')}
 - Yesterday Green: {checklist.get('yesterday_green')}
 - Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'} (40%+ = strong floor, lowers downside risk)
-- Sector/Industry: {checklist.get('sector') or 'N/A'} / {checklist.get('industry') or 'N/A'} (Biotech/Healthcare historically outperforms for this setup){calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}{news_section}{accuracy_section}
+- Sector/Industry: {checklist.get('sector') or 'N/A'} / {checklist.get('industry') or 'N/A'} (Biotech/Healthcare historically outperforms for this setup){signal_perf_section}{calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}{news_section}{accuracy_section}
 
-Make a TRADE or NO_TRADE call. Does this setup match learned patterns? Is the score/signal quality sufficient?
+Make a TRADE or NO_TRADE call. Only call TRADE when you have genuine conviction the setup will hit +20% — precision on TRADE calls is the priority. NO_TRADE is the right call when signals are weak, mixed, or the setup doesn't clearly fit the pattern.
 
 Respond EXACTLY (no other text):
 DECISION: TRADE or NO_TRADE
@@ -724,6 +762,7 @@ def optimize_complex_ai_weights(
     import json
 
     REQUIRED_KEYS = [
+        "rel_vol_500x", "rel_vol_100x",
         "rel_vol_50x", "rel_vol_25x", "rel_vol_10x", "rel_vol_5x",
         "daily_sweet_20_40", "daily_ok_10_20", "daily_ok_40_100",
         "sideways_chop", "yesterday_green",
@@ -811,6 +850,8 @@ Shares Outstanding:
 
 Weight definitions — tiered signals (only the highest matching tier scores per signal):
 Relative Volume tiers:
+  rel_vol_500x:  pts when rel vol >= 500x (current default: 40) — extreme event
+  rel_vol_100x:  pts when rel vol >= 100x (current default: 35)
   rel_vol_50x:   pts when rel vol >= 50x (current default: 30)
   rel_vol_25x:   pts when rel vol >= 25x (current default: 22)
   rel_vol_10x:   pts when rel vol >= 10x (current default: 15)
@@ -847,7 +888,7 @@ IMPORTANT: If a synthesized hypothesis is provided above, treat it as the PRIMAR
 
 Constraints:
 - All weights must be integers 0–50
-- Tier ordering must be preserved: rel_vol_50x >= rel_vol_25x >= rel_vol_10x >= rel_vol_5x
+- Tier ordering must be preserved: rel_vol_500x >= rel_vol_100x >= rel_vol_50x >= rel_vol_25x >= rel_vol_10x >= rel_vol_5x
 - Tier ordering must be preserved: shares_lt10m >= shares_lt30m >= shares_lt100m
 - Upweight signals where hit-20%+ rate is highest AND avg-days-to-target is lowest
 
@@ -856,7 +897,7 @@ Also suggest 3–5 new scoring criteria/metrics to add (drawn from hypothesis pa
 Respond in EXACTLY this format with no other text:
 
 WEIGHTS_JSON:
-{{"rel_vol_50x": 0, "rel_vol_25x": 0, "rel_vol_10x": 0, "rel_vol_5x": 0, "daily_sweet_20_40": 0, "daily_ok_10_20": 0, "daily_ok_40_100": 0, "sideways_chop": 0, "yesterday_green": 0, "shares_lt10m": 0, "shares_lt30m": 0, "shares_lt100m": 0, "no_news_bonus": 0, "high_cash_bonus": 0, "institution_moderate": 0, "institution_strong": 0}}
+{{"rel_vol_500x": 0, "rel_vol_100x": 0, "rel_vol_50x": 0, "rel_vol_25x": 0, "rel_vol_10x": 0, "rel_vol_5x": 0, "daily_sweet_20_40": 0, "daily_ok_10_20": 0, "daily_ok_40_100": 0, "sideways_chop": 0, "yesterday_green": 0, "shares_lt10m": 0, "shares_lt30m": 0, "shares_lt100m": 0, "no_news_bonus": 0, "high_cash_bonus": 0, "institution_moderate": 0, "institution_strong": 0}}
 
 RATIONALE:
 [2-3 sentences explaining key weight changes — explicitly reference which hypothesis patterns drove them]
@@ -888,6 +929,8 @@ SUMMARY:
             new_weights[key] = max(0, min(50, int(new_weights.get(key, current_weights.get(key, 5)))))
 
         # Enforce tier ordering constraints
+        new_weights["rel_vol_100x"] = min(new_weights.get("rel_vol_100x", 35), new_weights.get("rel_vol_500x", 40))
+        new_weights["rel_vol_50x"]  = min(new_weights["rel_vol_50x"],  new_weights.get("rel_vol_100x", 35))
         new_weights["rel_vol_25x"]  = min(new_weights["rel_vol_25x"],  new_weights["rel_vol_50x"])
         new_weights["rel_vol_10x"]  = min(new_weights["rel_vol_10x"],  new_weights["rel_vol_25x"])
         new_weights["rel_vol_5x"]   = min(new_weights["rel_vol_5x"],   new_weights["rel_vol_10x"])
@@ -960,6 +1003,7 @@ def autonomous_optimize(
     import json
 
     REQUIRED_KEYS = [
+        "rel_vol_500x", "rel_vol_100x",
         "rel_vol_50x", "rel_vol_25x", "rel_vol_10x", "rel_vol_5x",
         "daily_sweet_20_40", "daily_ok_10_20", "daily_ok_40_100",
         "sideways_chop", "yesterday_green",
@@ -1103,7 +1147,7 @@ TASK 3 — CRITERIA & WEIGHT OPTIMIZATION: Decide which scoring criteria to keep
 
 ## Scoring Criteria Control
 EXISTING CRITERIA — set to 0 to remove if evidence shows it reduces win rate or % return:
-  rel_vol_50x, rel_vol_25x, rel_vol_10x, rel_vol_5x  [relative volume tiers, keep descending order]
+  rel_vol_500x, rel_vol_100x, rel_vol_50x, rel_vol_25x, rel_vol_10x, rel_vol_5x  [relative volume tiers, keep descending order]
   daily_sweet_20_40, daily_ok_10_20, daily_ok_40_100  [daily gain tiers]
   shares_lt10m, shares_lt30m, shares_lt100m            [share count tiers, keep descending order]
   sideways_chop    10-day price range <20%: consolidation before breakout
@@ -1144,14 +1188,14 @@ OPTIONAL CRITERIA — disabled by default (weight=0), set 1-20 to enable if evid
 
 ## Constraints
 - All weight values must be integers 0-50 (optional criteria: max 20)
-- Tier ordering: rel_vol_50x >= rel_vol_25x >= rel_vol_10x >= rel_vol_5x
+- Tier ordering: rel_vol_500x >= rel_vol_100x >= rel_vol_50x >= rel_vol_25x >= rel_vol_10x >= rel_vol_5x
 - Tier ordering: shares_lt10m >= shares_lt30m >= shares_lt100m
-- Include ALL 22 keys in the output weights dict (set unwanted ones to 0)
+- Include ALL 24 keys in the output weights dict (set unwanted ones to 0)
 
 ## Required Output Format
 Respond with ONLY a valid JSON object (no markdown, no code fences, no other text):
 
-{{"hypotheses": [{{"text": "specific pattern rule", "source": "historical|feedback|both", "confidence": 85}}], "weights": {{"rel_vol_50x": 30, "rel_vol_25x": 22, "rel_vol_10x": 15, "rel_vol_5x": 7, "daily_sweet_20_40": 10, "daily_ok_10_20": 5, "daily_ok_40_100": 5, "sideways_chop": 8, "yesterday_green": 7, "shares_lt10m": 30, "shares_lt30m": 18, "shares_lt100m": 8, "no_news_bonus": 5, "high_cash_bonus": 5, "institution_moderate": 2, "institution_strong": 5, "sector_biotech_bonus": 5, "rsi_momentum_bonus": 0, "macd_positive_bonus": 0, "bb_upper_breakout": 0, "consecutive_green_bonus": 0, "low_float_ratio_bonus": 0}}, "weight_confidence": 82, "rationale": "2-3 sentences citing specific evidence that drove changes", "summary": "one sentence max 20 words", "suggestions": ["new signal idea 1", "new signal idea 2"]}}"""
+{{"hypotheses": [{{"text": "specific pattern rule", "source": "historical|feedback|both", "confidence": 85}}], "weights": {{"rel_vol_500x": 40, "rel_vol_100x": 35, "rel_vol_50x": 30, "rel_vol_25x": 22, "rel_vol_10x": 15, "rel_vol_5x": 7, "daily_sweet_20_40": 10, "daily_ok_10_20": 5, "daily_ok_40_100": 5, "sideways_chop": 8, "yesterday_green": 7, "shares_lt10m": 30, "shares_lt30m": 18, "shares_lt100m": 8, "no_news_bonus": 5, "high_cash_bonus": 5, "institution_moderate": 2, "institution_strong": 5, "sector_biotech_bonus": 5, "rsi_momentum_bonus": 0, "macd_positive_bonus": 0, "bb_upper_breakout": 0, "consecutive_green_bonus": 0, "low_float_ratio_bonus": 0}}, "weight_confidence": 82, "rationale": "2-3 sentences citing specific evidence that drove changes", "summary": "one sentence max 20 words", "suggestions": ["new signal idea 1", "new signal idea 2"]}}"""
 
     try:
         message = client.messages.create(
@@ -1186,6 +1230,8 @@ Respond with ONLY a valid JSON object (no markdown, no code fences, no other tex
             weights[key] = max(0, min(20, int(weights.get(key, 0))))
 
         # Enforce tier ordering constraints
+        weights["rel_vol_100x"] = min(weights.get("rel_vol_100x", 35), weights.get("rel_vol_500x", 40))
+        weights["rel_vol_50x"]  = min(weights["rel_vol_50x"],  weights.get("rel_vol_100x", 35))
         weights["rel_vol_25x"]  = min(weights["rel_vol_25x"],  weights["rel_vol_50x"])
         weights["rel_vol_10x"]  = min(weights["rel_vol_10x"],  weights["rel_vol_25x"])
         weights["rel_vol_5x"]   = min(weights["rel_vol_5x"],   weights["rel_vol_10x"])
