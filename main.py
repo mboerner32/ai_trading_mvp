@@ -579,8 +579,8 @@ def _scheduled_scan():
                 label = "Auto AI" if mode == "autoai" else "Complex + AI"
                 # Enrich score >= 50 with AI calls + LSTM before alerting
                 _enrich_high_scorers(data["results"], mode=mode)
-                # Alert only AI TRADE calls (score >= 50); track to suppress intraday re-alerts
-                send_scan_alert(data["results"], label, min_score=50, ai_trade_only=True)
+                # Alert all AI TRADE calls regardless of score
+                send_scan_alert(data["results"], label, min_score=0, ai_trade_only=True)
                 for r in data["results"]:
                     if (r.get("score", 0) >= 50
                             and (r.get("ai_trade_call") or {}).get("decision") == "TRADE"):
@@ -607,7 +607,8 @@ def _premarket_scan():
         data = run_scan(mode="squeeze", premarket=True)
         save_scan(data["results"], "squeeze")   # persist for hypothesis testing
         save_scan_cache("squeeze", data["results"], data["summary"])
-        send_scan_alert(data["results"], "Complex + AI (pre-market)")
+        _enrich_high_scorers(data["results"], mode="squeeze")
+        send_scan_alert(data["results"], "Complex + AI (pre-market)", min_score=0, ai_trade_only=True)
         print(f"SCHEDULER: pre-market scan complete ({len(data['results'])} results)")
     except Exception as e:
         print(f"SCHEDULER: pre-market scan failed — {e}")
@@ -701,20 +702,19 @@ def _intraday_scan():
         # Enrich score >= 50 stocks not yet alerted
         new_candidates = [
             r for r in data["results"]
-            if r.get("score", 0) >= 50 and r.get("symbol") not in _alerted_today
+            if r.get("symbol") not in _alerted_today
         ]
         if new_candidates:
             _enrich_high_scorers(data["results"], mode="squeeze")
-        # Alert only AI TRADE calls among new candidates
+        # Alert all AI TRADE calls regardless of score
         new_alerts = [
             r for r in data["results"]
-            if r.get("score", 0) >= 50
-            and (r.get("ai_trade_call") or {}).get("decision") == "TRADE"
+            if (r.get("ai_trade_call") or {}).get("decision") == "TRADE"
             and r.get("symbol") not in _alerted_today
         ]
         if new_alerts:
             send_scan_alert(new_alerts, f"Intraday {et_now.strftime('%H:%M')}",
-                            min_score=50, ai_trade_only=True)
+                            min_score=0, ai_trade_only=True)
             _auto_paper_trade(new_alerts, today_str)
             for r in new_alerts:
                 _alerted_today.add(r.get("symbol"))

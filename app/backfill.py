@@ -303,12 +303,13 @@ def backfill_signals_for_historical(max_workers: int = 2) -> int:
     import json
     from app.scoring_engine import score_stock_squeeze
 
-    # Unique symbols that still need signals_json
+    # Unique symbols that still need signals_json (all modes except 5m)
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
         SELECT DISTINCT symbol FROM scans
-        WHERE mode = 'historical' AND signals_json IS NULL
+        WHERE mode NOT IN ('fivemin', 'fivemin_bt')
+          AND (signals_json IS NULL OR signals_json = '{}')
     """)
     symbols = [r[0] for r in cursor.fetchall()]
     conn.close()
@@ -326,7 +327,9 @@ def backfill_signals_for_historical(max_workers: int = 2) -> int:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id, timestamp FROM scans
-                WHERE mode = 'historical' AND signals_json IS NULL AND symbol = ?
+                WHERE mode NOT IN ('fivemin', 'fivemin_bt')
+                  AND (signals_json IS NULL OR signals_json = '{}')
+                  AND symbol = ?
             """, (symbol,))
             rows = cursor.fetchall()
             conn.close()
