@@ -459,9 +459,10 @@ def _enrich_high_scorers(results: list, mode: str = None) -> list:
     def _enrich_one(stock):
         try:
             checklist = stock.get("checklist", {})
-            # LSTM only for high-scorers — each call downloads 3mo of data
+            # LSTM: fivemin gated at 75; daily models gated at 50 (matches AI enrichment threshold)
             lstm_prob = None
-            if stock.get("score", 0) >= 75:
+            lstm_threshold = 75 if mode == "fivemin" else 50
+            if stock.get("score", 0) >= lstm_threshold:
                 if mode == "fivemin":
                     lstm_prob = predict_5m_hit_probability(
                         stock["symbol"],
@@ -1045,9 +1046,9 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
             stock["ai_target"] = predict_price_target(stock, sizing_stats, hypothesis_text)
         else:
             stock["ai_target"] = {"target_pct": 20, "rationale": ""}
-        # Local LSTM inference — only for high-scorers (each call downloads 3mo of data)
+        # Local LSTM inference — daily models run at 50 (matches AI enrichment threshold)
         lstm_prob = None
-        if stock["score"] >= 75:
+        if stock["score"] >= 50:
             checklist = stock.get("checklist", {})
             lstm_prob = predict_hit_probability(
                 stock["symbol"],
