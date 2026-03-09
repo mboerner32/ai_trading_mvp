@@ -151,7 +151,7 @@ def _process_ticker(symbol, weights=None):
     """
     try:
         df = yf.download(
-            symbol, period="max", interval="1d",
+            symbol, start="2018-01-01", interval="1d",
             progress=False, auto_adjust=False
         )
         if df.empty or len(df) < 70:
@@ -336,7 +336,7 @@ def backfill_signals_for_historical(max_workers: int = 2) -> int:
             if not rows:
                 return 0
 
-            df = yf.download(symbol, period="max", interval="1d",
+            df = yf.download(symbol, start="2018-01-01", interval="1d",
                              progress=False, auto_adjust=False)
             if df.empty or len(df) < 30:
                 return 0
@@ -425,6 +425,20 @@ def build_historical_dataset(max_workers=2, weights=None):
     """
     from app.database import save_historical_scans, set_backfill_status
     from app.universe import fetch_backfill_universe
+
+    # Purge pre-2018 historical rows — they predate reliable yfinance coverage
+    # and can't be signal-backfilled, so they only dilute training quality
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        deleted = conn.execute(
+            "DELETE FROM scans WHERE mode='historical' AND timestamp < '2018-01-01'"
+        ).rowcount
+        conn.commit()
+        conn.close()
+        if deleted:
+            print(f"Backfill: purged {deleted} pre-2018 historical rows")
+    except Exception as e:
+        print(f"Backfill: pre-2018 purge failed — {e}")
 
     db_tickers = _get_db_tickers()
 
