@@ -539,18 +539,22 @@ def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze"):
 
             # Mirror to Alpaca paper account
             alpaca_order = submit_market_order(symbol, position_size)
-            alpaca_str   = (" · Alpaca ✓" if alpaca_order
-                            else (" · Alpaca ✗" if broker_configured() else ""))
+            if alpaca_order:
+                alpaca_str = "Alpaca ✓"
+            elif broker_configured():
+                alpaca_str = "Paper only (OTC — not on Alpaca)"
+            else:
+                alpaca_str = "Paper only"
 
             _send_telegram_admin(
                 f"<b>Auto-Trade Opened: {symbol}</b>\n"
-                f"Entry: ${entry_price:.4f} · Score: {r['score']}/100 · ${position_size}"
-                f" · Target +20%{alpaca_str}\n"
+                f"Entry: ${entry_price:.4f} · Score: {r['score']}/100 · ${position_size} · Target +20%\n"
+                f"{alpaca_str}\n"
                 f"<i>{tc.get('rationale', '')}</i>"
             )
             print(f"AUTO-TRADE: opened {symbol} at ${entry_price:.4f} "
                   f"(score={r['score']}, conf={confidence}, size=${position_size}, "
-                  f"count={_auto_trade_count}/3{alpaca_str})")
+                  f"count={_auto_trade_count}/3, {alpaca_str})")
 
 
 def _scheduled_scan():
