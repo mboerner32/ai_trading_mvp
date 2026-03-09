@@ -516,8 +516,6 @@ def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze"):
     for r in results:
         if _auto_trade_count >= 3:
             break
-        if r.get("score", 0) < 50:
-            continue
         tc = r.get("ai_trade_call") or {}
         if tc.get("decision") != "TRADE" or tc.get("confidence") not in ("HIGH", "MEDIUM"):
             continue
@@ -2557,14 +2555,14 @@ def feedback_export(request: Request):
 def export_db(request: Request, token: str = ""):
     """Download the live SQLite database for offline analysis."""
     import os as _os
-    _export_token = _os.environ.get("EXPORT_TOKEN", "")
+    _export_token = _os.environ.get("EXPORT_TOKEN") or _os.environ.get("Export_Token", "")
     authed = "user" in request.session or (
         _export_token and token == _export_token
     )
     if not authed:
         return RedirectResponse("/login", status_code=303)
     db_path = _os.environ.get("DB_PATH", "scan_history.db")
-    if not os.path.exists(db_path):
+    if not _os.path.exists(db_path):
         return Response("Database file not found", status_code=404)
     from datetime import date
     filename = f"scan_history_{date.today().isoformat()}.db"

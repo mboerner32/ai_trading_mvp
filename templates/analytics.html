@@ -1404,8 +1404,9 @@
     <!-- WEIGHT CHANGE LOG -->
     <div class="section-title" style="color:#0f766e;">Complex + AI Model — Change Log</div>
 
-    <div class="chart-card" style="margin-bottom:40px; border-left:4px solid #0f766e;">
+    <div class="chart-card" style="margin-bottom:40px; border-left:4px solid #0f766e; padding:0;">
         {% if weight_changelog %}
+        <div style="max-height:220px; overflow-y:auto; padding:16px 20px;">
         <table style="margin-bottom:0;">
             <thead>
                 <tr>
@@ -1448,8 +1449,9 @@
             {% endfor %}
             </tbody>
         </table>
+        </div>
         {% else %}
-        <p class="empty-note">
+        <p class="empty-note" style="padding:16px 20px; margin:0;">
             No model updates logged yet. Use "Apply to Complex + AI Model" on the Feedback page
             or click "Re-optimize Now" above to log the first entry.
         </p>
