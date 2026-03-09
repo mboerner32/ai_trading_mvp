@@ -281,21 +281,24 @@ def send_take_profit_alert(closed_trades: list):
     if not closed_trades:
         return
 
-    email_lines = [f"{len(closed_trades)} position(s) auto-closed at take-profit target\n"]
-    tg_lines    = [f"<b>{len(closed_trades)} Take-Profit Hit!</b>\n"]
+    email_lines = [f"{len(closed_trades)} position(s) closed at take-profit target\n"]
+    tg_msgs = []
 
     for t in closed_trades:
         email_lines.append(
             f"  {t['symbol']:6s}  +{t['pnl_pct']:.1f}%"
-            f"  Entry:${t['entry_price']}  Close:${t['exit_price']:.4f}"
-            f"  P&L:+${t['realized_pnl']:.2f}"
+            f"  Entry: ${t['entry_price']:.4f}  Exit: ${t['exit_price']:.4f}"
+            f"  P&L: +${t['realized_pnl']:.2f}"
         )
-        tg_lines.append(
-            f"<b>{t['symbol']}</b>  +{t['pnl_pct']:.1f}%  P&L: +${t['realized_pnl']:.2f}"
+        tg_msgs.append(
+            f"&#127919; <b>Take-Profit Hit: {t['symbol']}</b>\n"
+            f"Entry: ${t['entry_price']:.4f} &#8594; Exit: ${t['exit_price']:.4f}\n"
+            f"Gain: <b>+{t['pnl_pct']:.1f}%</b>  |  Profit: <b>+${t['realized_pnl']:.2f}</b>"
         )
 
     _send_email(
         subject=f"[Trading] \U0001f3af {len(closed_trades)} Take-Profit Hit!",
         body="\n".join(email_lines),
     )
-    _send_telegram("\n".join(tg_lines))
+    for msg in tg_msgs:
+        _send_telegram(msg)

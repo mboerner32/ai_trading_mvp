@@ -717,6 +717,9 @@ def _intraday_scan():
             for r in new_alerts:
                 _alerted_today.add(r.get("symbol"))
 
+        # Check take-profit on open positions every intraday cycle
+        _autoclose_take_profit()
+
         # Add near-misses to watchlist
         for r in data["results"]:
             score = r.get("score", 0)
@@ -772,6 +775,9 @@ def _fivemin_spike_scan():
             _auto_paper_trade(new_alerts, today_str, mode="fivemin")
             for r in new_alerts:
                 _alerted_today.add(r.get("symbol"))
+
+        # Check take-profit on open positions every 5m cycle
+        _autoclose_take_profit()
 
         print(
             f"5M SPIKE SCAN: {len(data['results'])} results, "
