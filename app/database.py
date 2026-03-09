@@ -1149,7 +1149,7 @@ def get_optimization_data():
     cursor = conn.cursor()
     cursor.execute("""
         SELECT relative_volume, today_return, shares_outstanding,
-               next_day_return, days_to_20pct
+               next_day_return, days_to_20pct, timestamp
         FROM scans
         WHERE next_day_return IS NOT NULL
         ORDER BY id DESC LIMIT 500
@@ -1178,36 +1178,52 @@ def get_optimization_data():
             "avg_days_to_20pct": avg_days,
         }
 
-    relvol  = {">=50x": [], "25-50x": [], "10-25x": [], "<10x": []}
-    gain    = {"20-40%": [], "10-20%": [], "40-100%": [], "<10%": []}
-    shares  = {"<1M": [], "1-5M": [], "5-10M": [], "10-30M": [], "30M+": []}
+    relvol  = {"500x+": [], "100-499x": [], "50-99x": [], "25-49x": [], "10-24x": [], "<10x": []}
+    gain    = {">80%": [], "50-80%": [], "30-50%": [], "20-30%": [], "10-20%": [], "<10%": []}
+    shares  = {"<10M": [], "10-30M": [], "30-100M": [], "100M+": []}
+    dow     = {"Monday": [], "Tuesday": [], "Wednesday": [], "Thursday": [], "Friday": []}
+    dow_map = {"1": "Monday", "2": "Tuesday", "3": "Wednesday", "4": "Thursday", "5": "Friday"}
 
-    for rv, tr, so, nd, d20 in rows:
+    for rv, tr, so, nd, d20, ts in rows:
         item = (nd, d20)
         if rv is not None:
-            if rv >= 50:   relvol[">=50x"].append(item)
-            elif rv >= 25: relvol["25-50x"].append(item)
-            elif rv >= 10: relvol["10-25x"].append(item)
-            else:          relvol["<10x"].append(item)
+            if rv >= 500:  relvol["500x+"].append(item)
+            elif rv >= 100: relvol["100-499x"].append(item)
+            elif rv >= 50:  relvol["50-99x"].append(item)
+            elif rv >= 25:  relvol["25-49x"].append(item)
+            elif rv >= 10:  relvol["10-24x"].append(item)
+            else:           relvol["<10x"].append(item)
 
         if tr is not None:
-            if 20 <= tr <= 40:   gain["20-40%"].append(item)
-            elif 10 <= tr < 20:  gain["10-20%"].append(item)
-            elif 40 < tr <= 100: gain["40-100%"].append(item)
-            elif tr < 10:        gain["<10%"].append(item)
+            if tr >= 80:         gain[">80%"].append(item)
+            elif tr >= 50:       gain["50-80%"].append(item)
+            elif tr >= 30:       gain["30-50%"].append(item)
+            elif tr >= 20:       gain["20-30%"].append(item)
+            elif tr >= 10:       gain["10-20%"].append(item)
+            else:                gain["<10%"].append(item)
 
         if so is not None:
-            if so < 1_000_000:   shares["<1M"].append(item)
-            elif so < 5_000_000: shares["1-5M"].append(item)
-            elif so < 10_000_000:shares["5-10M"].append(item)
+            if so < 10_000_000:  shares["<10M"].append(item)
             elif so < 30_000_000:shares["10-30M"].append(item)
-            else:                shares["30M+"].append(item)
+            elif so < 100_000_000:shares["30-100M"].append(item)
+            else:                 shares["100M+"].append(item)
+
+        if ts:
+            import datetime as _dt
+            try:
+                d = _dt.datetime.fromisoformat(str(ts)[:19])
+                day_name = dow_map.get(str(d.weekday() + 1 if d.weekday() < 6 else d.weekday()))
+                if day_name:
+                    dow[day_name].append(item)
+            except Exception:
+                pass
 
     return {
         "total_trades":       len(rows),
         "relative_volume":    {k: bucket_stats(v) for k, v in relvol.items()},
         "daily_gain":         {k: bucket_stats(v) for k, v in gain.items()},
         "shares_outstanding": {k: bucket_stats(v) for k, v in shares.items()},
+        "day_of_week":        {k: bucket_stats(v) for k, v in dow.items()},
         "per_signal_stats":   get_per_signal_stats(),
     }
 

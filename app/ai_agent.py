@@ -1027,16 +1027,34 @@ def autonomous_optimize(
             days = stats.get("avg_days_to_20pct")
             days_str = f" (avg {days}d to target)" if days is not None else ""
             return (f"{stats['count']} trades | "
-                    f"{hit}% hit 20%+ target{days_str} | "
+                    f"{hit}% hit 20%+{days_str} | "
                     f"{stats['win_rate']}% any-gain | "
                     f"{stats['avg_return']:+.1f}% avg return")
         rv = opt_data["relative_volume"]
         dg = opt_data["daily_gain"]
         so = opt_data["shares_outstanding"]
-        backtest_section = f"""BACKTESTED SIGNAL PERFORMANCE ({opt_data['total_trades']} trades):
-Relative Volume: >=50x: {fmt(rv.get(">=50x"))} | 25-50x: {fmt(rv.get("25-50x"))} | 10-25x: {fmt(rv.get("10-25x"))} | <10x: {fmt(rv.get("<10x"))}
-Daily Gain: 20-40%: {fmt(dg.get("20-40%"))} | 10-20%: {fmt(dg.get("10-20%"))} | 40-100%: {fmt(dg.get("40-100%"))} | <10%: {fmt(dg.get("<10%"))}
-Shares: <1M: {fmt(so.get("<1M"))} | 1-5M: {fmt(so.get("1-5M"))} | 5-10M: {fmt(so.get("5-10M"))} | 10-30M: {fmt(so.get("10-30M"))} | 30M+: {fmt(so.get("30M+"))}"""
+        dw = opt_data.get("day_of_week", {})
+        backtest_section = f"""BACKTESTED SIGNAL PERFORMANCE ({opt_data['total_trades']} trades with known outcomes):
+Relative Volume:
+  500x+:    {fmt(rv.get("500x+"))}
+  100-499x: {fmt(rv.get("100-499x"))}
+  50-99x:   {fmt(rv.get("50-99x"))}
+  25-49x:   {fmt(rv.get("25-49x"))}
+  10-24x:   {fmt(rv.get("10-24x"))}
+Daily Gain at scan time:
+  >80%:   {fmt(dg.get(">80%"))}
+  50-80%: {fmt(dg.get("50-80%"))}
+  30-50%: {fmt(dg.get("30-50%"))}
+  20-30%: {fmt(dg.get("20-30%"))}
+  10-20%: {fmt(dg.get("10-20%"))}
+  <10%:   {fmt(dg.get("<10%"))}
+Float (shares outstanding):
+  <10M:    {fmt(so.get("<10M"))}
+  10-30M:  {fmt(so.get("10-30M"))}
+  30-100M: {fmt(so.get("30-100M"))}
+  100M+:   {fmt(so.get("100M+"))}
+Day of Week:
+  Monday: {fmt(dw.get("Monday"))} | Tuesday: {fmt(dw.get("Tuesday"))} | Wednesday: {fmt(dw.get("Wednesday"))} | Thursday: {fmt(dw.get("Thursday"))} | Friday: {fmt(dw.get("Friday"))}"""
     else:
         backtest_section = "BACKTESTED SIGNAL PERFORMANCE: Insufficient data (<5 trades with known outcomes)."
 
@@ -1134,7 +1152,15 @@ Shares: <1M: {fmt(so.get("<1M"))} | 1-5M: {fmt(so.get("1-5M"))} | 5-10M: {fmt(so
 
     current_display = {k: current_weights.get(k, 0) for k in ALL_KEYS}
 
-    prompt = f"""You are autonomously evolving a self-improving stock trading model for low-float microcap momentum setups targeting 20%+ intraday spikes.
+    prompt = f"""You are autonomously evolving a self-improving stock trading model for low-float microcap momentum setups.
+
+OPTIMIZATION GOALS (in priority order):
+1. Hit rate: maximize % of TRADE calls where stock touches +20% above alert price within 10 trading days — TARGET 80%+
+2. Win rate: maximize % of scans with any positive next-day return
+3. Speed: minimize avg days to hit the +20% target (faster = better risk/reward)
+4. Magnitude: maximize avg return (feeds future take-profit ceiling decisions)
+
+Only raise weight_confidence >= 75 when the evidence clearly supports a change on ALL four metrics — or at minimum improves hit rate without harming the others.
 
 You have THREE tasks:
 
