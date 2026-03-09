@@ -2553,12 +2553,16 @@ def feedback_export(request: Request):
 
 
 @app.get("/export-db")
-def export_db(request: Request):
+def export_db(request: Request, token: str = ""):
     """Download the live SQLite database for offline analysis."""
-    if "user" not in request.session:
+    import os as _os
+    _export_token = _os.environ.get("EXPORT_TOKEN", "")
+    authed = "user" in request.session or (
+        _export_token and token == _export_token
+    )
+    if not authed:
         return RedirectResponse("/login", status_code=303)
-    import os
-    db_path = os.environ.get("DB_PATH", "scan_history.db")
+    db_path = _os.environ.get("DB_PATH", "scan_history.db")
     if not os.path.exists(db_path):
         return Response("Database file not found", status_code=404)
     from datetime import date
