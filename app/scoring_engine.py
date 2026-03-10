@@ -241,12 +241,12 @@ DEFAULT_SQUEEZE_WEIGHTS = {
     "rel_vol_10x":          15,
     "rel_vol_5x":           7,
     "daily_sweet_20_40":    10,
-    "daily_ok_10_20":       5,
-    "daily_ok_40_100":      5,
+    "daily_ok_10_20":      -5,   # PENALTY: 5.9% hit rate vs 12.1% baseline (n=1211, 2026-03-09)
+    "daily_ok_40_100":      7,   # boosted: 14.2% hit rate (n=162, 2026-03-09)
     "sideways_chop":        8,
-    "yesterday_green":      7,
-    "shares_lt10m":         30,   # primary signal
-    "shares_lt30m":         18,
+    "yesterday_green":      9,   # boosted: 14.4% hit rate (n=263, 2026-03-09)
+    "shares_lt10m":         18,  # reduced: 8.1% hit rate, below baseline (n=111, 2026-03-09)
+    "shares_lt30m":         28,  # PRIMARY: 15.7% hit rate; lt30m+40_100=24.6%, lt30m+rv50x=27% (n=172, 2026-03-09)
     "shares_lt100m":        8,
     "no_news_bonus":        5,    # nice-to-have
     "high_cash_bonus":      5,    # nice-to-have
@@ -262,7 +262,7 @@ DEFAULT_SQUEEZE_WEIGHTS = {
     "consecutive_green_bonus": 0, # 2+ consecutive green days: sustained buying
     "low_float_ratio_bonus":  0,  # Float < 40% of shares: tighter float, faster moves
 }
-# Max with defaults: 30+10+8+7+30+5+5+5+5 = 105 → normalised to 100
+# Max with defaults: rv50x=30+sweet=10+chop=8+yg=9+lt30m=28+no_news=5+high_cash=5+inst_strong=5+biotech=5 = 105 → normalised to 100
 # Optional criteria default to 0 so they don't affect the denominator until enabled
 
 

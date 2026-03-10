@@ -302,7 +302,8 @@ def recommend_trade(stock: dict, hypothesis: str = None,
 
     # Context 4: market context (day of week)
     day_name = datetime.now().strftime("%A")
-    market_section = f"\nMarket context: Today is {day_name}."
+    _dow_hit = {"Monday": "9.5%", "Tuesday": "9.4%", "Wednesday": "7.2% (worst)", "Thursday": "8.9%", "Friday": "13.5% (best)"}
+    market_section = f"\nMarket context: Today is {day_name} (historical hit rate: {_dow_hit.get(day_name, 'N/A')})."
 
     # Context 5: LSTM model prediction
     lstm_section = ""
@@ -399,6 +400,15 @@ Signals:
 - Yesterday Green: {checklist.get('yesterday_green')}
 - Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'} (40%+ = strong floor, lowers downside risk)
 - Sector/Industry: {checklist.get('sector') or 'N/A'} / {checklist.get('industry') or 'N/A'} (Biotech/Healthcare historically outperforms for this setup){signal_perf_section}{calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}{news_section}{accuracy_section}
+
+Backtested signal insights (544 labeled live scans, as of 2026-03-09):
+- STRONGEST: shares 10–30M (lt30m) → 15.7% hit rate (+3.6pp vs 12.1% baseline)
+- STRONGEST COMBO: lt30m + rel_vol_50x → 27.0% hit rate (2.2x baseline, n=37)
+- STRONG COMBO: lt30m + daily gain 40–100% → 24.6% hit rate (n=61)
+- WEAK: shares <10M (lt10m) → 8.1% hit rate (−4pp vs baseline) — ultra-micro floats too volatile
+- NEGATIVE SIGNAL: daily gain 10–20% → 5.9% hit rate (−6.2pp vs baseline, n=1211) — modest gainers rarely follow through
+- DAY OF WEEK: Friday 13.5% | Mon/Tue 9.4–9.5% | Wed 7.2% (worst)
+Use these to size up conviction on lt30m+rv50x combos and discount 10–20% gainers.
 
 Make a TRADE or NO_TRADE call. Only call TRADE when you have genuine conviction the setup will hit +20% — precision on TRADE calls is the priority. NO_TRADE is the right call when signals are weak, mixed, or the setup doesn't clearly fit the pattern.
 
