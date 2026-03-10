@@ -137,6 +137,12 @@ Checklist signals:
 - Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'}
 - No News Catalyst (organic move): {checklist.get('no_news_catalyst')}{calibration_section}{feedback_section}
 
+Backtested signal insights (544 labeled live scans, 2026-03-09):
+- SIZE UP: shares 10–30M + rel_vol ≥50x → 27% hit rate (2.2x baseline) — max position
+- SIZE UP: shares 10–30M + daily gain 40–100% → 24.6% hit rate — large position
+- SIZE DOWN: shares <10M → 8.1% hit rate (below baseline) — volatile, unreliable
+- SIZE DOWN: daily gain 10–20% → 5.9% hit rate — modest gainers rarely follow through
+
 Recommend a position size in dollars. Choose from: $250, $500, $750, $1000, $1500, $2000.
 Never recommend more than ${available_cash:.0f} available cash.
 Base your sizing on the 20%+ hit rate in the historical calibration stats — higher hit rate = larger position.
@@ -223,6 +229,13 @@ Daily gain today: {stock.get('daily_return_pct', 'N/A')}%
 Sideways Compression: {checklist.get('sideways_chop')}
 Relvol Tier: {checklist.get('relvol_tier', 'N/A')}
 Float Tier: {checklist.get('float_tier', 'N/A')}{calibration_section}{hypothesis_section}
+
+Backtested avg winner return by combo (544 labeled live scans, 2026-03-09):
+- shares 10–30M + daily gain 40–100%: avg winner return 54.8% → target 35–50%
+- shares 10–30M + rel_vol ≥50x: avg winner return 42.8% → target 30–40%
+- shares 10–30M alone: avg winner return 47.2% → target 30–35%
+- daily gain 10–20%: avg winner return 43.9% but only 5.9% ever hit 20% — don't size up
+- shares <10M: avg winner return 53.3% but unreliable hit rate (8.1%) — keep target conservative
 
 Predict the best take-profit target for this trade.
 Higher relative volume + smaller float + barcoded compression = more room to run.
