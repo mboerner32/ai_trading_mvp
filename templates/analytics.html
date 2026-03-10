@@ -393,10 +393,24 @@
             </div>
             <div style="text-align:center;">
                 <div style="font-size:22px; font-weight:700;
+                    color:{% if o.median_next_day is not none and o.median_next_day > 0 %}#0f766e{% elif o.median_next_day is not none %}#dc2626{% else %}#9ca3af{% endif %};">
+                    {{ ('+' if o.median_next_day > 0 else '') ~ '%.1f' | format(o.median_next_day) ~ '%' if o.median_next_day is not none else '—' }}
+                </div>
+                <div style="font-size:11px; color:#6b7280;">Median Next-Day</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:22px; font-weight:700;
                     color:{% if o.avg_3day is not none and o.avg_3day > 0 %}#0f766e{% elif o.avg_3day is not none %}#dc2626{% else %}#9ca3af{% endif %};">
                     {{ ('+' if o.avg_3day > 0 else '') ~ '%.1f' | format(o.avg_3day) ~ '%' if o.avg_3day is not none else '—' }}
                 </div>
                 <div style="font-size:11px; color:#6b7280;">Avg 3-Day</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:22px; font-weight:700;
+                    color:{% if o.median_3day is not none and o.median_3day > 0 %}#0f766e{% elif o.median_3day is not none %}#dc2626{% else %}#9ca3af{% endif %};">
+                    {{ ('+' if o.median_3day > 0 else '') ~ '%.1f' | format(o.median_3day) ~ '%' if o.median_3day is not none else '—' }}
+                </div>
+                <div style="font-size:11px; color:#6b7280;">Median 3-Day</div>
             </div>
             <div style="text-align:center;">
                 <div style="font-size:22px; font-weight:700;

@@ -682,26 +682,32 @@ def get_model_comparison_stats() -> dict:
                 wins      = [v for v in nd_vals if v > 0]
                 hits_20   = [d20 for nd, td, d20 in trade_rows if d20 is not None]
                 avg_days  = round(sum(hits_20) / len(hits_20), 1) if hits_20 else None
+                nd_sorted = sorted(nd_vals)
+                td_sorted = sorted(td_vals)
                 buckets[bucket_label] = {
-                    "trade_calls":    len(trade_rows),
-                    "no_trade_calls": no_trade_count,
-                    "total_scored":   total_scored,
-                    "win_rate":       round(len(wins) / len(nd_vals) * 100, 1) if nd_vals else None,
-                    "avg_next_day":   round(sum(nd_vals) / len(nd_vals), 2) if nd_vals else None,
-                    "avg_3day":       round(sum(td_vals) / len(td_vals), 2) if td_vals else None,
-                    "hit_20pct":      round(len(hits_20) / len(trade_rows) * 100, 1),
-                    "avg_days_to_20": avg_days,
+                    "trade_calls":      len(trade_rows),
+                    "no_trade_calls":   no_trade_count,
+                    "total_scored":     total_scored,
+                    "win_rate":         round(len(wins) / len(nd_vals) * 100, 1) if nd_vals else None,
+                    "avg_next_day":     round(sum(nd_vals) / len(nd_vals), 2) if nd_vals else None,
+                    "median_next_day":  round(nd_sorted[len(nd_sorted) // 2], 2) if nd_sorted else None,
+                    "avg_3day":         round(sum(td_vals) / len(td_vals), 2) if td_vals else None,
+                    "median_3day":      round(td_sorted[len(td_sorted) // 2], 2) if td_sorted else None,
+                    "hit_20pct":        round(len(hits_20) / len(trade_rows) * 100, 1),
+                    "avg_days_to_20":   avg_days,
                 }
             else:
                 buckets[bucket_label] = {
-                    "trade_calls":    0,
-                    "no_trade_calls": no_trade_count,
-                    "total_scored":   total_scored,
-                    "win_rate":       None,
-                    "avg_next_day":   None,
-                    "avg_3day":       None,
-                    "hit_20pct":      None,
-                    "avg_days_to_20": None,
+                    "trade_calls":      0,
+                    "no_trade_calls":   no_trade_count,
+                    "total_scored":     total_scored,
+                    "win_rate":         None,
+                    "avg_next_day":     None,
+                    "median_next_day":  None,
+                    "avg_3day":         None,
+                    "median_3day":      None,
+                    "hit_20pct":        None,
+                    "avg_days_to_20":   None,
                 }
 
         # Overall totals for this model
@@ -711,19 +717,23 @@ def get_model_comparison_stats() -> dict:
         nd_all  = [nd for nd, td, d20 in all_trade_rows if nd is not None]
         td_all  = [td for nd, td, d20 in all_trade_rows if td is not None]
         h20_all = [d20 for nd, td, d20 in all_trade_rows if d20 is not None]
+        nd_all_sorted = sorted(nd_all)
+        td_all_sorted = sorted(td_all)
 
         result[mode_key] = {
             "label":   mode_label,
             "buckets": buckets,
             "overall": {
-                "trade_calls":    len(all_trade_rows),
-                "no_trade_calls": sum(1 for *_, dec in rows if dec == "NO_TRADE"),
+                "trade_calls":       len(all_trade_rows),
+                "no_trade_calls":    sum(1 for *_, dec in rows if dec == "NO_TRADE"),
                 "total_with_outcomes": len(rows),
-                "win_rate":       round(sum(1 for v in nd_all if v > 0) / len(nd_all) * 100, 1) if nd_all else None,
-                "avg_next_day":   round(sum(nd_all) / len(nd_all), 2) if nd_all else None,
-                "avg_3day":       round(sum(td_all) / len(td_all), 2) if td_all else None,
-                "hit_20pct":      round(len(h20_all) / len(all_trade_rows) * 100, 1) if all_trade_rows else None,
-                "avg_days_to_20": round(sum(h20_all) / len(h20_all), 1) if h20_all else None,
+                "win_rate":          round(sum(1 for v in nd_all if v > 0) / len(nd_all) * 100, 1) if nd_all else None,
+                "avg_next_day":      round(sum(nd_all) / len(nd_all), 2) if nd_all else None,
+                "median_next_day":   round(nd_all_sorted[len(nd_all_sorted) // 2], 2) if nd_all_sorted else None,
+                "avg_3day":          round(sum(td_all) / len(td_all), 2) if td_all else None,
+                "median_3day":       round(td_all_sorted[len(td_all_sorted) // 2], 2) if td_all_sorted else None,
+                "hit_20pct":         round(len(h20_all) / len(all_trade_rows) * 100, 1) if all_trade_rows else None,
+                "avg_days_to_20":    round(sum(h20_all) / len(h20_all), 1) if h20_all else None,
             },
         }
 

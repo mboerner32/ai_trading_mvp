@@ -583,14 +583,14 @@ def _scheduled_scan():
                 label = "Auto AI" if mode == "autoai" else "Complex + AI"
                 # Enrich score >= 50 with AI calls + LSTM before alerting
                 _enrich_high_scorers(data["results"], mode=mode)
+                # Auto paper-trade FIRST so Alpaca order is queued before Telegram fires
+                _auto_paper_trade(data["results"], today_str)
                 # Alert all AI TRADE calls regardless of score
                 send_scan_alert(data["results"], label, min_score=0, ai_trade_only=True)
                 for r in data["results"]:
                     if (r.get("score", 0) >= 50
                             and (r.get("ai_trade_call") or {}).get("decision") == "TRADE"):
                         _alerted_today.add(r.get("symbol"))
-                # Auto paper-trade HIGH confidence TRADE calls (max 3/day)
-                _auto_paper_trade(data["results"], today_str)
                 # Log near-misses (40-74) to watchlist for intraday re-checking
                 for r in data["results"]:
                     score = r.get("score", 0)
@@ -613,8 +613,8 @@ def _premarket_scan():
         save_scan(data["results"], "squeeze")   # persist for hypothesis testing
         save_scan_cache("squeeze", data["results"], data["summary"])
         _enrich_high_scorers(data["results"], mode="squeeze")
-        send_scan_alert(data["results"], "Complex + AI (pre-market)", min_score=0, ai_trade_only=True)
         _auto_paper_trade(data["results"], today_str)
+        send_scan_alert(data["results"], "Complex + AI (pre-market)", min_score=0, ai_trade_only=True)
         print(f"SCHEDULER: pre-market scan complete ({len(data['results'])} results)")
     except Exception as e:
         print(f"SCHEDULER: pre-market scan failed — {e}")
@@ -719,9 +719,9 @@ def _intraday_scan():
             and r.get("symbol") not in _alerted_today
         ]
         if new_alerts:
+            _auto_paper_trade(new_alerts, today_str)
             send_scan_alert(new_alerts, f"Intraday {et_now.strftime('%H:%M')}",
                             min_score=0, ai_trade_only=True)
-            _auto_paper_trade(new_alerts, today_str)
             for r in new_alerts:
                 _alerted_today.add(r.get("symbol"))
 
@@ -779,8 +779,8 @@ def _fivemin_spike_scan():
                 r for r in new_alerts
                 if r.get("score", 0) >= 75 and r.get("symbol") not in _alerted_today
             ]
-            send_scan_alert(new_alerts, f"5m Spike {et_now.strftime('%H:%M')}")
             _auto_paper_trade(new_alerts, today_str, mode="fivemin")
+            send_scan_alert(new_alerts, f"5m Spike {et_now.strftime('%H:%M')}")
             for r in new_alerts:
                 _alerted_today.add(r.get("symbol"))
 
@@ -2414,12 +2414,27 @@ def alpaca_test_order(request: Request, symbol: str = "LGVN", amount: float = 10
             "order": notional_result,
         }
 
-    # Step 4: try qty fallback
+    # Step 4: try qty fallback with real live price
     import yfinance as yf
-    ticker_price = yf.Ticker(symbol).fast_info.get("last_price") or amount
+    try:
+        fi = yf.Ticker(symbol).fast_info
+        ticker_price = fi.last_price  # attribute access, not dict .get()
+        if not ticker_price or ticker_price <= 0:
+            ticker_price = None
+    except Exception:
+        ticker_price = None
+
+    if ticker_price is None:
+        return {
+            "result": "qty_fallback_skipped",
+            "reason": f"Could not fetch live price for {symbol} — try during market hours",
+            "notional_attempt": notional_result,
+            "asset": asset,
+        }
+
     qty = _math.floor(amount / ticker_price)
     qty_resp = _req.post(f"{base}/v2/orders", headers=headers, timeout=10, json={
-        "symbol": symbol, "qty": str(max(qty, 1)),
+        "symbol": symbol, "qty": str(qty),
         "side": "buy", "type": "market", "time_in_force": "day",
     }) if qty >= 1 else None
 
