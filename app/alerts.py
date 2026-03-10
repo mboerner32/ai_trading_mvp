@@ -255,7 +255,10 @@ def send_scan_alert(results: list, mode: str, min_score: int = 75,
 
         # Telegram line
         if decision == "TRADE":
-            ai_badge = f" ✅ <b>{decision}</b> ({confidence})"
+            if confidence in ("HIGH", "MEDIUM"):
+                ai_badge = f" ✅ <b>{decision}</b> ({confidence} — position opened)"
+            else:
+                ai_badge = f" ⚠️ <b>{decision}</b> ({confidence} — no position, LOW conf)"
         elif decision == "NO_TRADE":
             ai_badge = f" ❌ {decision} ({confidence})"
         else:

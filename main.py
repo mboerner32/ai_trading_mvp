@@ -2056,6 +2056,21 @@ def start_backfill(request: Request):
     return RedirectResponse("/analytics?backfill=started", status_code=303)
 
 
+@app.post("/apply-default-weights")
+def apply_default_weights(request: Request):
+    """Save DEFAULT_SQUEEZE_WEIGHTS to the settings table and rescore all history.
+    Use after any code-level weight change to make it take effect in the live scorer."""
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    save_squeeze_weights(
+        DEFAULT_SQUEEZE_WEIGHTS,
+        rationale="Manually applied code-level DEFAULT_SQUEEZE_WEIGHTS",
+        source="manual",
+        summary="Reset to current DEFAULT_SQUEEZE_WEIGHTS (2026-03-10 data-driven rebalance)",
+    )
+    return RedirectResponse("/analytics?rescore=done&weights=defaults_applied", status_code=303)
+
+
 @app.post("/rescore-history")
 def rescore_history(request: Request):
     """Recompute score for all rows with signals_json using current weights.

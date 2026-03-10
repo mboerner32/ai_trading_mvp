@@ -1506,6 +1506,15 @@
                 </button>
             </form>
 
+            <form method="post" action="/apply-default-weights"
+                  onsubmit="return confirm('Save DEFAULT_SQUEEZE_WEIGHTS from code to live scorer and rescore all history? Use after code-level weight changes.')">
+                <button type="submit"
+                        style="background:#b45309; color:white; border:none; padding:10px 22px;
+                               border-radius:8px; cursor:pointer; font-size:14px; font-weight:600;">
+                    Apply Code Weights + Rescore
+                </button>
+            </form>
+
             <form method="post" action="/rescore-history"
                   onsubmit="return confirm('Rescore all historical rows with current weights? This keeps per-signal stats version-consistent.')">
                 <button type="submit"
