@@ -476,7 +476,7 @@ def prepare_dataframe(df):
 # ---------------------------------------------------
 def run_scan(mode="standard", premarket: bool = False):
 
-    tickers, _ = get_finviz_tickers(premarket=premarket)
+    tickers, screener_relvol = get_finviz_tickers(premarket=premarket)
 
     # Fetch all live metrics from individual FinViz quote pages
     live_quotes = get_finviz_quotes(tickers)
@@ -554,8 +554,14 @@ def run_scan(mode="standard", premarket: bool = False):
             # Inject live FinViz values — these override yfinance-calculated metrics
             if symbol in live_quotes:
                 q = live_quotes[symbol]
-                if q.get("rel_volume") is not None:
-                    fundamentals["finviz_relvol"] = q["rel_volume"]
+                # Prefer quote page relvol; fall back to screener relvol (never yfinance)
+                rv = q.get("rel_volume")
+                if rv is None:
+                    rv = screener_relvol.get(symbol)
+                    if rv is not None:
+                        print(f"RELVOL FALLBACK [{symbol}]: quote page returned None, using screener value {rv}x")
+                if rv is not None:
+                    fundamentals["finviz_relvol"] = rv
                 if q.get("price") is not None:
                     fundamentals["finviz_price"] = q["price"]
                 if q.get("change_pct") is not None:
