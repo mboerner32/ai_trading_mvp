@@ -24,7 +24,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.broker import submit_market_order, close_position as broker_close, is_configured as broker_configured, get_account as broker_get_account
 from app.scanner import run_scan, run_scan_5m, get_finviz_quotes, prepare_dataframe
 from app.validator import validate_scan_results
-from app.alerts import send_scan_alert, send_take_profit_alert, send_watchlist_alert, _send_telegram_admin, send_invite_email
+from app.alerts import send_scan_alert, send_take_profit_alert, send_watchlist_alert, _send_telegram_admin, send_invite_email, send_weekly_report_email
 from app.backfill import build_historical_dataset, backfill_signals_for_historical
 from app.backfill_5m import backfill_5m_history, get_5m_backfill_status, set_5m_backfill_status
 from app.health import run_health_checks, get_health_status
@@ -873,6 +873,187 @@ def _check_watchlist():
         print(f"WATCHLIST CHECK: failed — {e}")
 
 
+def _weekly_analysis():
+    """
+    Runs every Monday at 7:00 AM ET.
+    Queries the DB for the 8 standard weekly metrics, formats a Telegram report,
+    and sends proposed weight changes for human approval — no auto-apply.
+    """
+    import sqlite3 as _sq
+    db_path = _os.environ.get("DB_PATH", "scan_history.db")
+    if not _os.path.exists(db_path):
+        print("WEEKLY ANALYSIS: DB not found, skipping")
+        return
+    try:
+        conn = _sq.connect(db_path)
+        c = conn.cursor()
+
+        # Baseline
+        baseline_n, baseline_hit = c.execute(
+            "SELECT COUNT(*), ROUND(100.0*SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM scans WHERE next_day_return IS NOT NULL"
+        ).fetchone()
+
+        # Score buckets
+        score_rows = c.execute(
+            "SELECT CASE WHEN score<45 THEN '0-44' WHEN score<55 THEN '45-54' "
+            "WHEN score<65 THEN '55-64' WHEN score<75 THEN '65-74' "
+            "WHEN score<85 THEN '75-84' ELSE '85+' END as b, "
+            "COUNT(*), ROUND(100.0*SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM scans WHERE next_day_return IS NOT NULL GROUP BY b ORDER BY b"
+        ).fetchall()
+
+        # AI TRADE precision
+        ai_row = c.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END) "
+            "FROM scans WHERE next_day_return IS NOT NULL "
+            "AND ai_trade_rec LIKE '%TRADE%' AND ai_trade_rec NOT LIKE '%NO_TRADE%'"
+        ).fetchone()
+        ai_total, ai_hits = ai_row
+        ai_pct = round(100.0 * ai_hits / ai_total, 1) if ai_total else 0
+
+        # Relvol tiers
+        rv_rows = c.execute(
+            "SELECT CASE WHEN relative_volume>=500 THEN '500x+' WHEN relative_volume>=100 THEN '100-499x' "
+            "WHEN relative_volume>=50 THEN '50-99x' WHEN relative_volume>=25 THEN '25-49x' "
+            "WHEN relative_volume>=10 THEN '10-24x' ELSE '<10x' END as t, "
+            "COUNT(*), ROUND(100.0*SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM scans WHERE next_day_return IS NOT NULL AND relative_volume IS NOT NULL "
+            "GROUP BY t ORDER BY MIN(relative_volume) DESC"
+        ).fetchall()
+
+        # Daily gain buckets
+        gain_rows = c.execute(
+            "SELECT CASE WHEN today_return>50 THEN '>50%' WHEN today_return>30 THEN '30-50%' "
+            "WHEN today_return>20 THEN '20-30%' WHEN today_return>10 THEN '10-20%' ELSE '<10%' END as g, "
+            "COUNT(*), ROUND(100.0*SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM scans WHERE next_day_return IS NOT NULL AND today_return IS NOT NULL "
+            "GROUP BY g ORDER BY MIN(today_return) DESC"
+        ).fetchall()
+
+        # Day of week
+        dow_rows = c.execute(
+            "SELECT CASE strftime('%w',timestamp) WHEN '1' THEN 'Mon' WHEN '2' THEN 'Tue' "
+            "WHEN '3' THEN 'Wed' WHEN '4' THEN 'Thu' WHEN '5' THEN 'Fri' END as d, "
+            "COUNT(*), ROUND(100.0*SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM scans WHERE next_day_return IS NOT NULL GROUP BY d ORDER BY d"
+        ).fetchall()
+
+        # Per-signal stats (top 5 + bottom 5, min 5 fires)
+        sig_rows = c.execute(
+            "SELECT key, COUNT(*) as n, "
+            "ROUND(100.0*SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END)/COUNT(*),1) as hit "
+            "FROM (SELECT s.next_day_return, je.key FROM scans s, json_each(s.signals_json) je "
+            "WHERE s.next_day_return IS NOT NULL AND s.signals_json IS NOT NULL "
+            "AND s.signals_json!='{\"\":\"\"}' AND je.value=1) "
+            "GROUP BY key HAVING n>=5 ORDER BY hit DESC"
+        ).fetchall()
+
+        # XGBoost eligibility
+        xgb_n = c.execute(
+            "SELECT COUNT(*) FROM scans WHERE next_day_return IS NOT NULL "
+            "AND signals_json IS NOT NULL AND signals_json!='{}'"
+        ).fetchone()[0]
+
+        # New labeled rows this week
+        new_labeled = c.execute(
+            "SELECT COUNT(*) FROM scans WHERE next_day_return IS NOT NULL "
+            "AND timestamp >= date('now','-7 days')"
+        ).fetchone()[0]
+
+        conn.close()
+
+        # --- Format Telegram message ---
+        lines = ["&#128200; <b>Weekly Model Analysis</b>",
+                 f"Labeled: {baseline_n} rows | Baseline hit rate: {baseline_hit}%",
+                 f"XGBoost eligible: {xgb_n}/500 | New labeled this week: {new_labeled}",
+                 ""]
+
+        lines.append("<b>Score Buckets</b>")
+        for b, n, hit in score_rows:
+            conf = "H" if n >= 30 else ("M" if n >= 10 else "L")
+            lines.append(f"  {b}: {hit}% ({n} rows, {conf})")
+
+        lines.append(f"\n<b>AI TRADE Precision</b>: {ai_pct}% ({ai_hits}/{ai_total} calls)")
+
+        lines.append("\n<b>Relvol Tiers</b>")
+        for t, n, hit in rv_rows:
+            conf = "H" if n >= 30 else ("M" if n >= 10 else "L")
+            lines.append(f"  {t}: {hit}% (n={n}, {conf})")
+
+        lines.append("\n<b>Daily Gain Buckets</b>")
+        for g, n, hit in gain_rows:
+            conf = "H" if n >= 30 else ("M" if n >= 10 else "L")
+            lines.append(f"  {g}: {hit}% (n={n}, {conf})")
+
+        lines.append("\n<b>Day of Week</b>")
+        for d, n, hit in dow_rows:
+            if d:
+                lines.append(f"  {d}: {hit}% (n={n})")
+
+        if sig_rows:
+            top5 = [r for r in sig_rows[:5]]
+            bot5 = [r for r in sig_rows[-5:] if r not in top5]
+            lines.append("\n<b>Top Signals</b>")
+            for k, n, hit in top5:
+                vs = round(hit - baseline_hit, 1)
+                sign = "+" if vs >= 0 else ""
+                lines.append(f"  {k}: {hit}% ({sign}{vs}pp, n={n})")
+            lines.append("<b>Bottom Signals</b>")
+            for k, n, hit in bot5:
+                vs = round(hit - baseline_hit, 1)
+                lines.append(f"  {k}: {hit}% ({vs}pp, n={n})")
+
+        # Proposed changes (flag only high-confidence deviations from baseline)
+        proposals = []
+        for k, n, hit in sig_rows:
+            if n >= 30:
+                diff = hit - baseline_hit
+                if diff <= -4:
+                    proposals.append(f"  REDUCE weight: {k} ({hit}% hit, {diff:+.1f}pp vs baseline, n={n})")
+                elif diff >= 3:
+                    proposals.append(f"  BOOST weight: {k} ({hit}% hit, {diff:+.1f}pp vs baseline, n={n})")
+        if proposals:
+            lines.append("\n&#9888;&#65039; <b>Proposed Changes (awaiting your approval)</b>")
+            lines += proposals
+            lines.append("Reply 'approve weekly changes' to apply, or review analytics page.")
+        else:
+            lines.append("\nNo high-confidence weight changes proposed this week.")
+
+        tg_text = "\n".join(lines)
+        _send_telegram_admin(tg_text)
+        print("WEEKLY ANALYSIS: report sent to Telegram")
+
+        # Build HTML email (plain text with minimal formatting)
+        plain = tg_text.replace("<b>", "").replace("</b>", "")
+        html_rows = []
+        for ln in plain.split("\n"):
+            ln_stripped = ln.strip()
+            if ln_stripped.startswith("Weekly Model Analysis"):
+                html_rows.append(f"<h2>{ln_stripped}</h2>")
+            elif ln_stripped.startswith("Proposed Changes"):
+                html_rows.append(f"<h3 style='color:#e67e22'>{ln_stripped}</h3>")
+            elif ln_stripped.startswith("REDUCE") or ln_stripped.startswith("BOOST"):
+                color = "#c0392b" if ln_stripped.startswith("REDUCE") else "#27ae60"
+                html_rows.append(f"<p style='color:{color};margin:2px 0'>{ln_stripped}</p>")
+            elif ln_stripped == "":
+                html_rows.append("<br>")
+            else:
+                html_rows.append(f"<p style='margin:2px 0'>{ln_stripped}</p>")
+        html_body = (
+            "<html><body style='font-family:monospace;font-size:13px;max-width:700px;margin:auto'>"
+            + "\n".join(html_rows)
+            + "</body></html>"
+        )
+        send_weekly_report_email(
+            subject=f"AI Trading Model — Weekly Analysis {datetime.datetime.now().strftime('%Y-%m-%d')}",
+            html_body=html_body,
+        )
+
+    except Exception as e:
+        print(f"WEEKLY ANALYSIS: failed — {e}")
+
+
 _scheduler = BackgroundScheduler(timezone=pytz.timezone("America/New_York"))
 _scheduler.add_job(_scheduled_scan,  "cron", day_of_week="mon-fri", hour=9,  minute=45)
 _scheduler.add_job(_premarket_scan,  "cron", day_of_week="mon-fri", hour=8,  minute=30)
@@ -895,6 +1076,8 @@ _scheduler.add_job(_fivemin_spike_scan, "cron", day_of_week="mon-fri",
                    hour="10-15", minute="0,5,10,15,20,25,30,35,40,45,50,55")
 # System health check every 30 minutes, all days
 _scheduler.add_job(run_health_checks, "interval", minutes=30)
+# Weekly analysis report — every Saturday at 8:00 AM ET → Telegram + email
+_scheduler.add_job(_weekly_analysis, "cron", day_of_week="sat", hour=8, minute=0)
 _scheduler.start()
 
 # Warm up yfinance crumb on startup so the first scheduled scan doesn't hit a 401.

@@ -36,6 +36,31 @@ def _send_email(subject: str, body: str):
         print(f"Alert email failed: {e}")
 
 
+def send_weekly_report_email(subject: str, html_body: str):
+    """
+    Send the weekly analysis report to fixed recipients.
+    Requires GMAIL_USER and GMAIL_APP_PASSWORD env vars.
+    """
+    user = os.environ.get("GMAIL_USER")
+    pwd  = os.environ.get("GMAIL_APP_PASSWORD")
+    if not all([user, pwd]):
+        print("WEEKLY EMAIL: GMAIL_USER or GMAIL_APP_PASSWORD not set — skipping")
+        return
+    recipients = ["mboerner32@gmail.com", "gvgiebel@gmail.com"]
+    msg = MIMEMultipart("alternative")
+    msg["From"]    = user
+    msg["To"]      = ", ".join(recipients)
+    msg["Subject"] = subject
+    msg.attach(MIMEText(html_body, "html"))
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+            s.login(user, pwd)
+            s.sendmail(user, recipients, msg.as_string())
+        print(f"Weekly report emailed to {recipients}")
+    except Exception as e:
+        print(f"WEEKLY EMAIL: failed — {e}")
+
+
 def send_invite_email(to_email: str, name: str, invite_url: str, bot_username: str = "") -> bool:
     """Send an HTML invite email to a new user. Returns True on success."""
     gmail_user = os.environ.get("GMAIL_USER")
