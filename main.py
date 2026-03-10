@@ -2364,6 +2364,84 @@ def change_password(
 
 
 # ---------------- BROKER STATUS ----------------
+@app.get("/api/alpaca-test")
+def alpaca_test_order(request: Request, symbol: str = "LGVN", amount: float = 100):
+    """
+    Test endpoint: attempts a real Alpaca paper order for `symbol` at `amount` dollars.
+    Returns the full Alpaca response (success or error) so you can diagnose issues.
+    Admin only. Use: /api/alpaca-test?symbol=LGVN&amount=100
+    """
+    if "user" not in request.session:
+        return Response(status_code=401)
+    if not broker_configured():
+        return {"error": "Alpaca not configured — check ALPACA_API_KEY and ALPACA_SECRET_KEY env vars"}
+
+    import requests as _req, math as _math
+    import os as _os_
+    headers = {
+        "APCA-API-KEY-ID":     _os_.environ.get("ALPACA_API_KEY", ""),
+        "APCA-API-SECRET-KEY": _os_.environ.get("ALPACA_SECRET_KEY", ""),
+        "accept":              "application/json",
+        "content-type":        "application/json",
+    }
+    base = "https://paper-api.alpaca.markets"
+
+    # Step 1: account check
+    acct = broker_get_account()
+    if not acct:
+        return {"error": "Alpaca account unreachable"}
+
+    # Step 2: asset check
+    asset_resp = _req.get(f"{base}/v2/assets/{symbol}", headers=headers, timeout=10)
+    asset = asset_resp.json() if asset_resp.ok else {"error": asset_resp.text}
+
+    # Step 3: try notional order
+    notional_resp = _req.post(f"{base}/v2/orders", headers=headers, timeout=10, json={
+        "symbol": symbol, "notional": str(round(amount, 2)),
+        "side": "buy", "type": "market", "time_in_force": "day",
+    })
+    notional_result = {"status": notional_resp.status_code, "body": notional_resp.json() if notional_resp.content else {}}
+
+    # Cancel if submitted so we don't leave test orders open
+    if notional_resp.ok:
+        order_id = notional_resp.json().get("id")
+        if order_id:
+            _req.delete(f"{base}/v2/orders/{order_id}", headers=headers, timeout=10)
+        return {
+            "result": "notional_order_succeeded",
+            "account": {"buying_power": acct.get("buying_power"), "status": acct.get("status")},
+            "asset": {"fractionable": asset.get("fractionable"), "tradable": asset.get("tradable"), "exchange": asset.get("exchange")},
+            "order": notional_result,
+        }
+
+    # Step 4: try qty fallback
+    import yfinance as yf
+    ticker_price = yf.Ticker(symbol).fast_info.get("last_price") or amount
+    qty = _math.floor(amount / ticker_price)
+    qty_resp = _req.post(f"{base}/v2/orders", headers=headers, timeout=10, json={
+        "symbol": symbol, "qty": str(max(qty, 1)),
+        "side": "buy", "type": "market", "time_in_force": "day",
+    }) if qty >= 1 else None
+
+    qty_result = None
+    if qty_resp:
+        qty_result = {"status": qty_resp.status_code, "body": qty_resp.json() if qty_resp.content else {}}
+        if qty_resp.ok:
+            order_id = qty_resp.json().get("id")
+            if order_id:
+                _req.delete(f"{base}/v2/orders/{order_id}", headers=headers, timeout=10)
+
+    return {
+        "result": "qty_fallback_succeeded" if (qty_resp and qty_resp.ok) else "both_failed",
+        "account": {"buying_power": acct.get("buying_power"), "status": acct.get("status")},
+        "asset": {"fractionable": asset.get("fractionable"), "tradable": asset.get("tradable"), "exchange": asset.get("exchange")},
+        "notional_attempt": notional_result,
+        "qty_fallback": qty_result,
+        "qty_used": qty,
+        "price_used": ticker_price,
+    }
+
+
 @app.get("/api/broker-status")
 def broker_status(request: Request):
     if "user" not in request.session:
