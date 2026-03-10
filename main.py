@@ -538,14 +538,15 @@ def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze"):
             open_symbols.add(symbol)
             available -= position_size
 
-            # Mirror to Alpaca paper account
-            alpaca_order = submit_market_order(symbol, position_size)
+            # Mirror to Alpaca paper account (pass price for whole-share fallback)
+            alpaca_order = submit_market_order(symbol, position_size, price=entry_price)
             if alpaca_order:
-                alpaca_str = "Alpaca ✓"
+                qty_info = alpaca_order.get("qty") or alpaca_order.get("notional", "")
+                alpaca_str = f"Alpaca ✓ ({qty_info})"
             elif broker_configured():
-                alpaca_str = "Paper only (OTC — not on Alpaca)"
+                alpaca_str = "Alpaca rejected — check Render logs for reason"
             else:
-                alpaca_str = "Paper only"
+                alpaca_str = "Paper only (Alpaca not configured)"
 
             _send_telegram_admin(
                 f"<b>Auto-Trade Opened: {symbol}</b>\n"

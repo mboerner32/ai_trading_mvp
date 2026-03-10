@@ -39,15 +39,21 @@ def get_account() -> dict | None:
         return None
 
 
-def submit_market_order(symbol: str, notional: float) -> dict | None:
+def submit_market_order(symbol: str, notional: float, price: float = None) -> dict | None:
     """
-    Buy `notional` dollars of `symbol` at market using fractional shares.
+    Buy `notional` dollars of `symbol` at market.
+    Strategy:
+      1. Try a fractional/notional order (works for fractionable stocks).
+      2. If Alpaca rejects it (stock not fractionable), fall back to a
+         whole-share qty order using floor(notional / price).
     Returns the Alpaca order dict on success, None on failure.
-    Logs a warning if the symbol is not tradeable on Alpaca (e.g. OTC stocks).
+    `price` is only needed for the whole-share fallback; if omitted the
+    fallback is skipped.
     """
     if not is_configured():
         return None
     try:
+        # Attempt 1: notional (fractional)
         resp = requests.post(
             f"{ALPACA_BASE}/v2/orders",
             headers=_headers(),
@@ -62,9 +68,37 @@ def submit_market_order(symbol: str, notional: float) -> dict | None:
         )
         if resp.ok:
             order = resp.json()
-            print(f"ALPACA ORDER SUBMITTED [{symbol}]: ${notional} — order_id={order.get('id','?')}")
+            print(f"ALPACA ORDER SUBMITTED [{symbol}]: ${notional} notional — order_id={order.get('id','?')}")
             return order
-        print(f"ALPACA ORDER FAILED [{symbol}]: {resp.status_code} {resp.text[:200]}")
+
+        err_text = resp.text[:300]
+        print(f"ALPACA NOTIONAL FAILED [{symbol}]: {resp.status_code} {err_text}")
+
+        # Attempt 2: whole-share qty fallback for non-fractionable stocks
+        if price and price > 0:
+            import math
+            qty = math.floor(notional / price)
+            if qty < 1:
+                print(f"ALPACA FALLBACK SKIPPED [{symbol}]: price ${price} too high for ${notional} budget")
+                return None
+            resp2 = requests.post(
+                f"{ALPACA_BASE}/v2/orders",
+                headers=_headers(),
+                json={
+                    "symbol":        symbol,
+                    "qty":           str(qty),
+                    "side":          "buy",
+                    "type":          "market",
+                    "time_in_force": "day",
+                },
+                timeout=10,
+            )
+            if resp2.ok:
+                order = resp2.json()
+                print(f"ALPACA ORDER SUBMITTED [{symbol}]: {qty} shares (whole-share fallback) — order_id={order.get('id','?')}")
+                return order
+            print(f"ALPACA FALLBACK FAILED [{symbol}]: {resp2.status_code} {resp2.text[:200]}")
+
         return None
     except Exception as e:
         print(f"ALPACA ORDER ERROR [{symbol}]: {e}")
