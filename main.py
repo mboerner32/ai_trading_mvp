@@ -606,12 +606,14 @@ def _scheduled_scan():
 def _premarket_scan():
     """Pre-market scan at 8:30am ET — squeeze mode with relaxed Finviz filters."""
     print("SCHEDULER: Running pre-market scan...")
+    today_str = datetime.datetime.now(pytz.timezone("America/New_York")).date().isoformat()
     try:
         data = run_scan(mode="squeeze", premarket=True)
         save_scan(data["results"], "squeeze")   # persist for hypothesis testing
         save_scan_cache("squeeze", data["results"], data["summary"])
         _enrich_high_scorers(data["results"], mode="squeeze")
         send_scan_alert(data["results"], "Complex + AI (pre-market)", min_score=0, ai_trade_only=True)
+        _auto_paper_trade(data["results"], today_str)
         print(f"SCHEDULER: pre-market scan complete ({len(data['results'])} results)")
     except Exception as e:
         print(f"SCHEDULER: pre-market scan failed — {e}")
