@@ -1506,6 +1506,15 @@
                 </button>
             </form>
 
+            <form method="post" action="/rescore-history"
+                  onsubmit="return confirm('Rescore all historical rows with current weights? This keeps per-signal stats version-consistent.')">
+                <button type="submit"
+                        style="background:#7c3aed; color:white; border:none; padding:10px 22px;
+                               border-radius:8px; cursor:pointer; font-size:14px; font-weight:600;">
+                    Rescore History (Current Weights)
+                </button>
+            </form>
+
             <div id="backfillStatus" style="font-size:13px; color:#6b7280;">
                 {% if backfill_status.status == 'running' %}
                     Processing {{ backfill_status.processed }}/{{ backfill_status.total }} tickers

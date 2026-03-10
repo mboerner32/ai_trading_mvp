@@ -138,6 +138,7 @@ from app.database import (
     get_version_performance_stats,
     save_bundle_as_rule,
     save_scan_candidates,
+    rescore_historical_from_signals,
 )
 from app.ml_optimizer import train_xgb_weights, get_xgb_status
 
@@ -1004,21 +1005,44 @@ def _weekly_analysis():
                 vs = round(hit - baseline_hit, 1)
                 lines.append(f"  {k}: {hit}% ({vs}pp, n={n})")
 
-        # Proposed changes (flag only high-confidence deviations from baseline)
+        # Check cooldown: no proposals within 7 days of last weight change
+        last_changed_row = conn.execute(
+            "SELECT value FROM settings WHERE key='squeeze_weights_last_changed'"
+        ).fetchone() if False else None  # conn already closed above — re-open
+        _conn2 = _sq.connect(db_path)
+        last_changed_str = (_conn2.execute(
+            "SELECT value FROM settings WHERE key='squeeze_weights_last_changed'"
+        ).fetchone() or [None])[0]
+        _conn2.close()
+
+        cooldown_active = False
+        if last_changed_str:
+            try:
+                last_dt = datetime.datetime.fromisoformat(last_changed_str)
+                days_since = (datetime.datetime.utcnow() - last_dt).days
+                if days_since < 7:
+                    cooldown_active = True
+                    lines.append(f"\n&#128274; Weight change cooldown active ({days_since}d since last change — need 7d). No proposals this week.")
+            except Exception:
+                pass
+
+        # Proposed changes: require n≥100 AND no cooldown AND ≥5pp deviation
         proposals = []
-        for k, n, hit in sig_rows:
-            if n >= 30:
-                diff = hit - baseline_hit
-                if diff <= -4:
-                    proposals.append(f"  REDUCE weight: {k} ({hit}% hit, {diff:+.1f}pp vs baseline, n={n})")
-                elif diff >= 3:
-                    proposals.append(f"  BOOST weight: {k} ({hit}% hit, {diff:+.1f}pp vs baseline, n={n})")
-        if proposals:
-            lines.append("\n&#9888;&#65039; <b>Proposed Changes (awaiting your approval)</b>")
-            lines += proposals
-            lines.append("Reply 'approve weekly changes' to apply, or review analytics page.")
-        else:
-            lines.append("\nNo high-confidence weight changes proposed this week.")
+        if not cooldown_active:
+            for k, n, hit in sig_rows:
+                if n >= 100:
+                    diff = hit - baseline_hit
+                    if diff <= -5:
+                        proposals.append(f"  REDUCE weight: {k} ({hit}% hit, {diff:+.1f}pp vs baseline, n={n})")
+                    elif diff >= 5:
+                        proposals.append(f"  BOOST weight: {k} ({hit}% hit, {diff:+.1f}pp vs baseline, n={n})")
+            if proposals:
+                lines.append("\n&#9888;&#65039; <b>Proposed Changes (awaiting your approval)</b>")
+                lines.append("  Rules: n≥100 labeled rows per signal, ≥5pp vs baseline, 7-day cooldown since last change.")
+                lines += proposals
+                lines.append("Reply 'approve weekly changes' to apply, or review analytics page.")
+            else:
+                lines.append("\nNo high-confidence weight changes proposed this week (n≥100 threshold not met or deviation <5pp).")
 
         tg_text = "\n".join(lines)
         _send_telegram_admin(tg_text)
@@ -2028,6 +2052,18 @@ def start_backfill(request: Request):
     threading.Thread(target=_run, kwargs={"weights": weights}, daemon=True).start()
 
     return RedirectResponse("/analytics?backfill=started", status_code=303)
+
+
+@app.post("/rescore-history")
+def rescore_history(request: Request):
+    """Recompute score for all rows with signals_json using current weights.
+    Run this after any manual weight change to keep stats version-consistent."""
+    if "user" not in request.session:
+        return RedirectResponse("/login", status_code=303)
+    weights_data = get_squeeze_weights()
+    weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS
+    n = rescore_historical_from_signals(weights)
+    return RedirectResponse(f"/analytics?rescore=done&rows={n}", status_code=303)
 
 
 @app.post("/backfill-signals")

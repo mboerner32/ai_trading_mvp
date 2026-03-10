@@ -1888,10 +1888,69 @@ def get_active_hypothesis_text(mode: str = None) -> str | None:
 
 
 # ---------------- COMPLEX + AI WEIGHT STORAGE ----------------
+def rescore_historical_from_signals(weights: dict) -> int:
+    """
+    Recompute the score column for every row that has signals_json using the
+    provided weights dict. Returns the number of rows updated.
+
+    Uses only the signals that fired (signals_json keys with value=True/1).
+    Applies the same max_score normalisation as score_stock_squeeze().
+    Rows without signals_json are left unchanged.
+    """
+    # Compute max_score denominator from current weights (mirrors scoring_engine.py)
+    w = weights
+    max_score = (
+        max(w.get("rel_vol_500x", 40), w.get("rel_vol_100x", 35),
+            w.get("rel_vol_50x", 30), w.get("rel_vol_25x", 22),
+            w.get("rel_vol_10x", 15), w.get("rel_vol_5x", 7), 0) +
+        max(w.get("daily_sweet_20_40", 10), w.get("daily_ok_10_20", -5),
+            w.get("daily_ok_40_100", 7), 0) +
+        w.get("sideways_chop", 8) +
+        w.get("yesterday_green", 9) +
+        max(w.get("shares_lt10m", 18), w.get("shares_lt30m", 28),
+            w.get("shares_lt100m", 8), 0) +
+        w.get("high_cash_bonus", 5) +
+        max(w.get("institution_strong", 5), w.get("institution_moderate", 2), 0) +
+        w.get("sector_biotech_bonus", 5) +
+        w.get("no_news_bonus", 5) +
+        w.get("rsi_momentum_bonus", 0) +
+        w.get("macd_positive_bonus", 0) +
+        w.get("bb_upper_breakout", 0) +
+        w.get("consecutive_green_bonus", 0) +
+        w.get("low_float_ratio_bonus", 0)
+    )
+    if max_score <= 0:
+        max_score = 100
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    rows = cursor.execute(
+        "SELECT id, signals_json FROM scans WHERE signals_json IS NOT NULL AND signals_json != '{}'"
+    ).fetchall()
+
+    updated = 0
+    for row_id, sj in rows:
+        try:
+            fired = json.loads(sj)
+            raw = sum(w.get(k, 0) for k, v in fired.items() if v)
+            new_score = max(0, min(100, round(raw / max_score * 100)))
+            cursor.execute("UPDATE scans SET score=? WHERE id=?", (new_score, row_id))
+            updated += 1
+        except Exception:
+            continue
+
+    conn.commit()
+    conn.close()
+    print(f"RESCORE: updated {updated} rows with new weights")
+    return updated
+
+
 def save_squeeze_weights(weights: dict, rationale: str = "",
                          suggestions: list = None, summary: str = "",
                          source: str = "manual", goal: str = ""):
-    """Persist AI-optimized squeeze weights to the settings table and create a version snapshot."""
+    """Persist AI-optimized squeeze weights to the settings table and create a version snapshot.
+    Also rescores all historical rows that have signals_json so per-signal and bucket
+    stats always reflect the current model rather than a mix of weight versions."""
     save_weight_version("squeeze", weights, summary=summary, rationale=rationale,
                         source=source, goal=goal)
     conn = sqlite3.connect(DB_NAME)
@@ -1902,6 +1961,7 @@ def save_squeeze_weights(weights: dict, rationale: str = "",
         ("squeeze_weights_rationale",   rationale),
         ("squeeze_weights_suggestions", json.dumps(suggestions or [])),
         ("squeeze_weights_summary",     summary),
+        ("squeeze_weights_last_changed", now),
     ]:
         cursor.execute("""
             INSERT INTO settings (key, value, updated_at)
@@ -1911,6 +1971,8 @@ def save_squeeze_weights(weights: dict, rationale: str = "",
         """, (key, value, now))
     conn.commit()
     conn.close()
+    # Rescore all historical rows so stats are always current-model-consistent
+    rescore_historical_from_signals(weights)
 
 
 def get_squeeze_weights():
