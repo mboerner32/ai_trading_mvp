@@ -499,33 +499,34 @@ def _enrich_high_scorers(results: list, mode: str = None) -> list:
     return results
 
 
-def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze"):
+def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze") -> set:
     """
     Open paper trades for TRADE calls (HIGH or MEDIUM confidence) found in enriched scan results.
-    Limits to 3 auto-trades per trading day. Skips symbols already in open positions.
+    Limits to 10 auto-trades per trading day. Skips symbols already in open positions.
     Mirrors each trade to Alpaca paper account if configured.
     Sends a Telegram notification for each auto-trade opened.
-
+    Returns set of symbols where a trade was actually opened (for accurate alert badges).
     """
+    traded = set()
     # Use DB-backed count so restarts don't reset the daily limit
     _auto_trade_count = count_auto_trades_today(today_str)
-    if _auto_trade_count >= 3:
-        return
+    if _auto_trade_count >= 10:
+        return traded
 
     try:
         open_symbols = {p["symbol"] for p in get_open_positions()}
     except Exception as e:
         print(f"AUTO-TRADE: could not fetch open positions — skipping to avoid duplicates: {e}")
-        return
+        return traded
     try:
         portfolio = get_portfolio_summary()
         available = portfolio["cash"]
     except Exception as e:
         print(f"AUTO-TRADE: could not fetch portfolio — skipping: {e}")
-        return
+        return traded
 
     for r in results:
-        if _auto_trade_count >= 3:
+        if _auto_trade_count >= 10:
             break
         tc = r.get("ai_trade_call") or {}
         if tc.get("decision") != "TRADE" or tc.get("confidence") not in ("HIGH", "MEDIUM"):
@@ -544,6 +545,7 @@ def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze"):
             f"auto-trade: {confidence} confidence AI call", 20.0,
         )
         if result:
+            traded.add(symbol)
             _auto_trade_count = count_auto_trades_today(today_str)  # re-read from DB
             open_symbols.add(symbol)
             available -= position_size
@@ -566,7 +568,9 @@ def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze"):
             )
             print(f"AUTO-TRADE: opened {symbol} at ${entry_price:.4f} "
                   f"(score={r['score']}, conf={confidence}, size=${position_size}, "
-                  f"count={_auto_trade_count}/3, {alpaca_str})")
+                  f"count={_auto_trade_count}/10, {alpaca_str})")
+
+    return traded
 
 
 def _scheduled_scan():
@@ -594,9 +598,9 @@ def _scheduled_scan():
                 # Enrich score >= 50 with AI calls + LSTM before alerting
                 _enrich_high_scorers(data["results"], mode=mode)
                 # Auto paper-trade FIRST so Alpaca order is queued before Telegram fires
-                _auto_paper_trade(data["results"], today_str)
+                traded = _auto_paper_trade(data["results"], today_str)
                 # Alert all AI TRADE calls regardless of score
-                send_scan_alert(data["results"], label, min_score=0, ai_trade_only=True)
+                send_scan_alert(data["results"], label, min_score=0, ai_trade_only=True, traded_symbols=traded)
                 for r in data["results"]:
                     if (r.get("score", 0) >= 50
                             and (r.get("ai_trade_call") or {}).get("decision") == "TRADE"):
@@ -624,8 +628,8 @@ def _premarket_scan():
         save_scan(data["results"], "squeeze")   # persist for hypothesis testing
         save_scan_cache("squeeze", data["results"], data["summary"])
         _enrich_high_scorers(data["results"], mode="squeeze")
-        _auto_paper_trade(data["results"], today_str)
-        send_scan_alert(data["results"], "Complex + AI (pre-market)", min_score=0, ai_trade_only=True)
+        traded = _auto_paper_trade(data["results"], today_str)
+        send_scan_alert(data["results"], "Complex + AI (pre-market)", min_score=0, ai_trade_only=True, traded_symbols=traded)
         print(f"SCHEDULER: pre-market scan complete ({len(data['results'])} results)")
     except Exception as e:
         print(f"SCHEDULER: pre-market scan failed — {e}")
@@ -733,9 +737,9 @@ def _intraday_scan():
             and r.get("symbol") not in _alerted_today
         ]
         if new_alerts:
-            _auto_paper_trade(new_alerts, today_str)
+            traded = _auto_paper_trade(new_alerts, today_str)
             send_scan_alert(new_alerts, f"Intraday {et_now.strftime('%H:%M')}",
-                            min_score=0, ai_trade_only=True)
+                            min_score=0, ai_trade_only=True, traded_symbols=traded)
             for r in new_alerts:
                 _alerted_today.add(r.get("symbol"))
 
@@ -790,8 +794,8 @@ def _fivemin_spike_scan():
         ]
         if new_alerts:
             _enrich_high_scorers(new_alerts, mode="fivemin")
-            _auto_paper_trade(new_alerts, today_str, mode="fivemin")
-            send_scan_alert(new_alerts, f"5m Spike {et_now.strftime('%H:%M')}")
+            traded = _auto_paper_trade(new_alerts, today_str, mode="fivemin")
+            send_scan_alert(new_alerts, f"5m Spike {et_now.strftime('%H:%M')}", traded_symbols=traded)
             for r in new_alerts:
                 _alerted_today.add(r.get("symbol"))
 

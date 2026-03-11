@@ -217,11 +217,12 @@ def _send_telegram(message: str):
 
 
 def send_scan_alert(results: list, mode: str, min_score: int = 75,
-                    ai_trade_only: bool = False):
+                    ai_trade_only: bool = False, traded_symbols: set = None):
     """
     Email + Telegram top-scoring stocks from a scan.
     Only sends if at least one stock scores >= min_score.
     If ai_trade_only=True, only stocks where AI called TRADE are included.
+    traded_symbols: set of symbols where _auto_paper_trade actually opened a position.
     Includes AI call, confidence, LSTM prob, and rationale when available.
     """
     top = [r for r in results if r.get("score", 0) >= min_score]
@@ -254,9 +255,13 @@ def send_scan_alert(results: list, mode: str, min_score: int = 75,
             email_lines.append(f"         {rationale}")
 
         # Telegram line
+        symbol = r["symbol"]
         if decision == "TRADE":
             if confidence in ("HIGH", "MEDIUM"):
-                ai_badge = f" ✅ <b>{decision}</b> ({confidence} — position opened)"
+                if traded_symbols and symbol in traded_symbols:
+                    ai_badge = f" ✅ <b>{decision}</b> ({confidence} — position opened)"
+                else:
+                    ai_badge = f" ✅ <b>{decision}</b> ({confidence})"
             else:
                 ai_badge = f" ⚠️ <b>{decision}</b> ({confidence} — no position, LOW conf)"
         elif decision == "NO_TRADE":
