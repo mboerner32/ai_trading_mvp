@@ -15,6 +15,7 @@ Checks:
   10. weight_versioning    — Are model weight changes being tracked?
   11. feedback_uploads     — Is manual feedback being recorded?
   12. lstm_model           — Does the trained LSTM model file exist?
+  13. xgboost_model        — Is the XGBoost model trained and up to date?
 """
 
 import json
@@ -447,6 +448,30 @@ def _check_feedback_uploads() -> dict:
         return _check("feedback_uploads", name, "error", "Check failed", str(e))
 
 
+def _check_xgboost_model() -> dict:
+    name = "XGBoost Model"
+    try:
+        from app.ml_optimizer import get_xgb_status
+        s = get_xgb_status()
+        count     = s["labeled_count"]
+        threshold = s["threshold"]
+        if not s["active"]:
+            if count < threshold:
+                return _check("xgboost_model", name, "ok",
+                              f"Not yet active — {count}/{threshold} labeled rows "
+                              f"({s['pct_ready']}% ready)")
+            else:
+                return _check("xgboost_model", name, "warning",
+                              f"Enough data ({count} rows) but model file missing — "
+                              "trigger Auto AI optimize to train")
+        acc = s.get("val_accuracy")
+        acc_str = f"{acc:.1f}%" if acc else "unknown"
+        return _check("xgboost_model", name, "ok",
+                      f"Active — val_accuracy={acc_str}, trained on {count} rows")
+    except Exception as e:
+        return _check("xgboost_model", name, "error", "Check failed", str(e))
+
+
 def _check_lstm_model() -> dict:
     name = "LSTM Model File"
     model_paths = [
@@ -494,6 +519,7 @@ def run_health_checks() -> dict:
         _check_weight_versioning(),
         _check_feedback_uploads(),
         _check_lstm_model(),
+        _check_xgboost_model(),
     ]
 
     # Overall status: worst of all non-skipped checks

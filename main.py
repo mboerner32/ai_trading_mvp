@@ -788,10 +788,6 @@ def _fivemin_spike_scan():
         ]
         if new_alerts:
             _enrich_high_scorers(new_alerts, mode="fivemin")
-            new_alerts = [
-                r for r in new_alerts
-                if r.get("score", 0) >= 75 and r.get("symbol") not in _alerted_today
-            ]
             _auto_paper_trade(new_alerts, today_str, mode="fivemin")
             send_scan_alert(new_alerts, f"5m Spike {et_now.strftime('%H:%M')}")
             for r in new_alerts:
