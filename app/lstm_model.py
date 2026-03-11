@@ -30,8 +30,9 @@ import numpy as np
 SEQUENCE_LEN    = 20          # 20 trading days of history per input window
 FEATURES        = 12          # features per time step (see extract_features())
 FEATURES_VER    = 3           # bump this whenever the feature set changes
-MODEL_PATH      = "lstm_model.pt"
-SEQ_DATA_PATH   = "lstm_sequences.npz"
+_DATA_DIR     = "/data" if os.path.isdir("/data") else "."
+MODEL_PATH    = os.path.join(_DATA_DIR, "lstm_model.pt")
+SEQ_DATA_PATH = os.path.join(_DATA_DIR, "lstm_sequences.npz")
 
 
 # ---------------------------------------------------------------------------

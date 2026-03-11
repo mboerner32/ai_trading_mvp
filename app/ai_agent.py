@@ -450,8 +450,9 @@ RATIONALE: <one sentence, 15 words or less>"""
         if confidence not in ("HIGH", "MEDIUM", "LOW"):
             confidence = "LOW"
         return {"decision": decision, "confidence": confidence, "rationale": rationale}
-    except Exception:
-        return {"decision": "NO_TRADE", "confidence": "LOW", "rationale": ""}
+    except Exception as _e:
+        print(f"AI make_trade_call error for {stock.get('symbol', '?')}: {_e}")
+        return {"decision": "NO_TRADE", "confidence": "LOW", "rationale": f"AI error: {_e}"}
 
 
 def synthesize_combined_hypothesis(feedback_entries: list,

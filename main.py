@@ -598,6 +598,7 @@ def _scheduled_scan():
                         add_near_miss_to_watchlist(r["symbol"], score, r.get("price"))
         except Exception as e:
             print(f"SCHEDULER: {mode} scan failed — {e}")
+            _send_telegram_admin(f"⚠️ <b>Morning scan failed ({mode})</b>\n{e}")
     _autoclose_take_profit()
     update_returns()
     _auto_learn()
@@ -618,6 +619,7 @@ def _premarket_scan():
         print(f"SCHEDULER: pre-market scan complete ({len(data['results'])} results)")
     except Exception as e:
         print(f"SCHEDULER: pre-market scan failed — {e}")
+        _send_telegram_admin(f"⚠️ <b>Pre-market scan failed</b>\n{e}")
 
 
 def _run_validation():
@@ -667,10 +669,12 @@ def _daily_backfill():
             print(f"DAILY BACKFILL: LSTM retrained — {lstm_stats}")
         except Exception as e:
             print(f"DAILY BACKFILL: LSTM training skipped — {e}")
+            _send_telegram_admin(f"⚠️ <b>LSTM retrain failed</b>\n{e}")
         _run_hypothesis_and_weights(get_all_feedback())
         print("DAILY BACKFILL: complete")
     except Exception as e:
         print(f"DAILY BACKFILL: error — {e}")
+        _send_telegram_admin(f"⚠️ <b>Daily backfill failed</b>\n{e}")
     finally:
         _backfill_running = False
 
@@ -740,6 +744,7 @@ def _intraday_scan():
         )
     except Exception as e:
         print(f"INTRADAY SCAN: failed — {e}")
+        _send_telegram_admin(f"⚠️ <b>Intraday scan failed</b>\n{e}")
 
 
 def _fivemin_spike_scan():
@@ -793,6 +798,7 @@ def _fivemin_spike_scan():
         )
     except Exception as e:
         print(f"5M SPIKE SCAN: failed — {e}")
+        _send_telegram_admin(f"⚠️ <b>5m spike scan failed</b>\n{e}")
 
 
 def _check_watchlist():

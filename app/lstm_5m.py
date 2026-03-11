@@ -24,11 +24,12 @@ from datetime import datetime, time as dtime
 
 import numpy as np
 
-SEQUENCE_LEN_5M = 12          # first hour of 5m bars (9:30–10:25 ET)
-FEATURES_5M     = 7
-FEATURES_VER_5M = 1
-MODEL_PATH_5M   = "lstm_model_5m.pt"
-SEQ_DATA_PATH_5M = "lstm_sequences_5m.npz"
+SEQUENCE_LEN_5M  = 12          # first hour of 5m bars (9:30–10:25 ET)
+FEATURES_5M      = 7
+FEATURES_VER_5M  = 1
+_DATA_DIR        = "/data" if os.path.isdir("/data") else "."
+MODEL_PATH_5M    = os.path.join(_DATA_DIR, "lstm_model_5m.pt")
+SEQ_DATA_PATH_5M = os.path.join(_DATA_DIR, "lstm_sequences_5m.npz")
 
 # Qualifying criteria for a 5m training session
 _MIN_OPEN_GAIN   = 0.05   # by bar 6 (10:00 AM), stock must be up ≥5% from open

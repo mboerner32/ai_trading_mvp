@@ -22,7 +22,8 @@ from app.database import DB_NAME
 from app.scoring_engine import DEFAULT_SQUEEZE_WEIGHTS
 
 XGB_THRESHOLD = 500          # minimum labeled rows before activating
-MODEL_PATH    = "ml_model.pkl"
+_DATA_DIR  = "/data" if os.path.isdir("/data") else "."
+MODEL_PATH = os.path.join(_DATA_DIR, "ml_model.pkl")
 
 # Signal keys used as features — must match _ALL_SIGNAL_KEYS in database.py
 _SIGNAL_KEYS = [
