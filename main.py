@@ -139,6 +139,8 @@ from app.database import (
     save_bundle_as_rule,
     save_scan_candidates,
     rescore_historical_from_signals,
+    count_auto_trades_today,
+    get_alerted_symbols_today,
 )
 from app.ml_optimizer import train_xgb_weights, get_xgb_status
 
@@ -182,13 +184,17 @@ _backfill_running = False
 _signals_backfill_running = False
 _lstm_training    = False
 
-# Alert deduplication — tracks symbols already alerted today; resets each trading day
-_alerted_today: set = set()
-_alerted_date:  str = ""
+# Alert deduplication — seeded from DB on startup so restarts don't re-alert
+def _init_alerted_today() -> set:
+    import datetime, pytz
+    today = datetime.datetime.now(pytz.timezone("America/New_York")).date().isoformat()
+    return get_alerted_symbols_today(today)
 
-# Auto-paper-trade daily limit — max 3 auto-trades per trading day
-_auto_trade_count: int = 0
-_auto_trade_date:  str = ""
+_alerted_today: set = _init_alerted_today()
+_alerted_date:  str = datetime.datetime.now(pytz.timezone("America/New_York")).date().isoformat()
+
+# Auto-paper-trade daily limit — now DB-backed; see count_auto_trades_today()
+_auto_trade_count: int = 0  # kept for legacy references; real gate uses DB
 
 # ---------------- SCHEDULER ----------------
 def _autoclose_take_profit() -> list:
@@ -501,12 +507,8 @@ def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze"):
     Sends a Telegram notification for each auto-trade opened.
 
     """
-    global _auto_trade_count, _auto_trade_date
-
-    if today_str != _auto_trade_date:
-        _auto_trade_count = 0
-        _auto_trade_date  = today_str
-
+    # Use DB-backed count so restarts don't reset the daily limit
+    _auto_trade_count = count_auto_trades_today(today_str)
     if _auto_trade_count >= 3:
         return
 
@@ -542,7 +544,7 @@ def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze"):
             f"auto-trade: {confidence} confidence AI call", 20.0,
         )
         if result:
-            _auto_trade_count += 1
+            _auto_trade_count = count_auto_trades_today(today_str)  # re-read from DB
             open_symbols.add(symbol)
             available -= position_size
 

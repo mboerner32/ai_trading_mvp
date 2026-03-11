@@ -1061,6 +1061,40 @@ def close_trade(trade_id: int, exit_price: float):
     return {"realized_pnl": realized_pnl, "proceeds": proceeds}
 
 
+def count_auto_trades_today(date_str: str) -> int:
+    """Count auto-trades (open + closed) opened on date_str (YYYY-MM-DD)."""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT COUNT(*) FROM trades
+            WHERE notes LIKE 'auto-trade%'
+              AND DATE(opened_at) = ?
+        """, (date_str,))
+        count = cursor.fetchone()[0] or 0
+        conn.close()
+        return count
+    except Exception:
+        return 0
+
+
+def get_alerted_symbols_today(date_str: str) -> set:
+    """Return set of symbols that had a TRADE alert saved today (for dedup across restarts)."""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT symbol FROM scans
+            WHERE ai_trade_rec LIKE '%TRADE%'
+              AND DATE(scan_date) = ?
+        """, (date_str,))
+        symbols = {row[0] for row in cursor.fetchall()}
+        conn.close()
+        return symbols
+    except Exception:
+        return set()
+
+
 def get_open_positions():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
