@@ -231,6 +231,9 @@ def get_finviz_quotes(tickers: list, max_workers: int = 5) -> dict:
         url = f"https://finviz.com/quote.ashx?t={symbol}&p=d"
         try:
             resp = requests.get(url, headers=_FV_HEADERS, timeout=12)
+            if resp.status_code == 429:
+                time.sleep(5)
+                resp = requests.get(url, headers=_FV_HEADERS, timeout=12)
             if resp.status_code != 200:
                 return symbol, None
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -387,7 +390,8 @@ def get_fundamentals(symbol):
             "news_headlines": news_headlines,
         }
 
-    except Exception:
+    except Exception as e:
+        print(f"get_fundamentals({symbol}): failed — {e}")
         return None
 
 

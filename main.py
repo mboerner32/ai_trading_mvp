@@ -510,9 +510,17 @@ def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze"):
     if _auto_trade_count >= 3:
         return
 
-    open_symbols = {p["symbol"] for p in get_open_positions()}
-    portfolio    = get_portfolio_summary()
-    available    = portfolio["cash"]
+    try:
+        open_symbols = {p["symbol"] for p in get_open_positions()}
+    except Exception as e:
+        print(f"AUTO-TRADE: could not fetch open positions — skipping to avoid duplicates: {e}")
+        return
+    try:
+        portfolio = get_portfolio_summary()
+        available = portfolio["cash"]
+    except Exception as e:
+        print(f"AUTO-TRADE: could not fetch portfolio — skipping: {e}")
+        return
 
     for r in results:
         if _auto_trade_count >= 3:
