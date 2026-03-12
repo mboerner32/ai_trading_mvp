@@ -58,6 +58,14 @@ BASE_URL_PREMARKET = (
     "v=161&f=sh_curvol_o1000,"
     "sh_price_u5,sh_relvol_o5,ta_perf_d5o&ft=4"
 )
+# Gap-up / extreme relvol path — catches low-float news plays that haven't yet
+# accumulated 1M shares. Trades 1M floor for a 50x relvol gate.
+# curvol_o100 = >100K shares (to filter pure noise), relvol_o50 = >50x relvol.
+BASE_URL_GAP_UP = (
+    "https://finviz.com/screener.ashx?"
+    "v=161&f=sh_curvol_o100,"
+    "sh_price_u5,sh_relvol_o50,ta_perf_d10o&ft=4"
+)
 # 5m Spike mode — pre-filtered for relvol>10x, price<$5, up today, US-only
 BASE_URL_5M = (
     "https://finviz.com/screener.ashx?"
@@ -79,42 +87,54 @@ _FV_HEADERS = {
 # Uses v=161 (Performance view) to pull FinViz's own Rel Volume value.
 # Returns (tickers_list, relvol_dict  {symbol: float})
 # ---------------------------------------------------
+def _fetch_finviz_url(base: str) -> tuple:
+    """Paginate a single FinViz screener URL. Returns (tickers, relvol_dict)."""
+    tickers = []
+    relvol  = {}
+    page    = 1
+    while True:
+        url      = f"{base}&r={(page - 1) * 20 + 1}"
+        response = requests.get(url, headers=_FV_HEADERS, timeout=15)
+        if response.status_code != 200:
+            break
+        page_tickers, page_relvol = _parse_finviz_page(response.text)
+        if not page_tickers:
+            break
+        tickers.extend(page_tickers)
+        relvol.update(page_relvol)
+        if len(page_tickers) < 20:
+            break
+        page += 1
+    return tickers, relvol
+
+
 def get_finviz_tickers(premarket: bool = False):
     """
     Fetch tickers + FinViz Rel Volume from the Performance screener view.
+    Runs two passes: standard (>1M volume, >10x relvol) + gap-up
+    (>100K volume, >50x relvol) to catch low-float news plays before they
+    accumulate 1M shares. Results are merged and deduplicated.
     Falls back to ticker-only if HTML parsing fails.
     """
     base = BASE_URL_PREMARKET if premarket else BASE_URL
 
-    tickers  = []
-    relvol   = {}
-    page     = 1
-
     print(f"Pulling FinViz candidates{'  (pre-market)' if premarket else ''}...")
+    tickers, relvol = _fetch_finviz_url(base)
+    print(f"  Standard pass: {len(tickers)} stocks ({len(relvol)} with Rel Volume)")
 
-    while True:
-        url      = f"{base}&r={(page - 1) * 20 + 1}"
-        response = requests.get(url, headers=_FV_HEADERS, timeout=15)
+    # Gap-up pass — skip during premarket (not enough intraday volume to be meaningful)
+    if not premarket:
+        gap_tickers, gap_relvol = _fetch_finviz_url(BASE_URL_GAP_UP)
+        new_gap = [t for t in gap_tickers if t not in set(tickers)]
+        if new_gap:
+            print(f"  Gap-up pass: {len(new_gap)} additional stock(s) added "
+                  f"(relvol≥50x, vol≥100K): {', '.join(new_gap)}")
+            tickers.extend(new_gap)
+            relvol.update({k: v for k, v in gap_relvol.items() if k not in relvol})
+        else:
+            print(f"  Gap-up pass: no new stocks beyond standard pass")
 
-        if response.status_code != 200:
-            break
-
-        html = response.text
-        page_tickers, page_relvol = _parse_finviz_page(html)
-
-        if not page_tickers:
-            break
-
-        tickers.extend(page_tickers)
-        relvol.update(page_relvol)
-
-        if len(page_tickers) < 20:
-            break
-
-        page += 1
-
-    print(f"Found {len(tickers)} FinViz stocks "
-          f"({len(relvol)} with Rel Volume)")
+    print(f"Total: {len(tickers)} FinViz stocks ({len(relvol)} with Rel Volume)")
     return tickers, relvol
 
 

@@ -424,6 +424,11 @@ Evaluate each stock on its own merits using this as directional context, not a f
 
 TRADE calls require genuine, multi-signal conviction. Ask yourself: is there a clear reason this specific stock will trade 20%+ higher within 2 weeks from the current price? If the answer requires stretching or ignoring red flags, call NO_TRADE. A well-reasoned NO_TRADE is always better than a low-conviction TRADE.
 
+Confidence criteria (apply these strictly):
+- HIGH: 3+ strong signals aligned (relvol ≥25x, low float, sideways compression, sector catalyst, or yesterday green), no material red flags, clear thesis for 20%+ move
+- MEDIUM: 2 supporting signals, or 3+ signals but one concern present (e.g. already up 30%+, high float, no compression)
+- LOW: weak setup, contradictory signals, or only 1 supporting factor
+
 Respond EXACTLY (no other text):
 DECISION: TRADE or NO_TRADE
 CONFIDENCE: HIGH or MEDIUM or LOW
