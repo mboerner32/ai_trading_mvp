@@ -223,6 +223,18 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # Migration: reset days_to_20pct=0 (same-day hits) for live scans — they used the
+    # full-day high which may predate the alert. update_returns() will re-label from d=1.
+    try:
+        cursor.execute("""
+            UPDATE scans SET days_to_20pct = NULL
+            WHERE days_to_20pct = 0
+              AND mode NOT IN ('historical', 'fivemin_bt')
+        """)
+        conn.commit()
+    except Exception:
+        pass
+
     # Migration: watchlist near-miss tracking columns
     try:
         cursor.execute("ALTER TABLE watchlist ADD COLUMN score INTEGER")
@@ -744,10 +756,14 @@ def update_returns():
     # Fetch pending rows then close connection before slow yf.download calls
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    # Also pick up rows where next_day_return is set but days_to_20pct is NULL
+    # (happens after resetting stale d=0 same-day hits)
     cursor.execute("""
         SELECT id, symbol, timestamp, scan_price
         FROM scans
         WHERE next_day_return IS NULL
+           OR (next_day_return IS NOT NULL AND days_to_20pct IS NULL
+               AND mode NOT IN ('historical', 'fivemin_bt'))
     """)
     rows = cursor.fetchall()
     conn.close()
@@ -792,10 +808,17 @@ def update_returns():
             if len(closes) >= 4:
                 three_day = (closes[3] - base) / base * 100
 
-            # Check same-day (d=0) AND next 10 trading days for intraday HIGH ≥20% above alert price.
-            # d=0 captures morning rips like a stock spiking 30% within 30 min of the alert.
+            # Discard implausible returns — scan_price/yfinance mismatch
+            # (e.g. overnight scan captured pre-squeeze price vs. split-adjusted close).
+            # A legitimate next-day move from alert price won't exceed ±500%.
+            if next_day  is not None and abs(next_day)  > 500: next_day  = None
+            if three_day is not None and abs(three_day) > 500: three_day = None
+
+            # Check next 10 trading days (d=1..10) for intraday HIGH ≥20% above alert price.
+            # d=0 (same-day) excluded: the day's high may predate the alert, making it
+            # unreachable — entry price is the scan_price at alert time, not the open.
             days_to_20pct = None
-            for d in range(0, min(11, len(highs))):
+            for d in range(1, min(11, len(highs))):
                 if (highs[d] / base - 1) >= 0.20:
                     days_to_20pct = d
                     break
@@ -1027,7 +1050,7 @@ def get_trade_by_id(trade_id: int):
     return {"symbol": row[0], "entry_price": row[1]}
 
 
-def close_trade(trade_id: int, exit_price: float):
+def close_trade(trade_id: int, exit_price: float, close_reason: str = None):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
@@ -1048,9 +1071,10 @@ def close_trade(trade_id: int, exit_price: float):
 
     cursor.execute("""
         UPDATE trades
-        SET status = 'closed', exit_price = ?, realized_pnl = ?, closed_at = ?
+        SET status = 'closed', exit_price = ?, realized_pnl = ?, closed_at = ?,
+            close_reason = ?
         WHERE id = ?
-    """, (round(exit_price, 4), round(realized_pnl, 4), closed_at, trade_id))
+    """, (round(exit_price, 4), round(realized_pnl, 4), closed_at, close_reason, trade_id))
     cursor.execute(
         "UPDATE portfolio SET cash = cash + ? WHERE id = 1",
         (round(proceeds, 4),)
@@ -1059,6 +1083,21 @@ def close_trade(trade_id: int, exit_price: float):
     conn.commit()
     conn.close()
     return {"realized_pnl": realized_pnl, "proceeds": proceeds}
+
+
+def update_high_watermark(trade_id: int, price: float):
+    """Update the high_watermark for a trade if price is a new peak."""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE trades SET high_watermark = ? WHERE id = ? AND (high_watermark IS NULL OR ? > high_watermark)",
+            (round(price, 4), trade_id, round(price, 4))
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 def count_auto_trades_today(date_str: str) -> int:

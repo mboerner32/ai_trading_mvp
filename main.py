@@ -24,7 +24,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.broker import submit_market_order, close_position as broker_close, is_configured as broker_configured, get_account as broker_get_account
 from app.scanner import run_scan, run_scan_5m, get_finviz_quotes, prepare_dataframe
 from app.validator import validate_scan_results
-from app.alerts import send_scan_alert, send_take_profit_alert, send_watchlist_alert, _send_telegram_admin, send_invite_email, send_weekly_report_email
+from app.alerts import send_scan_alert, send_take_profit_alert, send_watchlist_alert, _send_telegram_admin, send_invite_email, send_weekly_report_email, send_exit_alert
 from app.backfill import build_historical_dataset, backfill_signals_for_historical
 from app.backfill_5m import backfill_5m_history, get_5m_backfill_status, set_5m_backfill_status
 from app.health import run_health_checks, get_health_status
@@ -141,6 +141,7 @@ from app.database import (
     rescore_historical_from_signals,
     count_auto_trades_today,
     get_alerted_symbols_today,
+    update_high_watermark,
 )
 from app.ml_optimizer import train_xgb_weights, get_xgb_status
 
@@ -193,38 +194,138 @@ def _init_alerted_today() -> set:
 _alerted_today: set = _init_alerted_today()
 _alerted_date:  str = datetime.datetime.now(pytz.timezone("America/New_York")).date().isoformat()
 
-# Auto-paper-trade daily limit — now DB-backed; see count_auto_trades_today()
-_auto_trade_count: int = 0  # kept for legacy references; real gate uses DB
+# (no daily trade cap — available cash is the natural gate)
 
 # ---------------- SCHEDULER ----------------
+_MODEL_LABELS = {
+    "squeeze":  "Daily Auto",
+    "autoai":   "Daily Complex + AI",
+    "fivemin":  "5 Min Spike",
+    "standard": "Daily Standard",
+}
+
+# Daily model exit rules — applied to squeeze and autoai positions only
+_DAILY_STOP_LOSS_PCT      = 20.0   # hard cut: -20% from entry
+_DAILY_TRAIL_ACTIVATE_PCT = 10.0   # trailing stop activates once up +10%
+_DAILY_TRAIL_PULLBACK_PP  = 12.0   # exit if price drops 12pp below peak
+_DAILY_TIME_STOP_DAYS     = 10     # close after 10 trading days if still negative
+_DAILY_STALE_DAYS         = 7      # close after 7 trading days if gain < +3%
+_DAILY_STALE_GAIN_PCT     = 3.0    # flatline threshold for staleness stop
+
+
+def _trading_days_since(opened_at_iso: str) -> int:
+    """Count trading days (Mon–Fri) elapsed since the trade was opened."""
+    import pytz
+    from datetime import timedelta as _td
+    try:
+        opened = datetime.datetime.fromisoformat(opened_at_iso).date()
+        today  = datetime.datetime.now(pytz.timezone("America/New_York")).date()
+        days   = 0
+        cur    = opened
+        while cur < today:
+            cur += _td(days=1)
+            if cur.weekday() < 5:   # Mon=0 … Fri=4
+                days += 1
+        return days
+    except Exception:
+        return 0
+
+
 def _autoclose_take_profit() -> list:
-    """Close open positions that have hit their per-trade take-profit target (+20% by default)."""
-    positions = get_open_positions()
+    """
+    Money management for all open positions.
+
+    Take-profit (+20%): all positions.
+    Risk exits (stop-loss, trailing, time, staleness): daily model positions only
+    (trade_mode in squeeze / autoai).  5m positions are managed separately.
+    """
+    positions    = get_open_positions()
     closed       = []
     take_profits = []
+    risk_exits   = []
 
     for pos in positions:
-        price   = _fetch_current_price(pos["symbol"], pos["entry_price"])
-        entry   = pos["entry_price"]
-        pnl_pct = (price - entry) / entry * 100
+        symbol   = pos["symbol"]
+        entry    = pos["entry_price"]
+        trade_id = pos["trade_id"]
+        mode     = pos.get("trade_mode") or ""
+        price    = _fetch_current_price(symbol, entry)
+        if not price or price <= 0:
+            continue
 
+        pnl_pct  = (price - entry) / entry * 100
         tp_target = pos.get("take_profit_pct", 20.0)
+
+        # ── Take-profit (all positions) ──────────────────────────────────
         if pnl_pct >= tp_target:
-            result = close_trade(pos["trade_id"], price)
+            result = close_trade(trade_id, price, close_reason="take_profit")
             if result:
-                broker_close(pos["symbol"])
-                entry_data = {
-                    "symbol":       pos["symbol"],
+                broker_close(symbol)
+                data = {
+                    "symbol":       symbol,
                     "entry_price":  entry,
                     "exit_price":   round(price, 4),
                     "realized_pnl": result["realized_pnl"],
                     "pnl_pct":      round(pnl_pct, 1),
                 }
-                closed.append(entry_data)
-                take_profits.append(entry_data)
+                closed.append(data)
+                take_profits.append(data)
+            continue   # no further checks once closed
+
+        # ── Daily model risk exits (squeeze / autoai only) ───────────────
+        if mode not in ("squeeze", "autoai"):
+            continue
+
+        model_label   = _MODEL_LABELS.get(mode, mode)
+        high_watermark = pos.get("high_watermark") or entry
+        peak_pct       = (high_watermark - entry) / entry * 100
+        trading_days   = _trading_days_since(pos["opened_at"])
+        close_reason   = None
+
+        # Update high watermark using the fetched (closing) price only.
+        # Daily model checks use closing prices — intraday lows/highs create false
+        # triggers on penny stocks that routinely swing ±15% within a session.
+        if price > high_watermark:
+            update_high_watermark(trade_id, price)
+            peak_pct = pnl_pct
+
+        # 1. Hard stop loss: -20% on closing price
+        if pnl_pct <= -_DAILY_STOP_LOSS_PCT:
+            close_reason = "stop_loss"
+
+        # 2. Trailing stop: activates at +10% close, exits if close pulls back 12pp from peak close
+        elif peak_pct >= _DAILY_TRAIL_ACTIVATE_PCT and pnl_pct <= (peak_pct - _DAILY_TRAIL_PULLBACK_PP):
+            close_reason = "trailing_stop"
+
+        # 3. Time stop: 10 trading days and still negative
+        elif trading_days >= _DAILY_TIME_STOP_DAYS and pnl_pct < 0:
+            close_reason = "time_stop"
+
+        # 4. Staleness stop: 7 trading days and gain < +3% (momentum gone)
+        elif trading_days >= _DAILY_STALE_DAYS and pnl_pct < _DAILY_STALE_GAIN_PCT:
+            close_reason = "staleness_stop"
+
+        if close_reason:
+            result = close_trade(trade_id, price, close_reason=close_reason)
+            if result:
+                broker_close(symbol)
+                data = {
+                    "symbol":       symbol,
+                    "entry_price":  entry,
+                    "exit_price":   round(price, 4),
+                    "realized_pnl": result["realized_pnl"],
+                    "pnl_pct":      round(pnl_pct, 1),
+                    "close_reason": close_reason,
+                    "model_label":  model_label,
+                }
+                closed.append(data)
+                risk_exits.append(data)
 
     if take_profits:
         send_take_profit_alert(take_profits)
+    if risk_exits:
+        send_exit_alert(risk_exits)
+
     return closed
 
 
@@ -502,16 +603,13 @@ def _enrich_high_scorers(results: list, mode: str = None) -> list:
 def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze") -> set:
     """
     Open paper trades for TRADE calls (HIGH or MEDIUM confidence) found in enriched scan results.
-    Limits to 10 auto-trades per trading day. Skips symbols already in open positions.
+    No daily cap — available cash is the natural gate ($500 min per trade).
+    Skips symbols already in open positions.
     Mirrors each trade to Alpaca paper account if configured.
     Sends a Telegram notification for each auto-trade opened.
     Returns set of symbols where a trade was actually opened (for accurate alert badges).
     """
     traded = set()
-    # Use DB-backed count so restarts don't reset the daily limit
-    _auto_trade_count = count_auto_trades_today(today_str)
-    if _auto_trade_count >= 10:
-        return traded
 
     try:
         open_symbols = {p["symbol"] for p in get_open_positions()}
@@ -526,8 +624,6 @@ def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze") -> s
         return traded
 
     for r in results:
-        if _auto_trade_count >= 10:
-            break
         tc = r.get("ai_trade_call") or {}
         if tc.get("decision") != "TRADE" or tc.get("confidence") not in ("HIGH", "MEDIUM"):
             continue
@@ -542,11 +638,13 @@ def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze") -> s
         confidence    = tc.get("confidence", "")
         result = open_trade(
             symbol, entry_price, position_size,
-            f"auto-trade: {confidence} confidence AI call", 20.0,
+            f"auto-trade: {mode} | {confidence} confidence AI call",
+            take_profit_pct=20.0,
+            stop_loss_pct=_DAILY_STOP_LOSS_PCT,
+            trade_mode=mode,
         )
         if result:
             traded.add(symbol)
-            _auto_trade_count = count_auto_trades_today(today_str)  # re-read from DB
             open_symbols.add(symbol)
             available -= position_size
 
@@ -562,13 +660,12 @@ def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze") -> s
 
             _send_telegram_admin(
                 f"<b>Auto-Trade Opened: {symbol}</b>\n"
-                f"Entry: ${entry_price:.4f} · Score: {r['score']}/100 · ${position_size} · Target +20%\n"
+                f"Model: {_MODEL_LABELS.get(mode, mode)} · Entry: ${entry_price:.4f} · Score: {r['score']}/100 · ${position_size} · Target +20%\n"
                 f"{alpaca_str}\n"
                 f"<i>{tc.get('rationale', '')}</i>"
             )
             print(f"AUTO-TRADE: opened {symbol} at ${entry_price:.4f} "
-                  f"(score={r['score']}, conf={confidence}, size=${position_size}, "
-                  f"count={_auto_trade_count}/10, {alpaca_str})")
+                  f"(score={r['score']}, conf={confidence}, size=${position_size}, {alpaca_str})")
 
     return traded
 
@@ -1570,6 +1667,10 @@ def optimize_weights(request: Request):
             "xgb_status": get_xgb_status(),
             "model_validation": get_model_validation_stats(),
             "model_comparison": get_model_comparison_stats(),
+            "autoai_log":          get_autoai_log(limit=20),
+            "autoai_weights":      get_autoai_weights(),
+            "hypothesis_rules":    get_hypothesis_rules(),
+            "pending_rule_count":  get_pending_rule_count(),
             "score_buckets":       get_score_buckets(modes=_DAILY_MODES),
             "holding_perf":        get_holding_performance(modes=_DAILY_MODES),
             "equity_curve":        get_equity_curve(modes=_DAILY_MODES),
@@ -1904,9 +2005,6 @@ def optimize_complex(request: Request):
         "analytics.html",
         {
             "request": request,
-            "score_buckets": get_score_buckets(),
-            "holding_perf": get_holding_performance(),
-            "equity_curve": get_equity_curve(),
             "weight_changelog": get_weight_changelog(),
             "risk_metrics": get_risk_metrics(),
             "historical_count": get_historical_count(),
@@ -1922,6 +2020,10 @@ def optimize_complex(request: Request):
             "xgb_status": get_xgb_status(),
             "model_validation": get_model_validation_stats(),
             "model_comparison": get_model_comparison_stats(),
+            "autoai_log":          get_autoai_log(limit=20),
+            "autoai_weights":      get_autoai_weights(),
+            "hypothesis_rules":    get_hypothesis_rules(),
+            "pending_rule_count":  get_pending_rule_count(),
             "score_buckets":       get_score_buckets(modes=_DAILY_MODES),
             "holding_perf":        get_holding_performance(modes=_DAILY_MODES),
             "equity_curve":        get_equity_curve(modes=_DAILY_MODES),

@@ -402,7 +402,7 @@ def recommend_trade(stock: dict, hypothesis: str = None,
     )
 
     prompt = f"""You are a momentum trading AI making a TRADE or NO_TRADE call for a low-float microcap.
-Strategy: buy stocks showing unusual volume compression setups. A TRADE call is correct if the stock touches +20% above the alert price within 10 trading days (~2 weeks). Target: 80%+ of TRADE calls should hit this.
+Strategy: buy stocks showing unusual volume setups and target +20% above the alert price within 1–2 weeks. Target precision: 75–80% of TRADE calls should hit this. You are expected to be highly selective — most stocks should be NO_TRADE.
 
 Stock: {stock['symbol']} | Score: {stock['score']}/100 | Price: ${stock['price']}
 Signals:
@@ -414,16 +414,15 @@ Signals:
 - Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'} (40%+ = strong floor, lowers downside risk)
 - Sector/Industry: {checklist.get('sector') or 'N/A'} / {checklist.get('industry') or 'N/A'} (Biotech/Healthcare historically outperforms for this setup){signal_perf_section}{calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}{news_section}{accuracy_section}
 
-Backtested signal insights (544 labeled live scans, as of 2026-03-09):
-- STRONGEST: shares 10–30M (lt30m) → 15.7% hit rate (+3.6pp vs 12.1% baseline)
-- STRONGEST COMBO: lt30m + rel_vol_50x → 27.0% hit rate (2.2x baseline, n=37)
-- STRONG COMBO: lt30m + daily gain 40–100% → 24.6% hit rate (n=61)
-- WEAK: shares <10M (lt10m) → 8.1% hit rate (−4pp vs baseline) — ultra-micro floats too volatile
-- NEGATIVE SIGNAL: daily gain 10–20% → 5.9% hit rate (−6.2pp vs baseline, n=1211) — modest gainers rarely follow through
-- DAY OF WEEK: Friday 13.5% | Mon/Tue 9.4–9.5% | Wed 7.2% (worst)
-Use these to size up conviction on lt30m+rv50x combos and discount 10–20% gainers.
+Backtested trend (live scans, measured from alert price, 1–2 week window):
+- Stocks making a significant move today (20%+) with moderate relative volume (<25x) and coming from a non-trending setup (yesterday flat or down) have shown the highest 2-week hit rates (~75%). This is a trend to factor in — not a hard rule.
+- Extreme relvol (50–99x) has underperformed moderate relvol (10–24x) for 2-week holds.
+- Shares 10–30M float → strongest size tier. Ultra-micro (<10M) → too volatile, lower hit rate.
+- Modest gainers (10–20% today) have historically underperformed vs bigger movers.
+- Day of week: Friday slightly better, Wednesday weakest.
+Evaluate each stock on its own merits using this as directional context, not a filter.
 
-Make a TRADE or NO_TRADE call. Only call TRADE when you have genuine conviction the setup will hit +20% — precision on TRADE calls is the priority. NO_TRADE is the right call when signals are weak, mixed, or the setup doesn't clearly fit the pattern.
+TRADE calls require genuine, multi-signal conviction. Ask yourself: is there a clear reason this specific stock will trade 20%+ higher within 2 weeks from the current price? If the answer requires stretching or ignoring red flags, call NO_TRADE. A well-reasoned NO_TRADE is always better than a low-conviction TRADE.
 
 Respond EXACTLY (no other text):
 DECISION: TRADE or NO_TRADE

@@ -231,8 +231,16 @@ def send_scan_alert(results: list, mode: str, min_score: int = 75,
     if not top:
         return
 
-    email_lines = [f"{len(top)} stock(s) scored {min_score}+ in {mode} scan\n"]
-    tg_lines    = [f"<b>{len(top)} High-Score Alert — {mode}</b>\n"]
+    _model_labels = {
+        "squeeze":  "Daily Auto",
+        "autoai":   "Daily Complex + AI",
+        "fivemin":  "5 Min Spike",
+        "standard": "Daily Standard",
+    }
+    model_label = _model_labels.get(mode, mode)
+
+    email_lines = [f"{len(top)} stock(s) scored {min_score}+ in {model_label} scan\n"]
+    tg_lines    = [f"<b>{len(top)} High-Score Alert — {model_label}</b>\n"]
 
     for r in top[:10]:
         chk        = r.get("checklist", {})
@@ -259,11 +267,11 @@ def send_scan_alert(results: list, mode: str, min_score: int = 75,
         if decision == "TRADE":
             if confidence in ("HIGH", "MEDIUM"):
                 if traded_symbols and symbol in traded_symbols:
-                    ai_badge = f" ✅ <b>{decision}</b> ({confidence} — position opened)"
+                    ai_badge = f" ✅ <b>{decision}</b> ({confidence} · {model_label} — position opened)"
                 else:
-                    ai_badge = f" ✅ <b>{decision}</b> ({confidence})"
+                    ai_badge = f" ✅ <b>{decision}</b> ({confidence} · {model_label})"
             else:
-                ai_badge = f" ⚠️ <b>{decision}</b> ({confidence} — no position, LOW conf)"
+                ai_badge = f" ⚠️ <b>{decision}</b> ({confidence} · {model_label} — no position, LOW conf)"
         elif decision == "NO_TRADE":
             ai_badge = f" ❌ {decision} ({confidence})"
         else:
@@ -276,7 +284,7 @@ def send_scan_alert(results: list, mode: str, min_score: int = 75,
             tg_lines.append(f"  <i>{rationale}</i>")
 
     _send_email(
-        subject=f"[Trading] {len(top)} High-Score Alert — {mode}",
+        subject=f"[Trading] {len(top)} High-Score Alert — {model_label}",
         body="\n".join(email_lines),
     )
     _send_telegram("\n".join(tg_lines))
@@ -334,4 +342,35 @@ def send_take_profit_alert(closed_trades: list):
         body="\n".join(email_lines),
     )
     for msg in tg_msgs:
+        _send_telegram(msg)
+
+
+def send_exit_alert(closed_trades: list):
+    """
+    Telegram alert for risk-management exits (stop-loss, trailing stop, time stop, staleness).
+    closed_trades: list of dicts with symbol, entry_price, exit_price, realized_pnl,
+                   pnl_pct, close_reason, model_label
+    """
+    if not closed_trades:
+        return
+
+    _reason_labels = {
+        "stop_loss":      ("🛑", "Stop Loss"),
+        "trailing_stop":  ("📉", "Trailing Stop"),
+        "time_stop":      ("⏱️", "Time Stop (2wk)"),
+        "staleness_stop": ("😴", "Stale — Momentum Gone"),
+    }
+
+    for t in closed_trades:
+        reason = t.get("close_reason", "exit")
+        emoji, label = _reason_labels.get(reason, ("🔔", reason.replace("_", " ").title()))
+        pnl_str = f"+${t['realized_pnl']:.2f}" if t['realized_pnl'] >= 0 else f"-${abs(t['realized_pnl']):.2f}"
+        pct_str = f"+{t['pnl_pct']:.1f}%" if t['pnl_pct'] >= 0 else f"{t['pnl_pct']:.1f}%"
+        model   = t.get("model_label", "")
+        model_str = f" · {model}" if model else ""
+        msg = (
+            f"{emoji} <b>{label}: {t['symbol']}</b>{model_str}\n"
+            f"Entry: ${t['entry_price']:.4f} &#8594; Exit: ${t['exit_price']:.4f}\n"
+            f"P&L: <b>{pct_str}</b>  |  {pnl_str}"
+        )
         _send_telegram(msg)
