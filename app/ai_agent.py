@@ -11,6 +11,13 @@ from datetime import datetime, date, timedelta
 client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from environment automatically
 
 
+def _msg_text(message) -> str:
+    """Safely extract text from an Anthropic API response, guarding against empty content."""
+    if not message.content:
+        raise ValueError("Claude API returned empty content")
+    return message.content[0].text.strip()
+
+
 def get_stock_news(symbol: str, max_headlines: int = 5) -> list[str]:
     """
     Fetch recent news headlines for a symbol via yfinance (free, no API key).
@@ -157,7 +164,7 @@ RATIONALE: <one sentence, 15 words or less>"""
             max_tokens=80,
             messages=[{"role": "user", "content": prompt}]
         )
-        text = message.content[0].text.strip()
+        text = _msg_text(message)
 
         amount_line = next((l for l in text.split('\n') if l.startswith('AMOUNT:')), None)
         rationale_line = next((l for l in text.split('\n') if l.startswith('RATIONALE:')), None)
@@ -251,7 +258,7 @@ RATIONALE: <one sentence, 15 words or less>"""
             max_tokens=80,
             messages=[{"role": "user", "content": prompt}]
         )
-        text = message.content[0].text.strip()
+        text = _msg_text(message)
         target_line    = next((l for l in text.split('\n') if l.startswith('TARGET:')), None)
         rationale_line = next((l for l in text.split('\n') if l.startswith('RATIONALE:')), None)
         if not target_line:
@@ -440,7 +447,7 @@ RATIONALE: <one sentence, 15 words or less>"""
             max_tokens=60,
             messages=[{"role": "user", "content": prompt}]
         )
-        text = message.content[0].text.strip()
+        text = _msg_text(message)
         lines_map = {}
         for line in text.split("\n"):
             if ":" in line:
@@ -566,7 +573,7 @@ Format exactly:
             max_tokens=900,
             messages=[{"role": "user", "content": prompt}]
         )
-        return message.content[0].text.strip()
+        return _msg_text(message)
     except Exception as e:
         return f"Synthesis unavailable: {str(e)}"
 
@@ -621,7 +628,7 @@ Format exactly:
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}]
         )
-        return message.content[0].text.strip()
+        return _msg_text(message)
     except Exception as e:
         return f"Synthesis unavailable: {str(e)}"
 
@@ -691,7 +698,7 @@ Format exactly:
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}]
         )
-        return message.content[0].text.strip()
+        return _msg_text(message)
     except Exception as e:
         return f"Synthesis unavailable: {str(e)}"
 
@@ -760,7 +767,7 @@ Format your response with these exact section headers:
             max_tokens=900,
             messages=[{"role": "user", "content": prompt}]
         )
-        return message.content[0].text.strip()
+        return _msg_text(message)
     except Exception as e:
         return f"Analysis unavailable: {str(e)}"
 
@@ -944,7 +951,7 @@ SUMMARY:
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}]
         )
-        text = message.content[0].text.strip()
+        text = _msg_text(message)
 
         # Parse WEIGHTS_JSON block
         if "WEIGHTS_JSON:" not in text:
@@ -1257,7 +1264,7 @@ Respond with ONLY a valid JSON object (no markdown, no code fences, no other tex
             max_tokens=1200,
             messages=[{"role": "user", "content": prompt}]
         )
-        text = message.content[0].text.strip()
+        text = _msg_text(message)
 
         # Try to parse as JSON directly; fallback: extract from code fence
         result = None
@@ -1476,7 +1483,7 @@ Bundle examples:
             system=system_prompt,
             messages=messages,
         )
-        raw = response.content[0].text.strip()
+        raw = _msg_text(response)
 
         # Parse out action JSON lines from the reply
         reply_lines = []
@@ -1633,7 +1640,7 @@ Be specific and concrete. Drop any audit language, fact-checking, or disclaimers
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}]
         )
-        return msg.content[0].text.strip()
+        return _msg_text(msg)
     except Exception:
         return existing_analysis
 
@@ -1690,7 +1697,7 @@ Be specific and concrete. Use bullet points."""
                 ]
             }]
         )
-        vision_text = vision_msg.content[0].text.strip()
+        vision_text = _msg_text(vision_msg)
 
         # Parse the move date
         move_date = None
@@ -1743,7 +1750,7 @@ Be specific with numbers. Use bullet points."""
                 max_tokens=700,
                 messages=[{"role": "user", "content": enrich_prompt}]
             )
-            return enrich_msg.content[0].text.strip()
+            return _msg_text(enrich_msg)
 
         # Return chart-only analysis if no historical data available
         return vision_text

@@ -13,6 +13,24 @@ from app.scoring_engine import score_stock, score_stock_squeeze, DEFAULT_SQUEEZE
 from app.database import get_squeeze_weights, get_autoai_weights
 
 
+def _yf_download_with_retry(tickers, period="6mo", interval="1d", max_retries=3, **kwargs):
+    """
+    Wrapper around yf.download() with exponential backoff retry.
+    Retries on exception (network error, rate limit, etc.) up to max_retries times.
+    Raises the last exception if all retries fail.
+    """
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            return yf.download(tickers, period=period, interval=interval, **kwargs)
+        except Exception as e:
+            last_exc = e
+            wait = 2 ** attempt  # 1s, 2s, 4s
+            print(f"yf.download attempt {attempt + 1}/{max_retries} failed: {e} — retrying in {wait}s")
+            time.sleep(wait)
+    raise last_exc
+
+
 def _tod_factor() -> float:
     """
     Returns the factor that projects partial-day volume to end-of-day,
@@ -460,11 +478,14 @@ def prepare_dataframe(df):
     # FinViz projects today's partial volume to end-of-day before dividing
     # by the 63-day average.  We apply the same factor to the latest bar only.
     rolling_mean = df["volume"].rolling(63).mean()
+    # Replace zero rolling mean with NaN to avoid Inf/NaN propagation into scores
+    rolling_mean = rolling_mean.replace(0, float("nan"))
     df["relative_volume"] = df["volume"] / rolling_mean
     factor = _tod_factor()
-    if factor != 1.0:
+    last_mean = rolling_mean.iloc[-1]
+    if factor != 1.0 and last_mean and last_mean > 0:
         df.loc[df.index[-1], "relative_volume"] = (
-            df["volume"].iloc[-1] * factor / rolling_mean.iloc[-1]
+            df["volume"].iloc[-1] * factor / last_mean
         )
 
     # RSI(14)
@@ -532,7 +553,7 @@ def run_scan(mode="standard", premarket: bool = False):
     # One batch call is safe and also faster (single HTTP round-trip).
     print(f"Downloading price data for {len(tickers)} symbol(s)...")
     try:
-        raw = yf.download(
+        raw = _yf_download_with_retry(
             tickers if len(tickers) > 1 else tickers[0],
             period="6mo",
             interval="1d",
@@ -541,7 +562,7 @@ def run_scan(mode="standard", premarket: bool = False):
             group_by="ticker",
         )
     except Exception as e:
-        print(f"Batch download failed: {e}")
+        print(f"Batch download failed after retries: {e}")
         return {"results": results, "summary": summary}
 
     # Extract a clean per-symbol DataFrame from the batch result
@@ -664,7 +685,7 @@ def compute_5m_relvol(tickers: list) -> dict:
           f"{len(tickers)} symbol(s)...")
 
     try:
-        raw = yf.download(
+        raw = _yf_download_with_retry(
             tickers if len(tickers) > 1 else tickers[0],
             period="60d",
             interval="5m",
@@ -673,7 +694,7 @@ def compute_5m_relvol(tickers: list) -> dict:
             group_by="ticker",
         )
     except Exception as e:
-        print(f"5m Spike: 5m batch download failed — {e}")
+        print(f"5m Spike: 5m batch download failed after retries — {e}")
         return {}
 
     results_5m = {}
@@ -773,7 +794,7 @@ def run_scan_5m() -> dict:
     # 6-month daily OHLCV for the squeeze scorer (RSI, MACD, Bollinger, etc.)
     print(f"5m Spike: downloading 6-month daily data for {len(tickers)} symbol(s)...")
     try:
-        raw_daily = yf.download(
+        raw_daily = _yf_download_with_retry(
             tickers if len(tickers) > 1 else tickers[0],
             period="6mo",
             interval="1d",
@@ -782,7 +803,7 @@ def run_scan_5m() -> dict:
             group_by="ticker",
         )
     except Exception as e:
-        print(f"5m Spike: daily download failed — {e}")
+        print(f"5m Spike: daily download failed after retries — {e}")
         return {"results": results, "summary": summary}
 
     dfs = {}

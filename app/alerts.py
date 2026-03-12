@@ -38,15 +38,20 @@ def _send_email(subject: str, body: str):
 
 def send_weekly_report_email(subject: str, html_body: str):
     """
-    Send the weekly analysis report to fixed recipients.
-    Requires GMAIL_USER and GMAIL_APP_PASSWORD env vars.
+    Send the weekly analysis report to recipients configured via WEEKLY_REPORT_RECIPIENTS
+    env var (comma-separated email addresses).
+    Requires GMAIL_USER, GMAIL_APP_PASSWORD, and WEEKLY_REPORT_RECIPIENTS env vars.
     """
     user = os.environ.get("GMAIL_USER")
     pwd  = os.environ.get("GMAIL_APP_PASSWORD")
+    recipients_raw = os.environ.get("WEEKLY_REPORT_RECIPIENTS", "")
     if not all([user, pwd]):
         print("WEEKLY EMAIL: GMAIL_USER or GMAIL_APP_PASSWORD not set — skipping")
         return
-    recipients = ["mboerner32@gmail.com", "gvgiebel@gmail.com"]
+    recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
+    if not recipients:
+        print("WEEKLY EMAIL: WEEKLY_REPORT_RECIPIENTS env var not set — skipping")
+        return
     msg = MIMEMultipart("alternative")
     msg["From"]    = user
     msg["To"]      = ", ".join(recipients)

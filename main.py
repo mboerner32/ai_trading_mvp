@@ -142,6 +142,7 @@ from app.database import (
     count_auto_trades_today,
     get_alerted_symbols_today,
     update_high_watermark,
+    is_user_admin,
 )
 from app.ml_optimizer import train_xgb_weights, get_xgb_status
 
@@ -158,6 +159,7 @@ app.add_middleware(
     secret_key=_session_secret,
     https_only=True,      # cookie only sent over HTTPS (Render always uses HTTPS)
     same_site="strict",   # mitigates CSRF
+    max_age=3600,         # sessions expire after 1 hour of inactivity
 )
 
 # Security headers on every response
@@ -227,7 +229,8 @@ def _trading_days_since(opened_at_iso: str) -> int:
             if cur.weekday() < 5:   # Mon=0 … Fri=4
                 days += 1
         return days
-    except Exception:
+    except Exception as _e:
+        print(f"TRADING-DAYS: failed to compute days since {opened_at_iso}: {_e}")
         return 0
 
 
@@ -249,6 +252,12 @@ def _autoclose_take_profit() -> list:
         entry    = pos["entry_price"]
         trade_id = pos["trade_id"]
         mode     = pos.get("trade_mode") or ""
+
+        # Guard: malformed trade record — skip rather than crash
+        if not entry or entry <= 0:
+            print(f"MONEY-MGMT: skipping {symbol} trade_id={trade_id} — invalid entry_price {entry!r}")
+            continue
+
         price    = _fetch_current_price(symbol, entry)
         if not price or price <= 0:
             continue
@@ -276,8 +285,9 @@ def _autoclose_take_profit() -> list:
         if mode not in ("squeeze", "autoai"):
             continue
 
-        model_label   = _MODEL_LABELS.get(mode, mode)
+        model_label    = _MODEL_LABELS.get(mode, mode)
         high_watermark = pos.get("high_watermark") or entry
+        # entry already validated > 0 above
         peak_pct       = (high_watermark - entry) / entry * 100
         trading_days   = _trading_days_since(pos["opened_at"])
         close_reason   = None
@@ -349,7 +359,10 @@ def _auto_learn():
         save_auto_learn_count(current_count)
         print("AUTO-LEARN: complete")
     except Exception as e:
-        print(f"AUTO-LEARN: failed — {e}")
+        import traceback
+        msg = f"AUTO-LEARN: failed — {e}\n{traceback.format_exc()}"
+        print(msg)
+        _send_telegram_admin(f"<b>⚠️ AUTO-LEARN ERROR</b>\n<code>{str(e)[:300]}</code>")
 
 
 AUTOAI_CONFIDENCE_HYPOTHESIS = 80   # >= auto-activate hypothesis
@@ -363,6 +376,23 @@ import collections as _collections
 _chat_rate: dict[str, _collections.deque] = {}
 _CHAT_RATE_WINDOW = 60      # seconds
 _CHAT_RATE_MAX    = 20      # messages per window
+
+# Global Claude API rate limiter — caps total API calls across all users/sources
+# to prevent runaway spend from multiple sessions or scheduled tasks firing simultaneously.
+_global_claude_calls: _collections.deque = _collections.deque()
+_GLOBAL_CLAUDE_MAX    = 60   # max Claude API calls per minute across all users
+_GLOBAL_CLAUDE_WINDOW = 60   # seconds
+
+def _global_claude_allowed() -> bool:
+    """Returns False if the global Claude API rate limit is exceeded."""
+    now = _time.monotonic()
+    while _global_claude_calls and now - _global_claude_calls[0] > _GLOBAL_CLAUDE_WINDOW:
+        _global_claude_calls.popleft()
+    if len(_global_claude_calls) >= _GLOBAL_CLAUDE_MAX:
+        print(f"CLAUDE RATE LIMIT: global cap of {_GLOBAL_CLAUDE_MAX} calls/min reached — request dropped")
+        return False
+    _global_claude_calls.append(now)
+    return True
 
 def _chat_allowed(username: str) -> bool:
     now = _time.monotonic()
@@ -544,7 +574,10 @@ def _auto_ai_optimize():
         print(f"AUTO-AI: complete — {hypotheses_auto} auto-activated, "
               f"{hypotheses_pending} pending, weights={'applied' if weights_auto_applied else 'skipped'}")
     except Exception as e:
-        print(f"AUTO-AI: failed — {e}")
+        import traceback
+        msg = f"AUTO-AI: failed — {e}\n{traceback.format_exc()}"
+        print(msg)
+        _send_telegram_admin(f"<b>⚠️ AUTO-AI ERROR</b>\n<code>{str(e)[:300]}</code>")
 
 
 def _enrich_high_scorers(results: list, mode: str = None) -> list:
@@ -678,9 +711,9 @@ def _scheduled_scan():
     et_now    = datetime.datetime.now(pytz.timezone("America/New_York"))
     today_str = et_now.date().isoformat()
 
-    # Reset daily dedup set on each new trading day
+    # Reset daily dedup set on each new trading day — re-seed from DB to survive restarts
     if today_str != _alerted_date:
-        _alerted_today = set()
+        _alerted_today = get_alerted_symbols_today(today_str)
         _alerted_date  = today_str
 
     for mode in ["autoai", "squeeze", "strict", "standard"]:
@@ -801,9 +834,9 @@ def _intraday_scan():
     et_now    = datetime.datetime.now(pytz.timezone("America/New_York"))
     today_str = et_now.date().isoformat()
 
-    # Safety: reset dedup set if we somehow missed the morning reset
+    # Safety: re-seed from DB if we somehow missed the morning reset
     if today_str != _alerted_date:
-        _alerted_today = set()
+        _alerted_today = get_alerted_symbols_today(today_str)
         _alerted_date  = today_str
 
     print(f"INTRADAY SCAN: running at {et_now.strftime('%H:%M')} ET...")
@@ -874,7 +907,7 @@ def _fivemin_spike_scan():
         return
 
     if today_str != _alerted_date:
-        _alerted_today = set()
+        _alerted_today = get_alerted_symbols_today(today_str)
         _alerted_date  = today_str
 
     print(f"5M SPIKE SCAN: running at {et_now.strftime('%H:%M')} ET...")
@@ -943,8 +976,8 @@ def _check_watchlist():
                     sym_df = raw[sym].copy()
                     if not sym_df.empty:
                         dfs[sym] = sym_df
-                except Exception:
-                    pass
+                except Exception as _e:
+                    print(f"WATCHLIST: failed to extract data for {sym}: {_e}")
 
         weights_data   = get_squeeze_weights()
         active_weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS
@@ -1139,8 +1172,8 @@ def _weekly_analysis():
                 if days_since < 7:
                     cooldown_active = True
                     lines.append(f"\n&#128274; Weight change cooldown active ({days_since}d since last change — need 7d). No proposals this week.")
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"WEEKLY: failed to compute cooldown: {_e}")
 
         # Proposed changes: require n≥100 AND no cooldown AND ≥5pp deviation
         proposals = []
@@ -1264,9 +1297,22 @@ def _validate_symbol(raw: str) -> str | None:
 
 
 # ---------------- HEALTH CHECK ----------------
+_health_calls: dict = {}   # {ip: [timestamp, ...]}
+_HEALTH_MAX        = 60    # max calls per window
+_HEALTH_WINDOW_SEC = 60    # 1-minute window
+
 @app.get("/health")
 @app.head("/health")
-def health():
+def health(request: Request):
+    ip  = request.client.host if request.client else "unknown"
+    now = _time.time()
+    q   = _health_calls.setdefault(ip, [])
+    # Evict timestamps outside the window
+    while q and now - q[0] > _HEALTH_WINDOW_SEC:
+        q.pop(0)
+    if len(q) >= _HEALTH_MAX:
+        return Response(status_code=429)
+    q.append(now)
     return Response(status_code=200)
 
 
@@ -1403,8 +1449,8 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
                 # Tag which hypothesis rules were active — enables per-rule win rate tracking
                 if active_rule_ids:
                     save_scan_active_rules(scan_id, active_rule_ids)
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"AI-ENRICH: failed to save AI rec for scan_id={scan_id}: {_e}")
 
     with ThreadPoolExecutor(max_workers=5) as executor:
         list(executor.map(_ai_enrich, scan_data["results"]))
@@ -1513,8 +1559,8 @@ def trades_page(request: Request):
             opened_dt = datetime.datetime.fromisoformat(pos["opened_at"].replace(" ", "T"))
             if (now - opened_dt).total_seconds() < 300:
                 continue
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"TRADES: failed to parse opened_at for {pos.get('symbol','?')}: {_e}")
         take_profit_target = pos.get("take_profit_pct", 20.0)
         target_price = pos["entry_price"] * (1 + take_profit_target / 100)
         current_price = _fetch_current_price(pos["symbol"], pos["entry_price"])
@@ -1803,8 +1849,10 @@ def _run_hypothesis_and_weights(all_feedback: list):
                 opt_result.get("rationale", ""),
                 opt_result["weights"],
             )
-    except Exception:
-        pass
+    except Exception as e:
+        import traceback
+        print(f"HYPOTHESIS/WEIGHTS background task failed — {e}\n{traceback.format_exc()}")
+        _send_telegram_admin(f"<b>⚠️ HYPOTHESIS UPDATE ERROR</b>\n<code>{str(e)[:300]}</code>")
 
 
 @app.post("/feedback", response_class=HTMLResponse)
@@ -2045,7 +2093,7 @@ def optimize_complex(request: Request):
 # ---------------- APPLY MODEL UPDATE ----------------
 @app.post("/revert-weights/{changelog_id}")
 def revert_weights(request: Request, changelog_id: int):
-    if "user" not in request.session or request.session["user"] != "admin":
+    if "user" not in request.session or not _require_admin(request):
         return RedirectResponse("/login", status_code=303)
     changelog = get_weight_changelog(limit=100)
     entry = next((e for e in changelog if e["id"] == changelog_id), None)
@@ -2289,7 +2337,7 @@ def health_page(request: Request):
 def run_health_check_now(request: Request):
     if "user" not in request.session:
         return RedirectResponse("/login", status_code=303)
-    if request.session.get("user") != "admin":
+    if not _require_admin(request):
         return RedirectResponse("/health", status_code=303)
     threading.Thread(target=run_health_checks, daemon=True).start()
     return RedirectResponse("/health?ran=1", status_code=303)
@@ -2539,7 +2587,8 @@ def alpaca_test_order(request: Request, symbol: str = "LGVN", amount: float = 10
         ticker_price = fi.last_price  # attribute access, not dict .get()
         if not ticker_price or ticker_price <= 0:
             ticker_price = None
-    except Exception:
+    except Exception as _e:
+        print(f"PRICE FETCH: yfinance error for {symbol}: {_e}")
         ticker_price = None
 
     if ticker_price is None:
@@ -2611,6 +2660,8 @@ async def api_chat(request: Request):
     username = request.session["user"]
     if not _chat_allowed(username):
         return JSONResponse({"error": "Rate limit exceeded — please wait a moment."}, status_code=429)
+    if not _global_claude_allowed():
+        return JSONResponse({"error": "Server AI rate limit reached — try again in a minute."}, status_code=429)
     body = await request.json()
     message = (body.get("message") or "").strip()
     history = body.get("history") or []
@@ -2903,9 +2954,12 @@ async def telegram_add_recipient_ajax(request: Request):
 
 
 # ---------------- USER MANAGEMENT (admin only) ----------------
-def _require_admin(request: Request):
-    """Returns True if the current session user is 'admin', else False."""
-    return request.session.get("user") == "admin"
+def _require_admin(request: Request) -> bool:
+    """Returns True if the current session user has is_admin=1 in the DB."""
+    username = request.session.get("user")
+    if not username:
+        return False
+    return is_user_admin(username)
 
 
 @app.get("/users", response_class=HTMLResponse)
@@ -3047,7 +3101,8 @@ async def feedback_import_backup(request: Request):
             return RedirectResponse("/feedback?import_error=invalid_format", status_code=303)
         count = import_feedback_from_backup(entries)
         return RedirectResponse(f"/feedback?imported={count}", status_code=303)
-    except Exception:
+    except Exception as _e:
+        print(f"FEEDBACK IMPORT: failed — {_e}")
         return RedirectResponse("/feedback?import_error=parse_error", status_code=303)
 
 

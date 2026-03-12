@@ -76,8 +76,7 @@ def submit_market_order(symbol: str, notional: float, price: float = None) -> di
 
         # Attempt 2: whole-share qty fallback for non-fractionable stocks
         if price and price > 0:
-            import math
-            qty = math.floor(notional / price)
+            qty = round(notional / price)  # round (not floor) to minimize truncation loss
             if qty < 1:
                 print(f"ALPACA FALLBACK SKIPPED [{symbol}]: price ${price} too high for ${notional} budget")
                 return None

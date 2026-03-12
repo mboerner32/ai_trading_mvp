@@ -431,6 +431,18 @@ def create_user(username: str, password: str):
     conn.close()
 
 
+def is_user_admin(username: str) -> bool:
+    """Return True if the given username has is_admin=1 in the DB."""
+    if not username:
+        return False
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COALESCE(is_admin, 0) FROM users WHERE username = ?", (username,))
+    row = cursor.fetchone()
+    conn.close()
+    return bool(row and row[0])
+
+
 def get_all_users() -> list:
     """Return list of all users (id, username, is_admin). Passwords excluded."""
     conn = sqlite3.connect(DB_NAME)
@@ -467,9 +479,18 @@ def seed_users():
          SEED_USERS=[{"username":"kelly","password":"her_password"},{"username":"rob","password":"his_password"}]
     """
     import os as _os
+    admin_pw = _os.environ.get("ADMIN_PASSWORD")
+    bob_pw   = _os.environ.get("BOB_PASSWORD")
+    if not admin_pw:
+        print("STARTUP WARNING: ADMIN_PASSWORD env var not set — admin account will NOT be seeded. "
+              "Set ADMIN_PASSWORD in Render environment variables.")
+    if not bob_pw:
+        print("STARTUP WARNING: BOB_PASSWORD env var not set — BobbyAxelrod account will NOT be seeded.")
     defaults = [
-        ("admin",        _os.environ.get("ADMIN_PASSWORD", "Billions1!")),
-        ("BobbyAxelrod", _os.environ.get("BOB_PASSWORD",   "Billions")),
+        (u, p) for u, p in [
+            ("admin",        admin_pw),
+            ("BobbyAxelrod", bob_pw),
+        ] if p  # skip accounts with no password configured
     ]
 
     # Load extra users from SEED_USERS env var (JSON array)
