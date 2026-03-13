@@ -580,13 +580,15 @@ def _auto_ai_optimize():
         _send_telegram_admin(f"<b>⚠️ AUTO-AI ERROR</b>\n<code>{str(e)[:300]}</code>")
 
 
-def _enrich_high_scorers(results: list, mode: str = None) -> list:
+def _enrich_high_scorers(results: list, mode: str = None, scan_id_map: dict = None) -> list:
     """
     For each stock scoring >= 50, add lstm_prob and ai_trade_call to the result dict.
     Called during scheduled and intraday scans so alerts carry full AI context.
     Runs in parallel (max 4 workers); gracefully skips on error.
     mode is passed through to get_active_hypothesis_text() so Auto AI uses its own
     rules and Complex+AI is fully isolated from Auto AI auto-applied rules.
+    scan_id_map: {symbol: scan_id} from save_scan() — when provided, persists
+    lstm_prob and ai_trade_rec to the DB so outcomes can be back-analyzed later.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -624,6 +626,16 @@ def _enrich_high_scorers(results: list, mode: str = None) -> list:
                 lstm_prob=lstm_prob, news_headlines=news,
                 ai_accuracy=ai_accuracy, per_signal_stats=_per_signal
             )
+            # Persist lstm_prob + ai_trade_rec to DB so outcomes can be back-analyzed
+            if scan_id_map:
+                scan_id = scan_id_map.get(stock.get("symbol"))
+                if scan_id:
+                    try:
+                        tc = stock["ai_trade_call"]
+                        update_scan_ai_rec(scan_id, tc["decision"], tc["confidence"],
+                                           tc["rationale"], lstm_prob=lstm_prob)
+                    except Exception as _db_e:
+                        print(f"ENRICH: failed to persist ai_rec for {stock['symbol']}: {_db_e}")
         except Exception as e:
             print(f"ENRICH: {stock['symbol']} failed — {e}")
 
@@ -719,14 +731,14 @@ def _scheduled_scan():
     for mode in ["autoai", "squeeze", "strict", "standard"]:
         try:
             data = run_scan(mode=mode)
-            save_scan(data["results"], mode)
+            scan_ids = save_scan(data["results"], mode)
             save_scan_candidates(data["results"], mode)
             save_scan_cache(mode, data["results"], data["summary"])
             print(f"SCHEDULER: {mode} scan complete ({len(data['results'])} results)")
             if mode in ("autoai", "squeeze"):
                 label = "Auto AI" if mode == "autoai" else "Complex + AI"
-                # Enrich score >= 50 with AI calls + LSTM before alerting
-                _enrich_high_scorers(data["results"], mode=mode)
+                # Enrich score >= 50 with AI calls + LSTM before alerting; persist to DB
+                _enrich_high_scorers(data["results"], mode=mode, scan_id_map=scan_ids)
                 # Auto paper-trade FIRST so Alpaca order is queued before Telegram fires
                 traded = _auto_paper_trade(data["results"], today_str)
                 # Alert all AI TRADE calls regardless of score
@@ -755,9 +767,9 @@ def _premarket_scan():
     today_str = datetime.datetime.now(pytz.timezone("America/New_York")).date().isoformat()
     try:
         data = run_scan(mode="squeeze", premarket=True)
-        save_scan(data["results"], "squeeze")   # persist for hypothesis testing
+        scan_ids = save_scan(data["results"], "squeeze")   # persist for hypothesis testing
         save_scan_cache("squeeze", data["results"], data["summary"])
-        _enrich_high_scorers(data["results"], mode="squeeze")
+        _enrich_high_scorers(data["results"], mode="squeeze", scan_id_map=scan_ids)
         traded = _auto_paper_trade(data["results"], today_str)
         send_scan_alert(data["results"], "Complex + AI (pre-market)", min_score=0, ai_trade_only=True, traded_symbols=traded)
         print(f"SCHEDULER: pre-market scan complete ({len(data['results'])} results)")
@@ -842,7 +854,7 @@ def _intraday_scan():
     print(f"INTRADAY SCAN: running at {et_now.strftime('%H:%M')} ET...")
     try:
         data = run_scan(mode="squeeze")
-        save_scan(data["results"], "squeeze")
+        scan_ids = save_scan(data["results"], "squeeze")
         save_scan_cache("squeeze", data["results"], data["summary"])
 
         # Also save Auto AI cache (uses its own weights; same raw results for intraday)
@@ -853,13 +865,13 @@ def _intraday_scan():
         except Exception as ae:
             print(f"INTRADAY SCAN: autoai cache update failed — {ae}")
 
-        # Enrich score >= 50 stocks not yet alerted
+        # Enrich score >= 50 stocks not yet alerted; persist lstm_prob + ai_trade_rec to DB
         new_candidates = [
             r for r in data["results"]
             if r.get("symbol") not in _alerted_today
         ]
         if new_candidates:
-            _enrich_high_scorers(data["results"], mode="squeeze")
+            _enrich_high_scorers(data["results"], mode="squeeze", scan_id_map=scan_ids)
         # Alert all AI TRADE calls regardless of score
         new_alerts = [
             r for r in data["results"]
@@ -913,7 +925,7 @@ def _fivemin_spike_scan():
     print(f"5M SPIKE SCAN: running at {et_now.strftime('%H:%M')} ET...")
     try:
         data = run_scan_5m()
-        save_scan(data["results"], "fivemin")
+        scan_ids = save_scan(data["results"], "fivemin")
         # Save ALL screened candidates (including low-score) for hypothesis observation pool
         save_scan_candidates(data["results"], "fivemin")
         save_scan_cache("fivemin", data["results"], data["summary"])
@@ -923,7 +935,7 @@ def _fivemin_spike_scan():
             if r.get("score", 0) >= 75 and r.get("symbol") not in _alerted_today
         ]
         if new_alerts:
-            _enrich_high_scorers(new_alerts, mode="fivemin")
+            _enrich_high_scorers(new_alerts, mode="fivemin", scan_id_map=scan_ids)
             traded = _auto_paper_trade(new_alerts, today_str, mode="fivemin")
             send_scan_alert(new_alerts, f"5m Spike {et_now.strftime('%H:%M')}", traded_symbols=traded)
             for r in new_alerts:
@@ -1445,7 +1457,8 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
         if scan_id:
             try:
                 tc = stock["ai_trade_call"]
-                update_scan_ai_rec(scan_id, tc["decision"], tc["confidence"], tc["rationale"])
+                update_scan_ai_rec(scan_id, tc["decision"], tc["confidence"], tc["rationale"],
+                                   lstm_prob=lstm_prob)
                 # Tag which hypothesis rules were active — enables per-rule win rate tracking
                 if active_rule_ids:
                     save_scan_active_rules(scan_id, active_rule_ids)

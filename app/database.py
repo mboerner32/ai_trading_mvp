@@ -374,6 +374,13 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # column already exists
 
+    # Migration: LSTM hit-probability at scan time (0.0–1.0, NULL if not run)
+    try:
+        cursor.execute("ALTER TABLE scans ADD COLUMN lstm_prob REAL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
     conn.close()
     _seed_user_observations()
 
@@ -966,14 +973,16 @@ def save_scan_candidates(candidates: list, mode: str):
     conn.close()
 
 
-def update_scan_ai_rec(scan_id: int, decision: str, confidence: str, rationale: str):
-    """Persists the AI trade recommendation to the scans table."""
+def update_scan_ai_rec(scan_id: int, decision: str, confidence: str, rationale: str,
+                       lstm_prob: float = None):
+    """Persists the AI trade recommendation and LSTM probability to the scans table."""
     import json
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(
-        "UPDATE scans SET ai_trade_rec = ? WHERE id = ?",
-        (json.dumps({"decision": decision, "confidence": confidence, "rationale": rationale}), scan_id)
+        "UPDATE scans SET ai_trade_rec = ?, lstm_prob = ? WHERE id = ?",
+        (json.dumps({"decision": decision, "confidence": confidence, "rationale": rationale}),
+         lstm_prob, scan_id)
     )
     conn.commit()
     conn.close()
