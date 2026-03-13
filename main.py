@@ -645,6 +645,24 @@ def _enrich_high_scorers(results: list, mode: str = None, scan_id_map: dict = No
     return results
 
 
+_LSTM_GATE = 0.55   # minimum LSTM probability for alerts and paper trades
+_LSTM_NONE_MIN_SCORE = 75  # if LSTM unavailable, require this score floor instead
+
+
+def _passes_lstm_gate(r: dict) -> bool:
+    """
+    Returns True if the stock passes the LSTM quality gate:
+      - lstm_prob >= 55%  (model agrees the setup is likely to hit)
+      - OR lstm_prob is None AND score >= 75  (no model data but very high scorer)
+    Stocks with lstm_prob < 55% or (None + score < 75) are filtered out.
+    """
+    lstm = r.get("lstm_prob")
+    score = r.get("score", 0)
+    if lstm is None:
+        return score >= _LSTM_NONE_MIN_SCORE
+    return lstm >= _LSTM_GATE
+
+
 def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze") -> set:
     """
     Open paper trades for TRADE calls (HIGH or MEDIUM confidence) found in enriched scan results.
@@ -671,6 +689,9 @@ def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze") -> s
     for r in results:
         tc = r.get("ai_trade_call") or {}
         if tc.get("decision") != "TRADE" or tc.get("confidence") not in ("HIGH", "MEDIUM"):
+            continue
+        if not _passes_lstm_gate(r):
+            print(f"AUTO-TRADE: {r.get('symbol')} skipped — LSTM {r.get('lstm_prob')} below 55% gate")
             continue
         symbol = r["symbol"]
         if symbol in open_symbols:
@@ -741,11 +762,11 @@ def _scheduled_scan():
                 _enrich_high_scorers(data["results"], mode=mode, scan_id_map=scan_ids)
                 # Auto paper-trade FIRST so Alpaca order is queued before Telegram fires
                 traded = _auto_paper_trade(data["results"], today_str)
-                # Alert all AI TRADE calls regardless of score
-                send_scan_alert(data["results"], label, min_score=0, ai_trade_only=True, traded_symbols=traded)
-                for r in data["results"]:
-                    if (r.get("score", 0) >= 50
-                            and (r.get("ai_trade_call") or {}).get("decision") == "TRADE"):
+                # Alert TRADE calls that pass LSTM quality gate (55%+ or None+score>=75)
+                gated_alerts = [r for r in data["results"] if _passes_lstm_gate(r)]
+                send_scan_alert(gated_alerts, label, min_score=0, ai_trade_only=True, traded_symbols=traded)
+                for r in gated_alerts:
+                    if (r.get("ai_trade_call") or {}).get("decision") == "TRADE":
                         _alerted_today.add(r.get("symbol"))
                 # Log near-misses (40-74) to watchlist for intraday re-checking
                 for r in data["results"]:
@@ -770,8 +791,9 @@ def _premarket_scan():
         scan_ids = save_scan(data["results"], "squeeze")   # persist for hypothesis testing
         save_scan_cache("squeeze", data["results"], data["summary"])
         _enrich_high_scorers(data["results"], mode="squeeze", scan_id_map=scan_ids)
-        traded = _auto_paper_trade(data["results"], today_str)
-        send_scan_alert(data["results"], "Complex + AI (pre-market)", min_score=0, ai_trade_only=True, traded_symbols=traded)
+        gated = [r for r in data["results"] if _passes_lstm_gate(r)]
+        traded = _auto_paper_trade(gated, today_str)
+        send_scan_alert(gated, "Complex + AI (pre-market)", min_score=0, ai_trade_only=True, traded_symbols=traded)
         print(f"SCHEDULER: pre-market scan complete ({len(data['results'])} results)")
     except Exception as e:
         print(f"SCHEDULER: pre-market scan failed — {e}")
@@ -872,11 +894,12 @@ def _intraday_scan():
         ]
         if new_candidates:
             _enrich_high_scorers(data["results"], mode="squeeze", scan_id_map=scan_ids)
-        # Alert all AI TRADE calls regardless of score
+        # Alert AI TRADE calls that pass the LSTM quality gate
         new_alerts = [
             r for r in data["results"]
             if (r.get("ai_trade_call") or {}).get("decision") == "TRADE"
             and r.get("symbol") not in _alerted_today
+            and _passes_lstm_gate(r)
         ]
         if new_alerts:
             traded = _auto_paper_trade(new_alerts, today_str)
@@ -936,9 +959,10 @@ def _fivemin_spike_scan():
         ]
         if new_alerts:
             _enrich_high_scorers(new_alerts, mode="fivemin", scan_id_map=scan_ids)
-            traded = _auto_paper_trade(new_alerts, today_str, mode="fivemin")
-            send_scan_alert(new_alerts, f"5m Spike {et_now.strftime('%H:%M')}", traded_symbols=traded)
-            for r in new_alerts:
+            gated_5m = [r for r in new_alerts if _passes_lstm_gate(r)]
+            traded = _auto_paper_trade(gated_5m, today_str, mode="fivemin")
+            send_scan_alert(gated_5m, f"5m Spike {et_now.strftime('%H:%M')}", traded_symbols=traded)
+            for r in new_alerts:  # mark all as alerted regardless of gate
                 _alerted_today.add(r.get("symbol"))
 
         # Check take-profit on open positions every 5m cycle
@@ -1293,9 +1317,13 @@ def _fetch_current_price(symbol: str, fallback: float) -> float:
         price = fi.previous_close
         if price and price > 0:
             return float(price)
-    except Exception:
-        pass
-    return fallback
+    except Exception as _e:
+        print(f"PRICE FETCH: {symbol} live price failed ({_e}) — trying scan price fallback")
+    if fallback and fallback > 0:
+        print(f"PRICE FETCH: {symbol} using scan price fallback ${fallback:.4f}")
+        return float(fallback)
+    print(f"PRICE FETCH: {symbol} no valid price — paper trade will be skipped")
+    return 0.0
 
 
 # Stock ticker symbols: 1–10 uppercase letters/digits, optional .A/.B suffix (e.g. BRK.A)

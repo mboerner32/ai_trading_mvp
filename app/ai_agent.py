@@ -326,11 +326,17 @@ def recommend_trade(stock: dict, hypothesis: str = None,
     market_section = f"\nMarket context: Today is {day_name} (historical hit rate: {_dow_hit.get(day_name, 'N/A')})."
 
     # Context 5: LSTM model prediction
-    lstm_section = ""
     if lstm_prob is not None:
         lstm_section = (
             f"\nLSTM model (trained on historical setups): "
-            f"{lstm_prob:.0%} probability this stock hits +20% intraday within 7 days."
+            f"{lstm_prob:.0%} probability this stock hits +20% within 7 days. "
+            f"{'LSTM disagrees with a TRADE call — require exceptional signal alignment to override.' if lstm_prob < 0.50 else ''}"
+        )
+    else:
+        lstm_section = (
+            "\nLSTM model: unavailable (insufficient price history for this symbol). "
+            "Treat as a missing signal — do NOT assume the setup is strong. "
+            "Require 3+ strong confirming signals to call TRADE without LSTM."
         )
 
     # Context 6: recent news headlines
