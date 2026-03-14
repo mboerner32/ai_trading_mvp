@@ -7,9 +7,16 @@ from datetime import datetime, timedelta
 import yfinance as yf
 from passlib.context import CryptContext
 
-# On Render: mount a persistent disk at /data and set DB_PATH=/data/scan_history.db
-# Locally: falls back to scan_history.db in the project root
-DB_NAME = os.environ.get("DB_PATH", "scan_history.db")
+# Resolve DB path: explicit env var > auto-detect Render persistent disk > local fallback.
+# This ensures data always lands on the persistent volume even if DB_PATH is not set.
+def _resolve_db_path() -> str:
+    if os.environ.get("DB_PATH"):
+        return os.environ["DB_PATH"]
+    if os.path.isdir("/data"):
+        return "/data/scan_history.db"
+    return "scan_history.db"
+
+DB_NAME = _resolve_db_path()
 
 # ---------------------------------------------------------------------------
 # Simple thread-safe TTL cache for expensive read-only analytics aggregations.

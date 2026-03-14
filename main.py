@@ -143,6 +143,7 @@ from app.database import (
     get_alerted_symbols_today,
     update_high_watermark,
     is_user_admin,
+    DB_NAME as _DB_PATH,
 )
 from app.ml_optimizer import train_xgb_weights, get_xgb_status
 from app.stop_loss_optimizer import (
@@ -489,7 +490,7 @@ def _queue_stop_loss_proposal(model_type, current_params, proposed_params,
         "status":          "pending",
     }
     try:
-        conn = __import__("sqlite3").connect(__import__("os").environ.get("DB_PATH", "scan_history.db"))
+        conn = __import__("sqlite3").connect(_DB_PATH)
         conn.execute("""
             INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
@@ -1221,7 +1222,7 @@ def _weekly_analysis():
     and sends proposed weight changes for human approval — no auto-apply.
     """
     import sqlite3 as _sq
-    db_path = _os.environ.get("DB_PATH", "scan_history.db")
+    db_path = _DB_PATH
     if not _os.path.exists(db_path):
         print("WEEKLY ANALYSIS: DB not found, skipping")
         return
@@ -1358,6 +1359,44 @@ def _weekly_analysis():
             "ORDER BY timestamp DESC LIMIT 100"
         ).fetchall()
 
+        # Hit speed distribution — days until 20%+ hit
+        speed_rows = c.execute(
+            "SELECT days_to_20pct, COUNT(*) FROM scans "
+            "WHERE days_to_20pct IS NOT NULL GROUP BY days_to_20pct ORDER BY days_to_20pct"
+        ).fetchall()
+
+        # LSTM x score cross-tab (closed-window rows only)
+        lstm_score_rows = c.execute(
+            "SELECT "
+            "  CASE WHEN score>=65 THEN '65+' WHEN score>=55 THEN '55-64' "
+            "       WHEN score>=45 THEN '45-54' ELSE '0-44' END as bucket, "
+            "  COUNT(*) as n_all, "
+            "  ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) as hit_all, "
+            "  SUM(CASE WHEN lstm_prob>=0.55 THEN 1 ELSE 0 END) as n_gated, "
+            "  ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL AND lstm_prob>=0.55 THEN 1 ELSE 0 END)/"
+            "        NULLIF(SUM(CASE WHEN lstm_prob>=0.55 THEN 1 ELSE 0 END),0),1) as hit_gated "
+            "FROM scans WHERE next_day_return IS NOT NULL "
+            "  AND (days_to_20pct IS NOT NULL OR julianday('now')-julianday(timestamp)>=14) "
+            "GROUP BY bucket ORDER BY MIN(score) DESC"
+        ).fetchall()
+
+        # Day-of-week x LSTM cross-tab
+        dow_lstm_rows = c.execute(
+            "SELECT "
+            "  CASE strftime('%w',timestamp) WHEN '1' THEN 'Mon' WHEN '2' THEN 'Tue' "
+            "  WHEN '3' THEN 'Wed' WHEN '4' THEN 'Thu' WHEN '5' THEN 'Fri' END as d, "
+            "  COUNT(*) as n_all, "
+            "  ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) as hit_all, "
+            "  SUM(CASE WHEN lstm_prob>=0.55 THEN 1 ELSE 0 END) as n_gated, "
+            "  ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL AND lstm_prob>=0.55 THEN 1 ELSE 0 END)/"
+            "        NULLIF(SUM(CASE WHEN lstm_prob>=0.55 THEN 1 ELSE 0 END),0),1) as hit_gated "
+            "FROM scans WHERE next_day_return IS NOT NULL "
+            "  AND (days_to_20pct IS NOT NULL OR julianday('now')-julianday(timestamp)>=14) "
+            "GROUP BY d HAVING d IS NOT NULL "
+            "ORDER BY CASE d WHEN 'Mon' THEN 1 WHEN 'Tue' THEN 2 WHEN 'Wed' THEN 3 "
+            "                WHEN 'Thu' THEN 4 WHEN 'Fri' THEN 5 END"
+        ).fetchall()
+
         # Open paper trades
         open_trades = c.execute(
             "SELECT symbol, entry_price, position_size, opened_at, trade_mode, "
@@ -1374,70 +1413,170 @@ def _weekly_analysis():
 
         conn.close()
 
-        # --- Format Telegram message ---
-        lines = ["&#128200; <b>Weekly Model Analysis</b>",
-                 f"Labeled: {baseline_n} rows | Baseline hit rate: {baseline_hit}%",
-                 f"XGBoost eligible: {xgb_n}/500 | New labeled this week: {new_labeled}",
-                 ""]
-
-        lines.append("<b>Score Buckets</b>")
-        for b, n, hit in score_rows:
-            conf = "H" if n >= 30 else ("M" if n >= 10 else "L")
-            lines.append(f"  {b}: {hit}% ({n} rows, {conf})")
-
-        lines.append(f"\n<b>AI TRADE Precision</b>: {ai_pct}% ({ai_hits}/{ai_total} calls)")
-
-        lines.append("\n<b>Relvol Tiers</b>")
-        for t, n, hit in rv_rows:
-            conf = "H" if n >= 30 else ("M" if n >= 10 else "L")
-            lines.append(f"  {t}: {hit}% (n={n}, {conf})")
-
-        lines.append("\n<b>Daily Gain Buckets</b>")
-        for g, n, hit in gain_rows:
-            conf = "H" if n >= 30 else ("M" if n >= 10 else "L")
-            lines.append(f"  {g}: {hit}% (n={n}, {conf})")
-
-        lines.append("\n<b>Day of Week</b>")
-        for d, n, hit in dow_rows:
-            if d:
-                lines.append(f"  {d}: {hit}% (n={n})")
-
-        lines.append("\n<b>Float / Shares Buckets</b>")
-        if float_rows:
-            for bucket, n, hit in float_rows:
-                conf = "H" if n >= 30 else ("M" if n >= 10 else "L")
-                lines.append(f"  {bucket}: {hit}% (n={n}, {conf})")
-        else:
-            lines.append("  No data yet.")
-
-        if sig_rows:
-            top5 = [r for r in sig_rows[:5]]
-            bot5 = [r for r in sig_rows[-5:] if r not in top5]
-            lines.append("\n<b>Top Signals</b>")
-            for k, n, hit in top5:
-                vs = round(hit - baseline_hit, 1)
-                sign = "+" if vs >= 0 else ""
-                lines.append(f"  {k}: {hit}% ({sign}{vs}pp, n={n})")
-            lines.append("<b>Bottom Signals</b>")
-            for k, n, hit in bot5:
-                vs = round(hit - baseline_hit, 1)
-                lines.append(f"  {k}: {hit}% ({vs}pp, n={n})")
-
-        # ── LSTM Gate Validation ───────────────────────────────────────────
-        lb_n, lb_hit = lstm_baseline
-        lines.append(f"\n<b>LSTM Gate Validation</b> (label: hit 20%+ in 10d | baseline: {lb_hit}% n={lb_n})")
-        if lstm_gate_rows:
-            for gate, n, hit in lstm_gate_rows:
-                conf = "H" if n >= 30 else ("M" if n >= 10 else "L")
-                vs = round((hit or 0) - (lb_hit or 0), 1)
-                sign = "+" if vs >= 0 else ""
-                lines.append(f"  LSTM {gate}: {hit}% ({sign}{vs}pp, n={n}, {conf})")
-        else:
-            lines.append("  No LSTM-scored rows with outcomes yet.")
-
-        # ── Stop-Loss Parameters section ──────────────────────────────────
+        # ── helpers ───────────────────────────────────────────────────────
         import json as _json
-        lines.append("\n&#128683; <b>Stop-Loss Parameters</b>")
+
+        def _tbl_tg(headers, rows, col_widths):
+            """Format a table as monospace text for Telegram <code> block."""
+            fmt = "  " + "  ".join(f"{{:<{w}}}" for w in col_widths)
+            lines_out = [fmt.format(*headers)]
+            lines_out.append("  " + "  ".join("─" * w for w in col_widths))
+            for row in rows:
+                lines_out.append(fmt.format(*[str(v) for v in row]))
+            return "\n".join(lines_out)
+
+        def _tbl_html(headers, rows, col_colors=None):
+            """Format a table as HTML for email."""
+            th_style = "padding:4px 10px;text-align:left;border-bottom:2px solid #2c3e50;background:#f0f0f0"
+            td_style = "padding:3px 10px;border-bottom:1px solid #eee"
+            ths = "".join(f"<th style='{th_style}'>{h}</th>" for h in headers)
+            trs = []
+            for i, row in enumerate(rows):
+                tds = []
+                for j, v in enumerate(row):
+                    color = (col_colors or {}).get((i, j), "")
+                    s = f"color:{color};font-weight:bold" if color else ""
+                    tds.append(f"<td style='{td_style}{(';'+s) if s else ''}'>{v}</td>")
+                trs.append(f"<tr>{''.join(tds)}</tr>")
+            return (f"<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+                    f"<tr>{ths}</tr>{''.join(trs)}</table>")
+
+        def _conf(n): return "High" if n >= 30 else ("Med" if n >= 10 else "Low")
+        def _vs(hit, base): return f"{'+' if (hit or 0)>=base else ''}{round((hit or 0)-base,1)}pp"
+
+        # ── Build sections ────────────────────────────────────────────────
+        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        tg_parts  = []   # list of (text, use_code_block)
+        html_secs = []   # list of HTML strings
+
+        # Header
+        header = (f"📈 <b>Weekly Model Analysis — {date_str}</b>\n"
+                  f"Labeled: {baseline_n} | Baseline: {baseline_hit}% | "
+                  f"AI TRADE: {ai_pct}% ({ai_hits}/{ai_total})\n"
+                  f"XGBoost: {xgb_n}/500 eligible | New this week: {new_labeled}")
+        tg_parts.append((header, False))
+        html_secs.append(f"<h2 style='border-bottom:2px solid #2c3e50;padding-bottom:6px'>"
+                         f"📈 Weekly Model Analysis — {date_str}</h2>"
+                         f"<p><b>Labeled:</b> {baseline_n} | <b>Baseline:</b> {baseline_hit}% | "
+                         f"<b>AI TRADE:</b> {ai_pct}% ({ai_hits}/{ai_total}) | "
+                         f"<b>XGBoost:</b> {xgb_n}/500 | <b>New this week:</b> {new_labeled}</p>")
+
+        # Score Buckets
+        sb_rows = []
+        sb_colors = {}
+        for i, (b, n, hit) in enumerate(score_rows):
+            vs = _vs(hit, baseline_hit)
+            flag = " ⚠️" if b == "75-84" and (hit or 0) < baseline_hit else ""
+            sb_rows.append((b+flag, f"{hit}%", n, _conf(n), vs))
+            if (hit or 0) < baseline_hit - 2: sb_colors[(i,4)] = "#c0392b"
+            elif (hit or 0) > baseline_hit + 8: sb_colors[(i,4)] = "#27ae60"
+        tg_parts.append(("\n<b>SCORE BUCKETS</b>", False))
+        tg_parts.append((_tbl_tg(["Bucket","Hit%","n","Conf","vs Base"], sb_rows, [8,6,6,5,10]), True))
+        html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>Score Buckets</h3>"
+                         + _tbl_html(["Bucket","Hit Rate","n","Conf","vs Baseline"], sb_rows, sb_colors))
+
+        # Relvol Tiers
+        rv_tbl, rv_colors = [], {}
+        for i, (t, n, hit) in enumerate(rv_rows):
+            vs = _vs(hit, baseline_hit)
+            rv_tbl.append((t, f"{hit}%", n, _conf(n), vs))
+            if (hit or 0) < baseline_hit - 2: rv_colors[(i,4)] = "#c0392b"
+            elif (hit or 0) > baseline_hit + 15: rv_colors[(i,4)] = "#27ae60"
+        tg_parts.append(("\n<b>RELVOL TIERS</b>", False))
+        tg_parts.append((_tbl_tg(["Tier","Hit%","n","Conf","vs Base"], rv_tbl, [10,6,6,5,10]), True))
+        html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>Relvol Tiers</h3>"
+                         + _tbl_html(["Tier","Hit Rate","n","Conf","vs Baseline"], rv_tbl, rv_colors))
+
+        # Daily Gain Buckets
+        gn_tbl, gn_colors = [], {}
+        for i, (g, n, hit) in enumerate(gain_rows):
+            vs = _vs(hit, baseline_hit)
+            gn_tbl.append((g, f"{hit}%", n, _conf(n), vs))
+            if (hit or 0) < baseline_hit - 2: gn_colors[(i,4)] = "#c0392b"
+            elif (hit or 0) > baseline_hit + 5: gn_colors[(i,4)] = "#27ae60"
+        tg_parts.append(("\n<b>DAILY GAIN BUCKETS</b>", False))
+        tg_parts.append((_tbl_tg(["Bucket","Hit%","n","Conf","vs Base"], gn_tbl, [10,6,6,5,10]), True))
+        html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>Daily Gain Buckets</h3>"
+                         + _tbl_html(["Bucket","Hit Rate","n","Conf","vs Baseline"], gn_tbl, gn_colors))
+
+        # Day of Week
+        dow_tbl, dow_colors = [], {}
+        for i, (d, n, hit) in enumerate(dow_rows):
+            if not d: continue
+            vs = _vs(hit, baseline_hit)
+            flag = " ⚠️" if (hit or 0) < 25 else ""
+            dow_tbl.append((d+flag, f"{hit}%", n, vs))
+            if (hit or 0) < 25: dow_colors[(i,3)] = "#c0392b"
+            elif (hit or 0) > baseline_hit + 3: dow_colors[(i,3)] = "#27ae60"
+        tg_parts.append(("\n<b>DAY OF WEEK</b>", False))
+        tg_parts.append((_tbl_tg(["Day","Hit%","n","vs Base"], dow_tbl, [7,6,6,10]), True))
+        html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>Day of Week</h3>"
+                         + _tbl_html(["Day","Hit Rate","n","vs Baseline"], dow_tbl, dow_colors))
+
+        # Float Buckets
+        fl_tbl, fl_colors = [], {}
+        for i, (b, n, hit) in enumerate(float_rows):
+            vs = _vs(hit, baseline_hit)
+            fl_tbl.append((b, f"{hit}%", n, _conf(n), vs))
+            if (hit or 0) < baseline_hit - 5: fl_colors[(i,4)] = "#c0392b"
+            elif (hit or 0) > baseline_hit + 8: fl_colors[(i,4)] = "#27ae60"
+        tg_parts.append(("\n<b>FLOAT / SHARES BUCKETS</b>", False))
+        if fl_tbl:
+            tg_parts.append((_tbl_tg(["Bucket","Hit%","n","Conf","vs Base"], fl_tbl, [10,6,6,5,10]), True))
+            html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>Float / Shares Buckets</h3>"
+                             + _tbl_html(["Bucket","Hit Rate","n","Conf","vs Baseline"], fl_tbl, fl_colors))
+        else:
+            tg_parts.append(("  No data yet.", False))
+
+        # Signals
+        if sig_rows:
+            sig_tbl, sig_colors = [], {}
+            for i, (k, n, hit) in enumerate(sig_rows):
+                vs_val = round((hit or 0) - baseline_hit, 1)
+                vs = f"{'+' if vs_val>=0 else ''}{vs_val}pp"
+                flag = " 🔴" if vs_val < -5 else (" 🟢" if vs_val >= 25 else "")
+                sig_tbl.append((k+flag, f"{hit}%", n, vs))
+                if vs_val < -5: sig_colors[(i,3)] = "#c0392b"
+                elif vs_val >= 25: sig_colors[(i,3)] = "#27ae60"
+            tg_parts.append(("\n<b>SIGNALS</b> (n≥10)", False))
+            tg_parts.append((_tbl_tg(["Signal","Hit%","n","vs Base"], sig_tbl, [28,6,6,12]), True))
+            html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>Signals (n≥10)</h3>"
+                             + _tbl_html(["Signal","Hit Rate","n","vs Baseline"], sig_tbl, sig_colors))
+
+        # Hit Speed
+        if speed_rows:
+            total_sp = sum(r[1] for r in speed_rows) or 1
+            cum_sp = 0
+            sp_tbl = []
+            for day, n in speed_rows:
+                cum_sp += n
+                bar = "█" * int(n / total_sp * 30)
+                sp_tbl.append((f"Day {day}", n, f"{round(100*cum_sp/total_sp,1)}%", bar))
+            tg_parts.append(("\n<b>HIT SPEED</b>", False))
+            tg_parts.append((_tbl_tg(["Day","Hits","Cumul",""], sp_tbl, [6,6,8,30]), True))
+            html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>Hit Speed (days to +20%)</h3>"
+                             + _tbl_html(["Day","Hits","Cumulative",""], sp_tbl))
+
+        # LSTM Gate
+        lb_n, lb_hit = lstm_baseline
+        tg_parts.append((f"\n<b>LSTM GATE</b> (days_to_20pct label | baseline: {lb_hit}% n={lb_n})", False))
+        if lstm_gate_rows:
+            lg_tbl, lg_colors = [], {}
+            for i, (gate, n, hit) in enumerate(lstm_gate_rows):
+                vs = _vs(hit, lb_hit or 0)
+                lg_tbl.append((f"LSTM {gate}", f"{hit}%", n, _conf(n), vs))
+                if (hit or 0) > (lb_hit or 0) + 8: lg_colors[(i,4)] = "#27ae60"
+            tg_parts.append((_tbl_tg(["Gate","Hit%","n","Conf","vs Base"], lg_tbl, [12,6,6,5,10]), True))
+            html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>LSTM Gate Validation</h3>"
+                             + _tbl_html(["Gate","Hit Rate","n","Conf","vs Baseline"], lg_tbl, lg_colors))
+        else:
+            tg_parts.append(("  No LSTM-scored rows yet — populating after DB_PATH fix.", False))
+            html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>LSTM Gate Validation</h3>"
+                             "<p>No LSTM-scored rows yet — populating after DB_PATH fix.</p>")
+
+        # Stop-Loss
+        tg_parts.append(("\n🔒 <b>STOP-LOSS PARAMETERS</b>", False))
+        sl_lines = []
         for label, row, defaults in [
             ("Daily", sl_daily_row, {"stop_loss_pct": 20.0, "trail_activate_pct": 10.0,
                                      "trail_pullback_pp": 12.0, "time_stop_days": 10,
@@ -1447,126 +1586,184 @@ def _weekly_analysis():
         ]:
             p = {**defaults, **_json.loads(row[0])} if row else defaults
             if label == "Daily":
-                lines.append(
-                    f"  Daily: stop={p['stop_loss_pct']}% | trail arm={p['trail_activate_pct']}% "
-                    f"pullback={p['trail_pullback_pp']}pp | time={p['time_stop_days']}d | "
-                    f"stale={p['stale_days']}d@{p['stale_gain_pct']}%"
-                )
+                sl_lines.append(f"  Daily: stop={p['stop_loss_pct']}% | trail arm={p['trail_activate_pct']}%/"
+                                 f"{p['trail_pullback_pp']}pp pullback | time={p['time_stop_days']}d | "
+                                 f"stale={p['stale_days']}d@{p['stale_gain_pct']}%")
             else:
-                lines.append(
-                    f"  5m:    stop={p['stop_loss_pct']}% | trail arm={p['trail_activate_pct']}% "
-                    f"pullback={p['trail_pullback_pp']}pp"
-                )
-
-        # Pending proposals
+                sl_lines.append(f"  5m:    stop={p['stop_loss_pct']}% | trail arm={p['trail_activate_pct']}%/"
+                                 f"{p['trail_pullback_pp']}pp pullback")
         for label, prop_row in [("Daily", sl_prop_daily), ("5m", sl_prop_5m)]:
-            if not prop_row:
-                continue
+            if not prop_row: continue
             try:
                 prop = _json.loads(prop_row[0])
-                status = prop.get("status", "")
-                if status == "pending":
-                    wp  = round((prop.get("winner_preservation") or 0) * 100, 1)
-                    lr  = round((prop.get("loss_reduction") or 0) * 100, 1)
-                    pp  = prop.get("proposed_params", {})
-                    lines.append(
-                        f"  &#9888;&#65039; PENDING proposal ({label}): "
-                        f"stop→{pp.get('stop_loss_pct')}% | "
-                        f"winner pres={wp}% | loss reduction={lr}% | "
-                        f"confidence={prop.get('confidence')}%"
-                    )
-                    lines.append(f"    Rationale: {prop.get('rationale','')[:120]}")
-                    lines.append(f"    Approve/reject at Analytics → Stop-Loss tab")
+                if prop.get("status") == "pending":
+                    wp = round((prop.get("winner_preservation") or 0)*100,1)
+                    lr = round((prop.get("loss_reduction") or 0)*100,1)
+                    pp = prop.get("proposed_params", {})
+                    sl_lines.append(f"  ⚠️ PENDING ({label}): stop→{pp.get('stop_loss_pct')}% | "
+                                    f"winner pres={wp}% | loss reduction={lr}%")
+                    sl_lines.append(f"     {prop.get('rationale','')[:100]}")
             except Exception:
                 pass
+        tg_parts.append(("\n".join(sl_lines), False))
+        html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>🔒 Stop-Loss Parameters</h3>"
+                         + "".join(f"<p style='margin:2px 0'>{l.strip()}</p>" for l in sl_lines))
 
-        # ── AI Trade Call Summary ─────────────────────────────────────────
-        lines.append("\n&#127919; <b>AI TRADE Call Performance</b>")
-
+        # AI TRADE calls + open/closed trades
+        tg_parts.append(("\n🎯 <b>AI TRADE CALL PERFORMANCE</b>", False))
         if trade_scan_rows:
             tc_total  = len(trade_scan_rows)
-            tc_hit20  = sum(1 for r in trade_scan_rows if r[4] is not None)  # days_to_20pct
-            tc_pos    = sum(1 for r in trade_scan_rows if (r[3] or 0) >= 0)  # next_day_return>=0
-            tc_pct    = round(100.0 * tc_hit20 / tc_total, 1) if tc_total else 0
-            tc_winpct = round(100.0 * tc_pos  / tc_total, 1) if tc_total else 0
+            tc_hit20  = sum(1 for r in trade_scan_rows if r[4] is not None)
+            tc_pos    = sum(1 for r in trade_scan_rows if (r[3] or 0) >= 0)
+            tc_pct    = round(100.0*tc_hit20/tc_total,1) if tc_total else 0
+            tc_winpct = round(100.0*tc_pos/tc_total,1) if tc_total else 0
             avg_lstm  = [r[5] for r in trade_scan_rows if r[5] is not None]
-            avg_lstm_pct = round(sum(avg_lstm) / len(avg_lstm) * 100, 1) if avg_lstm else None
-
-            lines.append(
-                f"  Total TRADE calls (labeled): {tc_total} | "
-                f"Hit 20%+: {tc_hit20} ({tc_pct}%) | "
-                f"Day-1 positive: {tc_pos} ({tc_winpct}%)"
-            )
-            if avg_lstm_pct:
-                lines.append(f"  Avg LSTM prob at alert: {avg_lstm_pct}%")
-
-            # This week's TRADE calls
-            week_trades = [r for r in trade_scan_rows
-                           if r[7] and r[6] >= datetime.datetime.utcnow().strftime("%Y-%m-%d")[:8] +
-                           (datetime.datetime.utcnow() - datetime.timedelta(days=7)).strftime("%m-%d")]
-            # Simpler: filter by timestamp string
-            week_cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat()[:10]
+            avg_lp    = round(sum(avg_lstm)/len(avg_lstm)*100,1) if avg_lstm else None
+            summary   = (f"  Total labeled: {tc_total} | Hit 20%+: {tc_hit20} ({tc_pct}%) | "
+                         f"Day-1 positive: {tc_pos} ({tc_winpct}%)")
+            if avg_lp: summary += f" | Avg LSTM: {avg_lp}%"
+            tg_parts.append((summary, False))
+            week_cutoff = (datetime.datetime.utcnow()-datetime.timedelta(days=7)).isoformat()[:10]
             week_trades = [r for r in trade_scan_rows if str(r[6])[:10] >= week_cutoff]
             if week_trades:
-                lines.append(f"  This week: {len(week_trades)} TRADE calls")
-                for r in week_trades[:8]:   # show up to 8
-                    sym = r[0]; score = r[1]; ndr = r[3]; d20 = r[4]
-                    lstm = f" LSTM={round(r[5]*100)}%" if r[5] else ""
-                    outcome = (f"✓ hit 20% day {d20}" if d20 else
-                               f"{'▲' if ndr>=0 else '▼'} {ndr:+.1f}% day1")
-                    lines.append(f"    {sym} score={score}{lstm} → {outcome}")
+                wt_tbl = []
+                for r in week_trades[:10]:
+                    sym=r[0]; score=r[1]; ndr=r[3]; d20=r[4]; lp=r[5]
+                    lstm_s = f"{round(lp*100)}%" if lp else "-"
+                    outcome = (f"✓ Day {d20}" if d20 else
+                               f"{'▲' if (ndr or 0)>=0 else '▼'} {(ndr or 0):+.1f}%")
+                    wt_tbl.append((sym, score, lstm_s, outcome))
+                tg_parts.append((f"  This week ({len(week_trades)} calls):", False))
+                tg_parts.append((_tbl_tg(["Symbol","Score","LSTM","Outcome"], wt_tbl, [7,6,6,12]), True))
+                html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>🎯 AI TRADE Call Performance</h3>"
+                                 f"<p>{summary.strip()}</p>"
+                                 + _tbl_html(["Symbol","Score","LSTM","Outcome"], wt_tbl))
+            else:
+                html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>🎯 AI TRADE Call Performance</h3>"
+                                 f"<p>{summary.strip()}</p>")
         else:
-            lines.append("  No labeled TRADE calls yet.")
+            tg_parts.append(("  No labeled TRADE calls yet.", False))
 
-        # ── Open Positions ────────────────────────────────────────────────
-        lines.append(f"\n&#128994; <b>Open Positions ({len(open_trades)})</b>")
+        tg_parts.append((f"\n🟢 <b>OPEN POSITIONS ({len(open_trades)})</b>", False))
         if open_trades:
-            import pytz as _pytz
-            now_et = datetime.datetime.now(_pytz.timezone("America/New_York"))
-            for r in open_trades:
-                sym, entry, pos_size, opened_at, mode, hwm, tp = r
+            op_tbl = []
+            for sym, entry, pos_size, opened_at, mode, hwm, tp in open_trades:
                 try:
-                    opened_dt = datetime.datetime.fromisoformat(opened_at)
-                    days_open = (datetime.datetime.utcnow() - opened_dt).days
+                    days_open = (datetime.datetime.utcnow()-datetime.datetime.fromisoformat(opened_at)).days
                 except Exception:
                     days_open = "?"
-                hwm_pct = round((hwm / entry - 1) * 100, 1) if hwm and entry else "?"
-                lines.append(
-                    f"  {sym} ({mode}) — entry ${entry:.2f} | "
-                    f"peak +{hwm_pct}% | {days_open}d open | size ${pos_size:.0f}"
-                )
+                hwm_pct = f"+{round((hwm/entry-1)*100,1)}%" if hwm and entry else "?"
+                op_tbl.append((sym, f"${entry:.2f}", hwm_pct, f"{days_open}d", mode))
+            tg_parts.append((_tbl_tg(["Symbol","Entry","Peak","Age","Mode"], op_tbl, [7,8,7,5,8]), True))
+            html_secs.append(f"<h3 style='color:#27ae60;margin-top:20px'>🟢 Open Positions ({len(open_trades)})</h3>"
+                             + _tbl_html(["Symbol","Entry","Peak","Age","Mode"], op_tbl))
         else:
-            lines.append("  No open positions.")
+            tg_parts.append(("  No open positions.", False))
+            html_secs.append(f"<h3 style='color:#27ae60;margin-top:20px'>🟢 Open Positions (0)</h3><p>None.</p>")
 
-        # ── Closed Trades ─────────────────────────────────────────────────
-        lines.append(f"\n&#128308; <b>Closed Trades ({len(closed_trades_rows)} total)</b>")
+        tg_parts.append((f"\n🔴 <b>CLOSED TRADES ({len(closed_trades_rows)} total)</b>", False))
         if closed_trades_rows:
-            total_pnl    = sum((r[3] or 0) for r in closed_trades_rows)
-            winners      = [r for r in closed_trades_rows if (r[3] or 0) > 0]
-            losers       = [r for r in closed_trades_rows if (r[3] or 0) <= 0]
-            win_rate     = round(100.0 * len(winners) / len(closed_trades_rows), 1)
-            avg_win_pct  = round(sum((r[2]/r[1]-1)*100 for r in winners) / len(winners), 1) if winners else 0
-            avg_loss_pct = round(sum((r[2]/r[1]-1)*100 for r in losers)  / len(losers),  1) if losers  else 0
-            lines.append(
-                f"  Win rate: {win_rate}% | Total P&L: ${total_pnl:+.2f} | "
-                f"Avg win: +{avg_win_pct}% | Avg loss: {avg_loss_pct}%"
-            )
-            # Breakdown by close reason
-            reasons = {}
+            total_pnl = sum((r[3] or 0) for r in closed_trades_rows)
+            winners   = [r for r in closed_trades_rows if (r[3] or 0) > 0]
+            losers    = [r for r in closed_trades_rows if (r[3] or 0) <= 0]
+            win_rate  = round(100.0*len(winners)/len(closed_trades_rows),1)
+            avg_w     = round(sum((r[2]/r[1]-1)*100 for r in winners)/len(winners),1) if winners else 0
+            avg_l     = round(sum((r[2]/r[1]-1)*100 for r in losers)/len(losers),1)   if losers  else 0
+            reasons   = {}
             for r in closed_trades_rows:
-                cr = r[6] or "manual"
-                reasons[cr] = reasons.get(cr, 0) + 1
-            lines.append("  Exit reasons: " + " | ".join(f"{k}={v}" for k, v in reasons.items()))
-            # Recent closed trades (last 5)
-            lines.append("  Recent:")
-            for r in closed_trades_rows[:5]:
-                sym, entry, exit_p, pnl, opened_at, closed_at, reason, mode = r
+                cr = r[6] or "manual"; reasons[cr] = reasons.get(cr,0)+1
+            ct_summary = (f"  Win rate: {win_rate}% | P&L: ${total_pnl:+.2f} | "
+                          f"Avg win: +{avg_w}% | Avg loss: {avg_l}%\n"
+                          f"  Exits: {' | '.join(f'{k}={v}' for k,v in reasons.items())}")
+            tg_parts.append((ct_summary, False))
+            ct_tbl, ct_colors = [], {}
+            for i, r in enumerate(closed_trades_rows[:8]):
+                sym,entry,exit_p,pnl,_,_,reason,mode = r
                 if entry and exit_p:
-                    pct = round((exit_p / entry - 1) * 100, 1)
-                    sign = "+" if pct >= 0 else ""
-                    lines.append(f"    {sym} {sign}{pct}% ({reason}) [{mode}]")
+                    pct = round((exit_p/entry-1)*100,1)
+                    ct_tbl.append((sym, f"${entry:.2f}", f"{'+'if pct>=0 else ''}{pct}%", reason or "-", mode))
+                    if pct >= 0: ct_colors[(i,2)] = "#27ae60"
+                    else: ct_colors[(i,2)] = "#c0392b"
+            if ct_tbl:
+                tg_parts.append((_tbl_tg(["Symbol","Entry","Return","Exit","Mode"], ct_tbl, [7,8,8,12,8]), True))
+                html_secs.append(f"<h3 style='color:#c0392b;margin-top:20px'>🔴 Closed Trades ({len(closed_trades_rows)})</h3>"
+                                 f"<p>{ct_summary.strip()}</p>"
+                                 + _tbl_html(["Symbol","Entry","Return","Exit Reason","Mode"], ct_tbl, ct_colors))
         else:
-            lines.append("  No closed trades yet.")
+            tg_parts.append(("  No closed trades yet.", False))
+
+        # Weight cooldown / proposals
+        _conn2 = _sq.connect(db_path)
+        last_changed_str = (_conn2.execute(
+            "SELECT value FROM settings WHERE key='squeeze_weights_last_changed'"
+        ).fetchone() or [None])[0]
+        _conn2.close()
+
+        cooldown_active = False
+        if last_changed_str:
+            try:
+                last_dt    = datetime.datetime.fromisoformat(last_changed_str)
+                days_since = (datetime.datetime.utcnow()-last_dt).days
+                if days_since < 7:
+                    cooldown_active = True
+                    tg_parts.append((f"\n🔒 Weight cooldown: {days_since}d since last change (need 7d). No proposals.", False))
+            except Exception as _e:
+                print(f"WEEKLY: cooldown check failed: {_e}")
+
+        proposals = []
+        if not cooldown_active:
+            for k, n, hit in sig_rows:
+                if n >= 100:
+                    diff = hit - baseline_hit
+                    if diff <= -5:
+                        proposals.append(f"  REDUCE: {k} ({hit}%, {diff:+.1f}pp, n={n})")
+                    elif diff >= 5:
+                        proposals.append(f"  BOOST:  {k} ({hit}%, {diff:+.1f}pp, n={n})")
+            if proposals:
+                tg_parts.append(("\n⚠️ <b>PROPOSED WEIGHT CHANGES</b> (n≥100, ≥5pp, 7d cooldown)", False))
+                tg_parts += [(p, False) for p in proposals]
+                tg_parts.append(("  Reply 'approve weekly changes' or review analytics page.", False))
+                html_secs.append("<h3 style='color:#e67e22;margin-top:20px'>⚠️ Proposed Weight Changes</h3>"
+                                 + "".join(f"<p style='color:{'#c0392b' if 'REDUCE' in p else '#27ae60'};font-weight:bold'>{p.strip()}</p>"
+                                           for p in proposals))
+            else:
+                tg_parts.append(("\nNo high-confidence weight changes this week (n≥100 + ≥5pp not met).", False))
+
+        # AI-generated Key Findings & Recommendations
+        try:
+            from app.ai_agent import generate_weekly_insights
+            insights = generate_weekly_insights({
+                "baseline_n":        baseline_n,
+                "baseline_hit":      baseline_hit,
+                "score_rows":        score_rows,
+                "rv_rows":           rv_rows,
+                "sig_rows":          sig_rows,
+                "lstm_gate_rows":    lstm_gate_rows,
+                "lstm_baseline_hit": lb_hit,
+                "lstm_score_rows":   lstm_score_rows,
+                "dow_lstm_rows":     dow_lstm_rows,
+                "speed_rows":        speed_rows,
+                "ai_pct":            ai_pct,
+                "ai_hits":           ai_hits,
+                "ai_total":          ai_total,
+            })
+            tg_parts.append(("\n" + insights, False))
+            # Render insights in HTML with basic formatting
+            html_insights = insights.replace("📊", "").replace("🎯", "")
+            html_ins_lines = []
+            for ln in html_insights.split("\n"):
+                ls = ln.strip()
+                if ls.startswith("KEY FINDINGS"):
+                    html_ins_lines.append("<h3 style='color:#2c3e50;margin-top:20px'>📊 Key Findings</h3>")
+                elif ls.startswith("RANKED RECOMMENDATIONS"):
+                    html_ins_lines.append("<h3 style='color:#e67e22;margin-top:20px'>🎯 Ranked Recommendations</h3>")
+                elif ls and ls[0].isdigit() and ls[1] == ".":
+                    html_ins_lines.append(f"<p style='margin:4px 0'>{ls}</p>")
+                elif ls:
+                    html_ins_lines.append(f"<p style='margin:2px 0'>{ls}</p>")
+            html_secs.append("".join(html_ins_lines))
+        except Exception as _ie:
+            print(f"WEEKLY: insights generation failed — {_ie}")
 
         # Check cooldown: no proposals within 7 days of last weight change
         last_changed_row = conn.execute(
@@ -1607,82 +1804,63 @@ def _weekly_analysis():
             else:
                 lines.append("\nNo high-confidence weight changes proposed this week (n≥100 threshold not met or deviation <5pp).")
 
-        # Escape bare < and > that aren't part of intentional HTML tags
-        # (e.g. "<10x" relvol bucket, "<5pp" thresholds) so Telegram HTML parser doesn't choke
+        # ── AI-generated Key Findings & Recommendations ───────────────────
+        try:
+            from app.ai_agent import generate_weekly_insights
+            insights = generate_weekly_insights({
+                "baseline_n":        baseline_n,
+                "baseline_hit":      baseline_hit,
+                "score_rows":        score_rows,
+                "rv_rows":           rv_rows,
+                "sig_rows":          sig_rows,
+                "lstm_gate_rows":    lstm_gate_rows,
+                "lstm_baseline_hit": lb_hit,
+                "lstm_score_rows":   lstm_score_rows,
+                "dow_lstm_rows":     dow_lstm_rows,
+                "speed_rows":        speed_rows,
+                "ai_pct":            ai_pct,
+                "ai_hits":           ai_hits,
+                "ai_total":          ai_total,
+            })
+            lines.append("\n" + insights)
+        except Exception as _ie:
+            print(f"WEEKLY: insights generation failed — {_ie}")
+
+        # ── Send Telegram (chunked, code blocks for tables) ──────────────
         import re as _re2
         def _tg_escape(s: str) -> str:
-            # Replace < not followed by allowed tag names or / with &lt;
             return _re2.sub(r'<(?!/?(?:b|i|a|code|pre|s|u)\b)', '&lt;', s)
-        tg_text = _tg_escape("\n".join(lines))
-        # Telegram max is 4096 chars — split into chunks at newline boundaries
-        _TG_LIMIT = 4000
-        if len(tg_text) <= _TG_LIMIT:
-            _send_telegram_admin(tg_text)
-        else:
-            chunks, current = [], []
-            current_len = 0
-            for line in lines:
-                if current_len + len(line) + 1 > _TG_LIMIT and current:
-                    _send_telegram_admin("\n".join(current))
-                    current, current_len = [], 0
-                current.append(line)
-                current_len += len(line) + 1
-            if current:
-                _send_telegram_admin("\n".join(current))
+
+        _TG_LIMIT = 3800
+        tg_buffer, tg_buffer_len = [], 0
+
+        def _flush_tg():
+            if tg_buffer:
+                _send_telegram_admin(_tg_escape("\n".join(tg_buffer)))
+                tg_buffer.clear()
+
+        for (text, is_code) in tg_parts:
+            if is_code:
+                wrapped = f"<code>{text}</code>"
+            else:
+                wrapped = text
+            chunk_len = len(wrapped) + 1
+            if tg_buffer_len + chunk_len > _TG_LIMIT and tg_buffer:
+                _flush_tg()
+                tg_buffer_len = 0
+            tg_buffer.append(wrapped)
+            tg_buffer_len += chunk_len
+        _flush_tg()
         print("WEEKLY ANALYSIS: report sent to Telegram")
 
-        # Build HTML email
-        # Strip Telegram bold tags first; HTML entities (&#NNN;) stay — they render fine in email HTML
-        plain = tg_text.replace("<b>", "").replace("</b>", "")
-        import re as _re
-        _SECTION_HEADERS = (
-            "Score Buckets", "AI TRADE Precision",
-            "Relvol Tiers", "Daily Gain Buckets", "Day of Week",
-            "Float / Shares Buckets",
-            "Top Signals", "Bottom Signals",
-            "LSTM Gate Validation",
-            "Stop-Loss Parameters",
-            "AI TRADE Call Performance",
-            "Proposed Changes",
-        )
-        _ORANGE_HEADERS = ("Proposed Changes",)
-        _GREEN_HEADERS  = ("Open Positions",)
-        _RED_HEADERS    = ("Closed Trades",)
-
-        html_rows = []
-        for ln in plain.split("\n"):
-            ln_stripped = ln.strip()
-            # Strip leading emoji/non-word chars to match section header text
-            _text = _re.sub(r'^[^\w]+', '', ln_stripped).strip()
-
-            if _text.startswith("Weekly Model Analysis"):
-                html_rows.append(f"<h2 style='border-bottom:2px solid #2c3e50;padding-bottom:4px'>{ln_stripped}</h2>")
-            elif any(_text.startswith(h) for h in _ORANGE_HEADERS):
-                html_rows.append(f"<h3 style='color:#e67e22;margin-top:16px;margin-bottom:4px'>{ln_stripped}</h3>")
-            elif any(_text.startswith(h) for h in _GREEN_HEADERS):
-                html_rows.append(f"<h3 style='color:#27ae60;margin-top:16px;margin-bottom:4px'>{ln_stripped}</h3>")
-            elif any(_text.startswith(h) for h in _RED_HEADERS):
-                html_rows.append(f"<h3 style='color:#c0392b;margin-top:16px;margin-bottom:4px'>{ln_stripped}</h3>")
-            elif any(_text.startswith(h) for h in _SECTION_HEADERS):
-                html_rows.append(f"<h3 style='color:#2c3e50;margin-top:16px;margin-bottom:4px'>{ln_stripped}</h3>")
-            elif ln_stripped.startswith("REDUCE") or ln_stripped.startswith("BOOST"):
-                color = "#c0392b" if ln_stripped.startswith("REDUCE") else "#27ae60"
-                html_rows.append(f"<p style='color:{color};margin:2px 0;font-weight:bold'>{ln_stripped}</p>")
-            elif "PENDING proposal" in ln_stripped:
-                html_rows.append(f"<p style='color:#e67e22;margin:2px 0;font-weight:bold'>{ln_stripped}</p>")
-            elif ln_stripped.startswith("Win rate:") or ln_stripped.startswith("Total TRADE calls"):
-                html_rows.append(f"<p style='margin:2px 0;font-weight:bold'>{ln_stripped}</p>")
-            elif ln_stripped == "":
-                html_rows.append("<br>")
-            else:
-                html_rows.append(f"<p style='margin:2px 0'>{ln_stripped}</p>")
+        # ── Send HTML email ───────────────────────────────────────────────
         html_body = (
-            "<html><body style='font-family:monospace;font-size:13px;max-width:700px;margin:auto'>"
-            + "\n".join(html_rows)
+            "<html><body style='font-family:Arial,sans-serif;font-size:13px;max-width:750px;margin:auto;padding:20px'>"
+            + "\n".join(html_secs)
             + "</body></html>"
         )
         send_weekly_report_email(
-            subject=f"AI Trading Model — Weekly Analysis {datetime.datetime.now().strftime('%Y-%m-%d')}",
+            subject=f"AI Trading Model — Weekly Analysis {date_str}",
             html_body=html_body,
         )
 
@@ -2733,7 +2911,7 @@ def approve_stop_loss_proposal(request: Request, model_type: str = Form(...)):
     import json as _json, sqlite3 as _sq, os as _os
     key = f"stop_loss_proposal_{model_type}"
     try:
-        conn = _sq.connect(_os.environ.get("DB_PATH", "scan_history.db"))
+        conn = _sq.connect(_DB_PATH)
         row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         conn.close()
         if not row:
@@ -2744,7 +2922,7 @@ def approve_stop_loss_proposal(request: Request, model_type: str = Form(...)):
         save_stop_loss_params(model_type, proposal["proposed_params"])
         # Mark proposal as approved
         proposal["status"] = "approved"
-        conn2 = _sq.connect(_os.environ.get("DB_PATH", "scan_history.db"))
+        conn2 = _sq.connect(_DB_PATH)
         conn2.execute("UPDATE settings SET value=?, updated_at=? WHERE key=?",
                       (_json.dumps(proposal), datetime.datetime.utcnow().isoformat(), key))
         conn2.commit()
@@ -2763,13 +2941,13 @@ def reject_stop_loss_proposal(request: Request, model_type: str = Form(...)):
     import json as _json, sqlite3 as _sq, os as _os
     key = f"stop_loss_proposal_{model_type}"
     try:
-        conn = _sq.connect(_os.environ.get("DB_PATH", "scan_history.db"))
+        conn = _sq.connect(_DB_PATH)
         row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         conn.close()
         if row:
             proposal = _json.loads(row[0])
             proposal["status"] = "rejected"
-            conn2 = _sq.connect(_os.environ.get("DB_PATH", "scan_history.db"))
+            conn2 = _sq.connect(_DB_PATH)
             conn2.execute("UPDATE settings SET value=?, updated_at=? WHERE key=?",
                           (_json.dumps(proposal), datetime.datetime.utcnow().isoformat(), key))
             conn2.commit()
@@ -3602,7 +3780,7 @@ def export_db(request: Request, token: str = ""):
     )
     if not authed:
         return RedirectResponse("/login", status_code=303)
-    db_path = _os.environ.get("DB_PATH", "scan_history.db")
+    db_path = _DB_PATH
     if not _os.path.exists(db_path):
         return Response("Database file not found", status_code=404)
     from datetime import date

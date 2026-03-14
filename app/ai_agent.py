@@ -1862,3 +1862,111 @@ Respond with ONLY valid JSON (no markdown):
             "rationale":  f"Claude call failed: {e}",
             "params":     current_params,
         }
+
+
+def generate_weekly_insights(data: dict) -> str:
+    """
+    Passes structured weekly analysis data to Claude and returns a formatted
+    Key Findings + Ranked Recommendations section for the weekly report.
+    Falls back to empty string on any error so the report still sends.
+    """
+    def _fmt_rows(rows, cols):
+        return "\n".join("  " + " | ".join(str(v) for v in row) for row in rows) or "  (no data)"
+
+    baseline_hit = data.get("baseline_hit", 0)
+
+    sig_rows = data.get("sig_rows", [])
+    top_sigs  = "\n".join(f"  {k}: {hit}% ({hit - baseline_hit:+.1f}pp, n={n})" for k, n, hit in sig_rows[:8])
+    bot_sigs  = "\n".join(f"  {k}: {hit}% ({hit - baseline_hit:+.1f}pp, n={n})" for k, n, hit in sig_rows[-8:])
+
+    score_section = "\n".join(
+        f"  {b}: {hit}% (n={n})" for b, n, hit in data.get("score_rows", [])
+    )
+    rv_section = "\n".join(
+        f"  {t}: {hit}% (n={n})" for t, n, hit in data.get("rv_rows", [])
+    )
+    lstm_section = "\n".join(
+        f"  LSTM {gate}: {hit}% ({(hit or 0) - baseline_hit:+.1f}pp, n={n})"
+        for gate, n, hit in data.get("lstm_gate_rows", [])
+    )
+    lstm_score_section = "\n".join(
+        f"  score {b}: raw={hit_all}% (n={n_all}) | +LSTM>=55%: {hit_gated}% (n={n_gated})"
+        for b, n_all, hit_all, n_gated, hit_gated in data.get("lstm_score_rows", [])
+    )
+    dow_section = "\n".join(
+        f"  {d}: raw={hit_all}% (n={n_all}) | +LSTM>=55%: {hit_gated}% (n={n_gated})"
+        for d, n_all, hit_all, n_gated, hit_gated in data.get("dow_lstm_rows", [])
+        if d
+    )
+    speed_rows = data.get("speed_rows", [])
+    total_hits = sum(r[1] for r in speed_rows) or 1
+    cumulative = 0
+    speed_lines = []
+    for day, n in speed_rows:
+        cumulative += n
+        speed_lines.append(f"  Day {day}: {n} hits (cumulative {round(100*cumulative/total_hits)}%)")
+    speed_section = "\n".join(speed_lines)
+
+    prompt = f"""You are analyzing weekly performance data for an AI stock scanner that identifies squeeze plays — stocks likely to hit +20% within 10 trading days. The scanner uses a weighted scoring model (0–100 pts) and an LSTM probability gate (currently >=55%).
+
+Baseline hit rate: {baseline_hit}% (n={data.get("baseline_n", 0)})
+AI TRADE precision: {data.get("ai_pct", 0)}% ({data.get("ai_hits", 0)}/{data.get("ai_total", 0)} calls)
+
+SCORE BUCKETS:
+{score_section}
+
+RELVOL TIERS:
+{rv_section}
+
+DAY OF WEEK (raw hit rate / with LSTM>=55% gate):
+{dow_section or "  (no LSTM data yet)"}
+
+LSTM GATE BUCKETS:
+{lstm_section or "  (no data yet)"}
+
+SCORE x LSTM>=55% CROSS-TAB:
+{lstm_score_section or "  (no data yet)"}
+
+HIT SPEED — days until 20%+ achieved:
+{speed_section or "  (no data yet)"}
+
+TOP SIGNALS (vs baseline {baseline_hit}%):
+{top_sigs or "  (no data)"}
+
+BOTTOM SIGNALS:
+{bot_sigs or "  (no data)"}
+
+Your task: identify the 3–5 most important findings from this data and produce ranked, actionable recommendations. Focus on:
+1. Signals with negative vs-baseline performance (zero or reduce weight)
+2. Score bucket anomalies (high buckets underperforming lower ones)
+3. LSTM gate — where raising the threshold stops helping vs hurts volume
+4. Day-of-week patterns (gaps >8pp between days)
+5. Relvol cliffs (where hit rate drops sharply between adjacent tiers)
+6. Hit speed — whether the take-profit window or time stop could be tightened
+7. LSTM+score combos that outperform either signal alone
+
+Confidence: High = n>=30, Med = n>=10, Low = n<10. Only recommend changes with Medium or High confidence.
+
+Format EXACTLY as:
+
+📊 KEY FINDINGS
+1. [One-sentence insight — lead with the conclusion, then supporting numbers in parens]
+2. [...]
+...
+
+🎯 RANKED RECOMMENDATIONS
+1. [High/Med confidence] Change: [specific change] | Evidence: [numbers] | Expected lift: [estimate]
+2. [...]
+...
+
+Keep total under 700 words. No preamble or closing remarks."""
+
+    try:
+        msg = client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=1200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return _msg_text(msg)
+    except Exception as e:
+        return f"(Weekly insights unavailable: {e})"
