@@ -1257,6 +1257,15 @@ def _weekly_analysis():
         ai_total, ai_hits = ai_row
         ai_pct = round(100.0 * ai_hits / ai_total, 1) if ai_total else 0
 
+        # NO_TRADE comparison
+        no_trade_row = c.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END) "
+            "FROM scans WHERE next_day_return IS NOT NULL "
+            "AND ai_trade_rec LIKE '%NO_TRADE%'"
+        ).fetchone()
+        nt_total, nt_hits = no_trade_row
+        nt_pct = round(100.0 * nt_hits / nt_total, 1) if nt_total else 0
+
         # Relvol tiers
         rv_rows = c.execute(
             "SELECT CASE WHEN relative_volume>=500 THEN '500x+' WHEN relative_volume>=100 THEN '100-499x' "
@@ -1453,16 +1462,22 @@ def _weekly_analysis():
         html_secs = []   # list of HTML strings
 
         # Header
+        ai_spread = round(ai_pct - nt_pct, 1)
+        spread_flag = "✅" if ai_spread >= 5 else ("⚠️" if ai_spread >= 0 else "🔴")
         header = (f"📈 <b>Weekly Model Analysis — {date_str}</b>\n"
-                  f"Labeled: {baseline_n} | Baseline: {baseline_hit}% | "
-                  f"AI TRADE: {ai_pct}% ({ai_hits}/{ai_total})\n"
-                  f"XGBoost: {xgb_n}/500 eligible | New this week: {new_labeled}")
+                  f"Labeled: {baseline_n} | Baseline: {baseline_hit}% | New: {new_labeled}\n"
+                  f"TRADE: {ai_pct}% ({ai_hits}/{ai_total}) | NO_TRADE: {nt_pct}% ({nt_hits}/{nt_total}) | "
+                  f"Spread: {spread_flag}{ai_spread:+.1f}pp\n"
+                  f"XGBoost: {xgb_n}/500 eligible")
         tg_parts.append((header, False))
         html_secs.append(f"<h2 style='border-bottom:2px solid #2c3e50;padding-bottom:6px'>"
                          f"📈 Weekly Model Analysis — {date_str}</h2>"
                          f"<p><b>Labeled:</b> {baseline_n} | <b>Baseline:</b> {baseline_hit}% | "
-                         f"<b>AI TRADE:</b> {ai_pct}% ({ai_hits}/{ai_total}) | "
-                         f"<b>XGBoost:</b> {xgb_n}/500 | <b>New this week:</b> {new_labeled}</p>")
+                         f"<b>New this week:</b> {new_labeled}</p>"
+                         f"<p><b>AI TRADE:</b> {ai_pct}% ({ai_hits}/{ai_total}) | "
+                         f"<b>NO_TRADE:</b> {nt_pct}% ({nt_hits}/{nt_total}) | "
+                         f"<b>Spread:</b> {spread_flag} {ai_spread:+.1f}pp | "
+                         f"<b>XGBoost:</b> {xgb_n}/500</p>")
 
         # Score Buckets
         sb_rows = []
@@ -1573,9 +1588,20 @@ def _weekly_analysis():
             html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>LSTM Gate Validation</h3>"
                              + _tbl_html(["Gate","Hit Rate","n","Conf","vs Baseline"], lg_tbl, lg_colors))
         else:
-            tg_parts.append(("  No LSTM-scored rows yet — populating after DB_PATH fix.", False))
+            tg_parts.append(("  No LSTM-scored rows yet.", False))
             html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>LSTM Gate Validation</h3>"
-                             "<p>No LSTM-scored rows yet — populating after DB_PATH fix.</p>")
+                             "<p>No LSTM-scored rows yet.</p>")
+
+        # LSTM x Score cross-tab
+        if lstm_score_rows:
+            ls_tbl, ls_colors = [], {}
+            for i, (bucket, n_all, hit_all, n_gated, hit_gated) in enumerate(lstm_score_rows):
+                ls_tbl.append((bucket, n_all, f"{hit_all}%", n_gated or 0, f"{hit_gated}%" if hit_gated else "-"))
+                if (hit_gated or 0) > (lb_hit or 0) + 10: ls_colors[(i,4)] = "#27ae60"
+            tg_parts.append((f"\n<b>LSTM × SCORE</b> (days_to_20pct | LSTM gate ≥55%)", False))
+            tg_parts.append((_tbl_tg(["Score","n","Hit%","n_gated","Hit_gated"], ls_tbl, [7,6,6,9,11]), True))
+            html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>LSTM × Score Cross-Tab</h3>"
+                             + _tbl_html(["Score","n (all)","Hit% (all)","n (LSTM≥55%)","Hit% (gated)"], ls_tbl, ls_colors))
 
         # Stop-Loss
         tg_parts.append(("\n🔒 <b>STOP-LOSS PARAMETERS</b>", False))
