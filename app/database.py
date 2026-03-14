@@ -432,6 +432,25 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # column already exists
 
+    # Migration: tighten time_stop_days 10 → 5 (97.1% of winners hit by day 5, 2026-03-14)
+    try:
+        row = cursor.execute(
+            "SELECT value FROM settings WHERE key='stop_loss_params_daily'"
+        ).fetchone()
+        if row:
+            import json as _j
+            p = _j.loads(row[0])
+            if p.get("time_stop_days", 10) >= 10:
+                p["time_stop_days"] = 5
+                p["stale_days"] = min(p.get("stale_days", 7), 5)
+                cursor.execute(
+                    "UPDATE settings SET value=? WHERE key='stop_loss_params_daily'",
+                    (_j.dumps(p),)
+                )
+                conn.commit()
+    except Exception:
+        pass
+
     # ---------------- INDEXES ----------------
     # These are CREATE IF NOT EXISTS so safe to run on every startup.
     # Cover the most frequent query patterns in analytics and scan saving.

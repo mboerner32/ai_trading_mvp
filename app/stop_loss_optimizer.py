@@ -46,8 +46,8 @@ DEFAULT_DAILY_PARAMS = {
     "stop_loss_pct":      20.0,
     "trail_activate_pct": 10.0,
     "trail_pullback_pp":  12.0,
-    "time_stop_days":     10,
-    "stale_days":         7,
+    "time_stop_days":     5,    # tightened from 10: 97.1% of winners hit by day 5 (n=2418, 2026-03-14)
+    "stale_days":         5,    # aligned with time_stop
     "stale_gain_pct":     3.0,
 }
 

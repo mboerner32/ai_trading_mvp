@@ -234,24 +234,24 @@ def score_stock(symbol: str, df, fundamentals=None):
 # max_score formula re-normalises so output stays 0–100.
 #
 DEFAULT_SQUEEZE_WEIGHTS = {
-    "rel_vol_500x":         40,   # extreme event (≥500x) — categorically above normal
-    "rel_vol_100x":         35,   # very high (100–499x)
-    "rel_vol_50x":          30,   # high (50–99x)
-    "rel_vol_25x":          22,
-    "rel_vol_10x":          15,
-    "rel_vol_5x":           7,
+    "rel_vol_500x":         45,   # extreme event (≥500x) — 66.7% hit rate (+35.9pp, n=135, 2026-03-14)
+    "rel_vol_100x":         40,   # very high (100–499x) — 59.9% hit rate (+29.1pp, n=364, 2026-03-14)
+    "rel_vol_50x":          28,   # high (50–99x) — 30.3% hit rate (-0.5pp, n=426) — AI must validate
+    "rel_vol_25x":          14,   # reduced: 25.6% hit rate (-5.2pp, n=1053, 2026-03-14)
+    "rel_vol_10x":          8,    # reduced: 26.0% hit rate (-4.8pp, n=2051, 2026-03-14)
+    "rel_vol_5x":           3,
     "daily_sweet_20_40":    10,
     "daily_ok_10_20":      -5,   # PENALTY: 5.9% hit rate vs 12.1% baseline (n=1211, 2026-03-09)
     "daily_ok_40_100":      7,   # boosted: 14.2% hit rate (n=162, 2026-03-09)
     "sideways_chop":        8,
     "yesterday_green":      9,   # boosted: 14.4% hit rate (n=263, 2026-03-09)
-    "shares_lt10m":         18,  # reduced: 8.1% hit rate, below baseline (n=111, 2026-03-09)
-    "shares_lt30m":         28,  # PRIMARY: 15.7% hit rate; lt30m+40_100=24.6%, lt30m+rv50x=27% (n=172, 2026-03-09)
+    "shares_lt10m":         18,  # 41.1% hit rate (+10.3pp, n=1096, 2026-03-14)
+    "shares_lt30m":         28,  # PRIMARY: 41.8% hit rate (+11.0pp, n=1091, 2026-03-14)
     "shares_lt100m":        8,
     "no_news_bonus":        5,    # nice-to-have
     "high_cash_bonus":      5,    # nice-to-have
     "institution_moderate": 2,    # 15–39% institutional ownership
-    "institution_strong":   5,    # 40%+ benchmark — holds the floor
+    "institution_strong":   0,    # ZEROED: 13.6% hit rate (-17.2pp, n=103, 2026-03-14) — actively harmful
     "sector_biotech_bonus": 5,    # Healthcare/Biotech historically outperforms
     # Optional criteria — disabled (0) by default, Auto AI can enable
     # NOTE: first_hour_vol_20m is tracked in fired_signals for hypothesis testing

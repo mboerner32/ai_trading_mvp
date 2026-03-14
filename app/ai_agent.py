@@ -321,10 +321,20 @@ def recommend_trade(stock: dict, hypothesis: str = None,
             lines.append(f"  {h['timestamp']}: score={h['score']}, relvol={relvol:.1f}x{nd}")
         history_section = "\n".join(lines)
 
-    # Context 4: market context (day of week)
+    # Context 4: market context (day of week) — real hit rates from 4133-row DB, 2026-03-14
     day_name = datetime.now().strftime("%A")
-    _dow_hit = {"Monday": "9.5%", "Tuesday": "9.4%", "Wednesday": "7.2% (worst)", "Thursday": "8.9%", "Friday": "13.5% (best)"}
-    market_section = f"\nMarket context: Today is {day_name} (historical hit rate: {_dow_hit.get(day_name, 'N/A')})."
+    _dow_data = {
+        "Monday":    ("34.6%", "+3.8pp", "normal scrutiny"),
+        "Tuesday":   ("34.7%", "+3.9pp", "normal scrutiny"),
+        "Wednesday": ("20.1%", "-10.7pp", "ELEVATED SCRUTINY — historically weakest day, 15pp below Mon/Tue/Fri"),
+        "Thursday":  ("20.4%", "-10.4pp", "ELEVATED SCRUTINY — historically weak day, 15pp below Mon/Tue/Fri"),
+        "Friday":    ("36.0%", "+5.2pp", "normal scrutiny"),
+    }
+    _dow = _dow_data.get(day_name, ("N/A", "N/A", "normal scrutiny"))
+    market_section = (f"\nMarket context: Today is {day_name} "
+                      f"(hit rate: {_dow[0]}, {_dow[1]} vs baseline — {_dow[2]}). "
+                      f"On Wed/Thu the model historically struggles to find profitable setups — "
+                      f"you must find a specific edge that overcomes this headwind or call NO_TRADE.")
 
     # Context 5: LSTM model prediction
     if lstm_prob is not None:
@@ -415,8 +425,9 @@ def recommend_trade(stock: dict, hypothesis: str = None,
         "Adequate (≥5x)" if relvol_raw and relvol_raw >= 5 else "Low"
     )
 
-    prompt = f"""You are a momentum trading AI making a TRADE or NO_TRADE call for a low-float microcap.
-Strategy: buy stocks showing unusual volume setups and target +20% above the alert price within 1–2 weeks. Target precision: 75–80% of TRADE calls should hit this. You are expected to be highly selective — most stocks should be NO_TRADE.
+    prompt = f"""You are a momentum trading AI making a TRADE or NO_TRADE call. Treat this as if you are trading with your own money — every TRADE call costs real capital, and losses come out of your pocket. Be selective. Be precise.
+
+Strategy: identify low-float microcaps with unusual volume that will hit +20% above alert price within 5 trading days (77% of winners hit Day 1, 97% by Day 5). Target precision: 70%+ of TRADE calls must hit +20%. Most stocks should be NO_TRADE.
 
 Stock: {stock['symbol']} | Score: {stock['score']}/100 | Price: ${stock['price']}
 Signals:
@@ -425,23 +436,41 @@ Signals:
 - Daily gain today: {stock.get('daily_return_pct', 'N/A')}%
 - Sideways Compression: {checklist.get('sideways_chop')}
 - Yesterday Green: {checklist.get('yesterday_green')}
-- Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'} (40%+ = strong floor, lowers downside risk)
-- Sector/Industry: {checklist.get('sector') or 'N/A'} / {checklist.get('industry') or 'N/A'} (Biotech/Healthcare historically outperforms for this setup){signal_perf_section}{calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}{news_section}{accuracy_section}
+- Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'}
+- Sector/Industry: {checklist.get('sector') or 'N/A'} / {checklist.get('industry') or 'N/A'}{signal_perf_section}{calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}{news_section}{accuracy_section}
 
-Backtested trend (live scans, measured from alert price, 1–2 week window):
-- Stocks making a significant move today (20%+) with moderate relative volume (<25x) and coming from a non-trending setup (yesterday flat or down) have shown the highest 2-week hit rates (~75%). This is a trend to factor in — not a hard rule.
-- Extreme relvol (50–99x) has underperformed moderate relvol (10–24x) for 2-week holds.
-- Shares 10–30M float → strongest size tier. Ultra-micro (<10M) → too volatile, lower hit rate.
-- Modest gainers (10–20% today) have historically underperformed vs bigger movers.
-- Day of week: Friday slightly better, Wednesday weakest.
-Evaluate each stock on its own merits using this as directional context, not a filter.
+BACKTESTED PERFORMANCE (4,133 labeled live scans, 2026-03-14):
+Relvol tiers — hit rates vs 30.8% baseline:
+  ≥500x:    66.7% (+35.9pp, n=135) — strong edge, HIGH confidence warranted if other signals align
+  100–499x: 59.9% (+29.1pp, n=364) — strong edge, good foundation for TRADE
+  50–99x:   30.3% (-0.5pp,  n=426) — at baseline, NO inherent edge; need 3+ other strong signals to justify TRADE
+  25–49x:   25.6% (-5.2pp,  n=1053) — below baseline; requires exceptional setup to overcome headwind
+  10–24x:   26.0% (-4.8pp,  n=2051) — below baseline; requires exceptional setup to overcome headwind
 
-TRADE calls require genuine, multi-signal conviction. Ask yourself: is there a clear reason this specific stock will trade 20%+ higher within 2 weeks from the current price? If the answer requires stretching or ignoring red flags, call NO_TRADE. A well-reasoned NO_TRADE is always better than a low-conviction TRADE.
+Float/shares tiers:
+  <10M:     41.1% (+10.3pp) — strong signal
+  10–30M:   41.8% (+11.0pp) — strongest tier
+  30–100M:  22.9% (-7.9pp)  — significant drag
+  >100M:    filtered out
 
-Confidence criteria (apply these strictly):
-- HIGH: 3+ strong signals aligned (relvol ≥25x, low float, sideways compression, sector catalyst, or yesterday green), no material red flags, clear thesis for 20%+ move
-- MEDIUM: 2 supporting signals, or 3+ signals but one concern present (e.g. already up 30%+, high float, no compression)
-- LOW: weak setup, contradictory signals, or only 1 supporting factor
+Day of week (built into market context above — use it).
+
+Key findings:
+- institution_strong (40%+ ownership) is HARMFUL: 13.6% hit rate (-17.2pp). Do NOT treat high institutional ownership as a positive.
+- 77% of winners hit within Day 1. If this stock doesn't have an obvious near-term catalyst, it probably won't hit 20% in time.
+- The window is 5 days, not 2 weeks. Ask: will this stock move 20%+ in the next 5 trading days specifically?
+
+RELVOL SCRUTINY TIERS:
+- ≥100x relvol: standard conviction required. Take-profit set at 25% (these stocks run).
+- 50–99x relvol: you need 3+ additional strong signals (low float <30M, sideways compression, yesterday green, biotech catalyst) to justify TRADE. Without them, call NO_TRADE.
+- <50x relvol: requires truly exceptional setup — near-perfect alignment of signals. Default to NO_TRADE unless you have clear conviction.
+
+TRADE calls require genuine conviction. Ask: what specific reason will cause this stock to be 20%+ higher within 5 trading days? If the answer is vague, call NO_TRADE.
+
+Confidence criteria:
+- HIGH: relvol ≥100x + float <30M + 2+ other signals aligned, no red flags
+- MEDIUM: relvol 50–99x with 3+ strong signals, OR relvol ≥100x with minor concern
+- LOW: weak relvol with compensating signals — usually NO_TRADE territory
 
 Respond EXACTLY (no other text):
 DECISION: TRADE or NO_TRADE

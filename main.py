@@ -859,10 +859,13 @@ def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze") -> s
         position_size = r.get("ai_rec", {}).get("amount", 1000)
         entry_price   = _fetch_current_price(symbol, r.get("price", 0))
         confidence    = tc.get("confidence", "")
+        # Higher take-profit for extreme relvol: 100x+ hits 60–67% and moves fast
+        _rv = r.get("relative_volume") or 0
+        _tp = 25.0 if _rv >= 100 else 20.0
         result = open_trade(
             symbol, entry_price, position_size,
             f"auto-trade: {mode} | {confidence} confidence AI call",
-            take_profit_pct=20.0,
+            take_profit_pct=_tp,
             stop_loss_pct=_DAILY_STOP_LOSS_PCT,
             trade_mode=mode,
         )
