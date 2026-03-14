@@ -1326,7 +1326,7 @@ def _weekly_analysis():
             "SELECT gate, COUNT(*), "
             "ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
             "FROM ("
-            "  SELECT days_to_20pct, next_day_return, "
+            "  SELECT days_to_20pct, next_day_return, lstm_prob, "
             "    CASE WHEN lstm_prob >= 0.75 THEN '>=75%' "
             "         WHEN lstm_prob >= 0.65 THEN '65-74%' "
             "         WHEN lstm_prob >= 0.55 THEN '55-64%' "
@@ -1769,6 +1769,7 @@ def _weekly_analysis():
             print(f"WEEKLY: insights generation failed — {_ie}")
 
         # Check cooldown: no proposals within 7 days of last weight change
+        lines = []  # legacy HTML accumulator (kept for compat; content sent via html_secs/tg_parts above)
         last_changed_row = conn.execute(
             "SELECT value FROM settings WHERE key='squeeze_weights_last_changed'"
         ).fetchone() if False else None  # conn already closed above — re-open
