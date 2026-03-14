@@ -36,6 +36,56 @@ def get_stock_news(symbol: str, max_headlines: int = 5) -> list[str]:
         return []
 
 
+def _get_lstm_tier_context() -> str:
+    """
+    Query the live DB for LSTM gate tier hit rates and return a formatted
+    context string for injection into the trade prompt. Cached for 1 hour.
+    Returns empty string if insufficient data (<30 LSTM-scored rows).
+    """
+    import sqlite3 as _sq
+    import time as _time
+    cache = _get_lstm_tier_context.__dict__
+    if cache.get("_ts") and _time.monotonic() - cache["_ts"] < 3600 and cache.get("_val") is not None:
+        return cache["_val"]
+    try:
+        from app.database import DB_NAME
+        conn = _sq.connect(DB_NAME)
+        rows = conn.execute("""
+            SELECT gate, COUNT(*) as n,
+              ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) as hit
+            FROM (
+              SELECT days_to_20pct,
+                CASE WHEN lstm_prob>=0.65 THEN '>=65%'
+                     WHEN lstm_prob>=0.55 THEN '55-64%'
+                     WHEN lstm_prob>=0.45 THEN '45-54%'
+                     ELSE '<45%' END as gate
+              FROM scans WHERE next_day_return IS NOT NULL AND lstm_prob IS NOT NULL
+            ) GROUP BY gate ORDER BY MIN(gate) DESC
+        """).fetchall()
+        baseline = conn.execute("""
+            SELECT COUNT(*),
+              ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1)
+            FROM scans WHERE next_day_return IS NOT NULL AND lstm_prob IS NOT NULL
+        """).fetchone()
+        conn.close()
+        total = sum(r[1] for r in rows)
+        if total < 30 or not baseline or not baseline[0]:
+            cache["_ts"] = _time.monotonic()
+            cache["_val"] = ""
+            return ""
+        lines = [f"\nLSTM backtested tier performance ({baseline[0]} labeled scans, baseline {baseline[1]}%):"]
+        for gate, n, hit in rows:
+            if n >= 5:
+                vs = round((hit or 0) - (baseline[1] or 0), 1)
+                lines.append(f"  LSTM {gate}: {hit}% ({'+' if vs>=0 else ''}{vs}pp vs baseline, n={n})")
+        result = "\n".join(lines)
+        cache["_ts"] = _time.monotonic()
+        cache["_val"] = result
+        return result
+    except Exception:
+        return ""
+
+
 def parse_rules_from_synthesis(text: str) -> list:
     """
     Extract individual hypothesis rules from a synthesis output string.
@@ -336,18 +386,28 @@ def recommend_trade(stock: dict, hypothesis: str = None,
                       f"On Wed/Thu the model historically struggles to find profitable setups — "
                       f"you must find a specific edge that overcomes this headwind or call NO_TRADE.")
 
-    # Context 5: LSTM model prediction
+    # Context 5: LSTM model prediction + live backtested tier performance
+    _lstm_tier_context = _get_lstm_tier_context()
     if lstm_prob is not None:
+        if lstm_prob >= 0.65:
+            _lstm_interp = "STRONG signal — historically the highest-performing tier."
+        elif lstm_prob >= 0.55:
+            _lstm_interp = "POSITIVE signal — above baseline, meaningful edge."
+        elif lstm_prob >= 0.45:
+            _lstm_interp = "WEAK signal — near baseline, limited predictive edge."
+        else:
+            _lstm_interp = "NEGATIVE signal — below baseline. Require 3+ strong confirming signals to override."
         lstm_section = (
-            f"\nLSTM model (trained on historical setups): "
-            f"{lstm_prob:.0%} probability this stock hits +20% within 10 trading days. "
-            f"{'LSTM disagrees with a TRADE call — require exceptional signal alignment to override.' if lstm_prob < 0.50 else ''}"
+            f"\nLSTM model: {lstm_prob:.0%} probability this stock hits +20% within 10 trading days. "
+            f"{_lstm_interp}"
+            f"{_lstm_tier_context}"
         )
     else:
         lstm_section = (
             "\nLSTM model: unavailable (insufficient price history for this symbol). "
             "Treat as a missing signal — do NOT assume the setup is strong. "
-            "Require 3+ strong confirming signals to call TRADE without LSTM."
+            f"Require 3+ strong confirming signals to call TRADE without LSTM."
+            f"{_lstm_tier_context}"
         )
 
     # Context 6: recent news headlines
