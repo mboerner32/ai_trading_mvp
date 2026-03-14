@@ -3,7 +3,7 @@ Local PyTorch LSTM model for predicting 20%-hit probability on low-float momentu
 
 Architecture: 2-layer LSTM → sigmoid binary classifier
 Input:  20 trading days × 10 features per day
-Output: probability that stock intraday HIGH touches +20% within 7 trading days
+Output: probability that stock intraday HIGH touches +20% within 10 trading days
 
 Features (10):
   1. daily_return      — daily % change, clipped ±1
@@ -303,13 +303,69 @@ def load_lstm():
         return None
 
 
+def predict_hit_probability_as_of(symbol: str,
+                                   scan_date,
+                                   shares_outstanding: int = None,
+                                   sector: str = None) -> float | None:
+    """
+    Historical variant: fetch the 20-day window ending the day BEFORE scan_date,
+    exactly matching what predict_hit_probability() would have returned if called
+    live on scan_date during market hours.
+
+    scan_date: date object, or ISO string like "2026-03-05" or "2026-03-05T20:00:00"
+    """
+    try:
+        import torch
+        import yfinance as yf
+        from datetime import datetime, timedelta
+        from app.scanner import prepare_dataframe
+
+        model = load_lstm()
+        if model is None:
+            return None
+
+        if isinstance(scan_date, str):
+            scan_date = datetime.fromisoformat(scan_date[:10]).date()
+
+        # yfinance end is exclusive → end=scan_date gives data through scan_date-1 business day
+        # That matches the live "exclude today's incomplete candle" convention.
+        start = scan_date - timedelta(days=50)   # ~50 calendar days ≥ 20 trading days
+        df = yf.download(symbol,
+                         start=start.strftime("%Y-%m-%d"),
+                         end=scan_date.strftime("%Y-%m-%d"),
+                         interval="1d", progress=False, auto_adjust=False)
+
+        if df.empty or len(df) < SEQUENCE_LEN:
+            return None
+
+        df = prepare_dataframe(df)
+        if len(df) < SEQUENCE_LEN:
+            return None
+
+        seq = []
+        for j in range(len(df) - SEQUENCE_LEN, len(df)):
+            feats = extract_features(df.iloc[j], shares_outstanding, sector)
+            if feats is None:
+                return None
+            seq.append(feats)
+
+        x = torch.tensor([seq], dtype=torch.float32)
+        with torch.no_grad():
+            prob = model(x).item()
+
+        return round(prob, 4)
+
+    except Exception:
+        return None
+
+
 def predict_hit_probability(symbol: str,
                             shares_outstanding: int = None,
                             sector: str = None) -> float | None:
     """
     Fetch the last 3 months of OHLCV for symbol, extract the 20-day window
     ending the day before today (matching training distribution), run the LSTM,
-    and return a 0–1 probability.
+    and return a 0–1 probability of hitting +20% within 10 trading days.
     Returns None on any error (model not trained, bad data, etc.).
     """
     try:

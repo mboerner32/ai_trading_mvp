@@ -145,6 +145,11 @@ from app.database import (
     is_user_admin,
 )
 from app.ml_optimizer import train_xgb_weights, get_xgb_status
+from app.stop_loss_optimizer import (
+    get_stop_loss_params, save_stop_loss_params,
+    backtest_params as backtest_stop_loss,
+    validate_proposed_params,
+)
 
 app = FastAPI()
 
@@ -206,13 +211,21 @@ _MODEL_LABELS = {
     "standard": "Daily Standard",
 }
 
-# Daily model exit rules — applied to squeeze and autoai positions only
-_DAILY_STOP_LOSS_PCT      = 20.0   # hard cut: -20% from entry
-_DAILY_TRAIL_ACTIVATE_PCT = 10.0   # trailing stop activates once up +10%
-_DAILY_TRAIL_PULLBACK_PP  = 12.0   # exit if price drops 12pp below peak
-_DAILY_TIME_STOP_DAYS     = 10     # close after 10 trading days if still negative
-_DAILY_STALE_DAYS         = 7      # close after 7 trading days if gain < +3%
-_DAILY_STALE_GAIN_PCT     = 3.0    # flatline threshold for staleness stop
+# Exit rule params — loaded from DB settings, refreshed on each optimize cycle.
+# Use helper to avoid re-importing at module level (settings table may not exist yet).
+def _daily_params() -> dict:
+    try:
+        return get_stop_loss_params("daily")
+    except Exception:
+        return {"stop_loss_pct": 20.0, "trail_activate_pct": 10.0,
+                "trail_pullback_pp": 12.0, "time_stop_days": 10,
+                "stale_days": 7, "stale_gain_pct": 3.0}
+
+def _5m_params() -> dict:
+    try:
+        return get_stop_loss_params("5m")
+    except Exception:
+        return {"stop_loss_pct": 15.0, "trail_activate_pct": 10.0, "trail_pullback_pp": 8.0}
 
 
 def _trading_days_since(opened_at_iso: str) -> int:
@@ -281,10 +294,48 @@ def _autoclose_take_profit() -> list:
                 take_profits.append(data)
             continue   # no further checks once closed
 
+        # ── 5m model risk exits (fivemin only) ───────────────────────────
+        if mode == "fivemin":
+            p5 = _5m_params()
+            high_watermark = pos.get("high_watermark") or entry
+            peak_pct       = (high_watermark - entry) / entry * 100
+            close_reason   = None
+
+            # Update high watermark (5m uses closing price for trailing, consistent with daily)
+            if price > high_watermark:
+                update_high_watermark(trade_id, price)
+                peak_pct = pnl_pct
+
+            # 1. Hard stop: -15% on closing price
+            if pnl_pct <= -p5["stop_loss_pct"]:
+                close_reason = "stop_loss"
+
+            # 2. Trailing stop: arms at +trail_activate_pct, fires on pullback
+            elif peak_pct >= p5["trail_activate_pct"] and pnl_pct <= (peak_pct - p5["trail_pullback_pp"]):
+                close_reason = "trailing_stop"
+
+            if close_reason:
+                result = close_trade(trade_id, price, close_reason=close_reason)
+                if result:
+                    broker_close(symbol)
+                    data = {
+                        "symbol":       symbol,
+                        "entry_price":  entry,
+                        "exit_price":   round(price, 4),
+                        "realized_pnl": result["realized_pnl"],
+                        "pnl_pct":      round(pnl_pct, 1),
+                        "close_reason": close_reason,
+                        "model_label":  _MODEL_LABELS.get(mode, mode),
+                    }
+                    closed.append(data)
+                    risk_exits.append(data)
+            continue
+
         # ── Daily model risk exits (squeeze / autoai only) ───────────────
         if mode not in ("squeeze", "autoai"):
             continue
 
+        dp             = _daily_params()
         model_label    = _MODEL_LABELS.get(mode, mode)
         high_watermark = pos.get("high_watermark") or entry
         # entry already validated > 0 above
@@ -299,20 +350,20 @@ def _autoclose_take_profit() -> list:
             update_high_watermark(trade_id, price)
             peak_pct = pnl_pct
 
-        # 1. Hard stop loss: -20% on closing price
-        if pnl_pct <= -_DAILY_STOP_LOSS_PCT:
+        # 1. Hard stop loss on closing price
+        if pnl_pct <= -dp["stop_loss_pct"]:
             close_reason = "stop_loss"
 
-        # 2. Trailing stop: activates at +10% close, exits if close pulls back 12pp from peak close
-        elif peak_pct >= _DAILY_TRAIL_ACTIVATE_PCT and pnl_pct <= (peak_pct - _DAILY_TRAIL_PULLBACK_PP):
+        # 2. Trailing stop: activates at trail_activate_pct, fires on pullback
+        elif peak_pct >= dp["trail_activate_pct"] and pnl_pct <= (peak_pct - dp["trail_pullback_pp"]):
             close_reason = "trailing_stop"
 
-        # 3. Time stop: 10 trading days and still negative
-        elif trading_days >= _DAILY_TIME_STOP_DAYS and pnl_pct < 0:
+        # 3. Time stop: still negative after time_stop_days trading days
+        elif trading_days >= int(dp["time_stop_days"]) and pnl_pct < 0:
             close_reason = "time_stop"
 
-        # 4. Staleness stop: 7 trading days and gain < +3% (momentum gone)
-        elif trading_days >= _DAILY_STALE_DAYS and pnl_pct < _DAILY_STALE_GAIN_PCT:
+        # 4. Staleness stop: gain < stale_gain_pct after stale_days trading days
+        elif trading_days >= int(dp["stale_days"]) and pnl_pct < dp["stale_gain_pct"]:
             close_reason = "staleness_stop"
 
         if close_reason:
@@ -418,6 +469,105 @@ def _build_hypothesis_text_from_autoai(result: dict) -> str:
     if rationale:
         lines.append(f"\n## Agent Context\n{rationale}")
     return "\n".join(lines)
+
+
+def _queue_stop_loss_proposal(model_type, current_params, proposed_params,
+                               validation, ai_decision, confidence, rationale):
+    """Save a pending stop-loss parameter proposal to the settings table."""
+    import json as _json
+    key = f"stop_loss_proposal_{model_type}"
+    payload = {
+        "model_type":      model_type,
+        "current_params":  current_params,
+        "proposed_params": proposed_params,
+        "winner_preservation": validation.get("winner_preservation"),
+        "loss_reduction":  validation.get("loss_reduction"),
+        "ai_decision":     ai_decision,
+        "confidence":      confidence,
+        "rationale":       rationale,
+        "proposed_at":     datetime.datetime.utcnow().isoformat(),
+        "status":          "pending",
+    }
+    try:
+        conn = __import__("sqlite3").connect(__import__("os").environ.get("DB_PATH", "scan_history.db"))
+        conn.execute("""
+            INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """, (key, _json.dumps(payload), payload["proposed_at"]))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"STOP-LOSS OPT: failed to queue proposal — {e}")
+
+
+def _run_stop_loss_optimization():
+    """
+    Propose and validate stop-loss parameter changes for daily and 5m models.
+    Uses backtest_stop_loss() to simulate candidate params against all labeled
+    scan history. Auto-applies only when Claude approves AND both constraints pass:
+      - Winner preservation >= 95%  (don't prematurely close winning trades)
+      - Avg loss reduction >= 5%    (must meaningfully reduce downside)
+    Logs outcome for each model type.
+    """
+    from app.ai_agent import optimize_stop_loss as ai_optimize_sl
+
+    for model_type in ("daily", "5m"):
+        try:
+            current = get_stop_loss_params(model_type)
+            print(f"STOP-LOSS OPT ({model_type}): backtesting current params...")
+            cur_metrics = backtest_stop_loss(current, mode=model_type, max_scans=500)
+            if cur_metrics is None:
+                print(f"STOP-LOSS OPT ({model_type}): insufficient backtest data — skipping")
+                continue
+
+            # Build a conservative candidate: tighten stop_loss_pct by 2pp, leave rest unchanged
+            # Claude will approve/reject/suggest based on the backtest results
+            candidate = current.copy()
+            min_stop = 8.0 if model_type == "5m" else 10.0
+            candidate["stop_loss_pct"] = max(min_stop, current["stop_loss_pct"] - 2.0)
+
+            validation = validate_proposed_params(current, candidate, mode=model_type)
+
+            ai_result = ai_optimize_sl(
+                model_type, current, cur_metrics, candidate, validation
+            )
+
+            decision   = ai_result.get("decision", "reject")
+            confidence = ai_result.get("confidence", 0)
+            rationale  = ai_result.get("rationale", "")
+            final_params = ai_result.get("params", current)
+
+            print(f"STOP-LOSS OPT ({model_type}): decision={decision} "
+                  f"confidence={confidence} — {rationale[:120]}")
+
+            # Queue for human approval — never auto-apply stop-loss changes.
+            # Admin reviews and approves via /analytics (stop-loss pending section).
+            if decision in ("approve", "suggest") and confidence >= 80 and validation["valid"]:
+                _queue_stop_loss_proposal(
+                    model_type=model_type,
+                    current_params=current,
+                    proposed_params=final_params,
+                    validation=validation,
+                    ai_decision=decision,
+                    confidence=confidence,
+                    rationale=rationale,
+                )
+                print(f"STOP-LOSS OPT ({model_type}): proposal QUEUED for admin review "
+                      f"(confidence={confidence})")
+                _send_telegram_admin(
+                    f"<b>Stop-Loss Proposal Queued ({model_type})</b>\n"
+                    f"Winner preservation: {validation['winner_preservation']:.1%} · "
+                    f"Loss reduction: {validation['loss_reduction']*100:.1f}%\n"
+                    f"Review in Analytics → Stop-Loss tab\n"
+                    f"<i>{rationale[:200]}</i>"
+                )
+            else:
+                print(f"STOP-LOSS OPT ({model_type}): no proposal — "
+                      f"{validation.get('failure_reason') or 'low AI confidence'}")
+
+        except Exception as e:
+            import traceback
+            print(f"STOP-LOSS OPT ({model_type}): error — {e}\n{traceback.format_exc()}")
 
 
 def _auto_ai_optimize():
@@ -549,6 +699,12 @@ def _auto_ai_optimize():
             print(f"AUTO-AI: weights auto-applied (confidence={weight_conf}, closed_trades={num_closed})")
         else:
             print(f"AUTO-AI: weights NOT applied — confidence={weight_conf}, closed_trades={num_closed}")
+
+        # ── Stop-loss parameter optimization ─────────────────────────────
+        # Run every auto-AI cycle. Backtests proposed changes against scan history,
+        # then auto-applies only if both constraints pass (95% winner preservation
+        # + 5% avg-loss reduction). Very conservative: if in doubt, Claude rejects.
+        _run_stop_loss_optimization()
 
         save_autoai_log({
             "ran_at":                    datetime.datetime.utcnow().isoformat(),
@@ -757,14 +913,13 @@ def _scheduled_scan():
             save_scan_cache(mode, data["results"], data["summary"])
             print(f"SCHEDULER: {mode} scan complete ({len(data['results'])} results)")
             if mode in ("autoai", "squeeze"):
-                label = "Auto AI" if mode == "autoai" else "Complex + AI"
                 # Enrich score >= 50 with AI calls + LSTM before alerting; persist to DB
                 _enrich_high_scorers(data["results"], mode=mode, scan_id_map=scan_ids)
                 # Auto paper-trade FIRST so Alpaca order is queued before Telegram fires
                 traded = _auto_paper_trade(data["results"], today_str)
                 # Alert TRADE calls that pass LSTM quality gate (55%+ or None+score>=75)
                 gated_alerts = [r for r in data["results"] if _passes_lstm_gate(r)]
-                send_scan_alert(gated_alerts, label, min_score=0, ai_trade_only=True, traded_symbols=traded)
+                send_scan_alert(gated_alerts, mode, min_score=0, ai_trade_only=True, traded_symbols=traded)
                 for r in gated_alerts:
                     if (r.get("ai_trade_call") or {}).get("decision") == "TRADE":
                         _alerted_today.add(r.get("symbol"))
@@ -1147,6 +1302,76 @@ def _weekly_analysis():
             "AND timestamp >= date('now','-7 days')"
         ).fetchone()[0]
 
+        # Float/shares bucket hit rates
+        float_rows = c.execute(
+            "SELECT CASE WHEN shares_outstanding < 10000000 THEN 'lt10m' "
+            "WHEN shares_outstanding < 30000000 THEN 'lt30m' "
+            "WHEN shares_outstanding < 100000000 THEN 'lt100m' "
+            "ELSE '100m+' END as bucket, "
+            "COUNT(*), ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM scans WHERE next_day_return IS NOT NULL AND shares_outstanding IS NOT NULL "
+            "GROUP BY bucket ORDER BY MIN(shares_outstanding)"
+        ).fetchall()
+
+        # LSTM gate validation — hit rate at each threshold vs baseline (days_to_20pct label)
+        lstm_baseline = c.execute(
+            "SELECT COUNT(*), ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM scans WHERE next_day_return IS NOT NULL"
+        ).fetchone()
+        lstm_gate_rows = c.execute(
+            "SELECT gate, COUNT(*), "
+            "ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM ("
+            "  SELECT days_to_20pct, next_day_return, "
+            "    CASE WHEN lstm_prob >= 0.75 THEN '>=75%' "
+            "         WHEN lstm_prob >= 0.65 THEN '65-74%' "
+            "         WHEN lstm_prob >= 0.55 THEN '55-64%' "
+            "         WHEN lstm_prob >= 0.35 THEN '35-54%' "
+            "         ELSE '<35%' END as gate "
+            "  FROM scans WHERE next_day_return IS NOT NULL AND lstm_prob IS NOT NULL"
+            ") GROUP BY gate ORDER BY MIN(lstm_prob) DESC"
+        ).fetchall()
+
+        # ── Stop-loss params ───────────────────────────────────────────────
+        sl_daily_row = c.execute(
+            "SELECT value FROM settings WHERE key='stop_loss_params_daily'"
+        ).fetchone()
+        sl_5m_row = c.execute(
+            "SELECT value FROM settings WHERE key='stop_loss_params_fivemin'"
+        ).fetchone()
+        sl_prop_daily = c.execute(
+            "SELECT value FROM settings WHERE key='stop_loss_proposal_daily'"
+        ).fetchone()
+        sl_prop_5m = c.execute(
+            "SELECT value FROM settings WHERE key='stop_loss_proposal_fivemin'"
+        ).fetchone()
+
+        # ── AI TRADE call summary ──────────────────────────────────────────
+        # All scans where AI called TRADE with known outcomes
+        trade_scan_rows = c.execute(
+            "SELECT symbol, score, today_return, next_day_return, days_to_20pct, "
+            "       lstm_prob, timestamp, scan_price "
+            "FROM scans "
+            "WHERE ai_trade_rec LIKE '%\"decision\": \"TRADE\"%' "
+            "  AND ai_trade_rec NOT LIKE '%NO_TRADE%' "
+            "  AND next_day_return IS NOT NULL "
+            "ORDER BY timestamp DESC LIMIT 100"
+        ).fetchall()
+
+        # Open paper trades
+        open_trades = c.execute(
+            "SELECT symbol, entry_price, position_size, opened_at, trade_mode, "
+            "       high_watermark, take_profit_pct "
+            "FROM trades WHERE status='open' ORDER BY opened_at DESC"
+        ).fetchall()
+
+        # Closed paper trades (all time)
+        closed_trades_rows = c.execute(
+            "SELECT symbol, entry_price, exit_price, realized_pnl, "
+            "       opened_at, closed_at, close_reason, trade_mode "
+            "FROM trades WHERE status='closed' ORDER BY closed_at DESC"
+        ).fetchall()
+
         conn.close()
 
         # --- Format Telegram message ---
@@ -1177,6 +1402,14 @@ def _weekly_analysis():
             if d:
                 lines.append(f"  {d}: {hit}% (n={n})")
 
+        lines.append("\n<b>Float / Shares Buckets</b>")
+        if float_rows:
+            for bucket, n, hit in float_rows:
+                conf = "H" if n >= 30 else ("M" if n >= 10 else "L")
+                lines.append(f"  {bucket}: {hit}% (n={n}, {conf})")
+        else:
+            lines.append("  No data yet.")
+
         if sig_rows:
             top5 = [r for r in sig_rows[:5]]
             bot5 = [r for r in sig_rows[-5:] if r not in top5]
@@ -1189,6 +1422,151 @@ def _weekly_analysis():
             for k, n, hit in bot5:
                 vs = round(hit - baseline_hit, 1)
                 lines.append(f"  {k}: {hit}% ({vs}pp, n={n})")
+
+        # ── LSTM Gate Validation ───────────────────────────────────────────
+        lb_n, lb_hit = lstm_baseline
+        lines.append(f"\n<b>LSTM Gate Validation</b> (label: hit 20%+ in 10d | baseline: {lb_hit}% n={lb_n})")
+        if lstm_gate_rows:
+            for gate, n, hit in lstm_gate_rows:
+                conf = "H" if n >= 30 else ("M" if n >= 10 else "L")
+                vs = round((hit or 0) - (lb_hit or 0), 1)
+                sign = "+" if vs >= 0 else ""
+                lines.append(f"  LSTM {gate}: {hit}% ({sign}{vs}pp, n={n}, {conf})")
+        else:
+            lines.append("  No LSTM-scored rows with outcomes yet.")
+
+        # ── Stop-Loss Parameters section ──────────────────────────────────
+        import json as _json
+        lines.append("\n&#128683; <b>Stop-Loss Parameters</b>")
+        for label, row, defaults in [
+            ("Daily", sl_daily_row, {"stop_loss_pct": 20.0, "trail_activate_pct": 10.0,
+                                     "trail_pullback_pp": 12.0, "time_stop_days": 10,
+                                     "stale_days": 7, "stale_gain_pct": 3.0}),
+            ("5m",    sl_5m_row,   {"stop_loss_pct": 15.0, "trail_activate_pct": 10.0,
+                                     "trail_pullback_pp": 8.0}),
+        ]:
+            p = {**defaults, **_json.loads(row[0])} if row else defaults
+            if label == "Daily":
+                lines.append(
+                    f"  Daily: stop={p['stop_loss_pct']}% | trail arm={p['trail_activate_pct']}% "
+                    f"pullback={p['trail_pullback_pp']}pp | time={p['time_stop_days']}d | "
+                    f"stale={p['stale_days']}d@{p['stale_gain_pct']}%"
+                )
+            else:
+                lines.append(
+                    f"  5m:    stop={p['stop_loss_pct']}% | trail arm={p['trail_activate_pct']}% "
+                    f"pullback={p['trail_pullback_pp']}pp"
+                )
+
+        # Pending proposals
+        for label, prop_row in [("Daily", sl_prop_daily), ("5m", sl_prop_5m)]:
+            if not prop_row:
+                continue
+            try:
+                prop = _json.loads(prop_row[0])
+                status = prop.get("status", "")
+                if status == "pending":
+                    wp  = round((prop.get("winner_preservation") or 0) * 100, 1)
+                    lr  = round((prop.get("loss_reduction") or 0) * 100, 1)
+                    pp  = prop.get("proposed_params", {})
+                    lines.append(
+                        f"  &#9888;&#65039; PENDING proposal ({label}): "
+                        f"stop→{pp.get('stop_loss_pct')}% | "
+                        f"winner pres={wp}% | loss reduction={lr}% | "
+                        f"confidence={prop.get('confidence')}%"
+                    )
+                    lines.append(f"    Rationale: {prop.get('rationale','')[:120]}")
+                    lines.append(f"    Approve/reject at Analytics → Stop-Loss tab")
+            except Exception:
+                pass
+
+        # ── AI Trade Call Summary ─────────────────────────────────────────
+        lines.append("\n&#127919; <b>AI TRADE Call Performance</b>")
+
+        if trade_scan_rows:
+            tc_total  = len(trade_scan_rows)
+            tc_hit20  = sum(1 for r in trade_scan_rows if r[4] is not None)  # days_to_20pct
+            tc_pos    = sum(1 for r in trade_scan_rows if (r[3] or 0) >= 0)  # next_day_return>=0
+            tc_pct    = round(100.0 * tc_hit20 / tc_total, 1) if tc_total else 0
+            tc_winpct = round(100.0 * tc_pos  / tc_total, 1) if tc_total else 0
+            avg_lstm  = [r[5] for r in trade_scan_rows if r[5] is not None]
+            avg_lstm_pct = round(sum(avg_lstm) / len(avg_lstm) * 100, 1) if avg_lstm else None
+
+            lines.append(
+                f"  Total TRADE calls (labeled): {tc_total} | "
+                f"Hit 20%+: {tc_hit20} ({tc_pct}%) | "
+                f"Day-1 positive: {tc_pos} ({tc_winpct}%)"
+            )
+            if avg_lstm_pct:
+                lines.append(f"  Avg LSTM prob at alert: {avg_lstm_pct}%")
+
+            # This week's TRADE calls
+            week_trades = [r for r in trade_scan_rows
+                           if r[7] and r[6] >= datetime.datetime.utcnow().strftime("%Y-%m-%d")[:8] +
+                           (datetime.datetime.utcnow() - datetime.timedelta(days=7)).strftime("%m-%d")]
+            # Simpler: filter by timestamp string
+            week_cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat()[:10]
+            week_trades = [r for r in trade_scan_rows if str(r[6])[:10] >= week_cutoff]
+            if week_trades:
+                lines.append(f"  This week: {len(week_trades)} TRADE calls")
+                for r in week_trades[:8]:   # show up to 8
+                    sym = r[0]; score = r[1]; ndr = r[3]; d20 = r[4]
+                    lstm = f" LSTM={round(r[5]*100)}%" if r[5] else ""
+                    outcome = (f"✓ hit 20% day {d20}" if d20 else
+                               f"{'▲' if ndr>=0 else '▼'} {ndr:+.1f}% day1")
+                    lines.append(f"    {sym} score={score}{lstm} → {outcome}")
+        else:
+            lines.append("  No labeled TRADE calls yet.")
+
+        # ── Open Positions ────────────────────────────────────────────────
+        lines.append(f"\n&#128994; <b>Open Positions ({len(open_trades)})</b>")
+        if open_trades:
+            import pytz as _pytz
+            now_et = datetime.datetime.now(_pytz.timezone("America/New_York"))
+            for r in open_trades:
+                sym, entry, pos_size, opened_at, mode, hwm, tp = r
+                try:
+                    opened_dt = datetime.datetime.fromisoformat(opened_at)
+                    days_open = (datetime.datetime.utcnow() - opened_dt).days
+                except Exception:
+                    days_open = "?"
+                hwm_pct = round((hwm / entry - 1) * 100, 1) if hwm and entry else "?"
+                lines.append(
+                    f"  {sym} ({mode}) — entry ${entry:.2f} | "
+                    f"peak +{hwm_pct}% | {days_open}d open | size ${pos_size:.0f}"
+                )
+        else:
+            lines.append("  No open positions.")
+
+        # ── Closed Trades ─────────────────────────────────────────────────
+        lines.append(f"\n&#128308; <b>Closed Trades ({len(closed_trades_rows)} total)</b>")
+        if closed_trades_rows:
+            total_pnl    = sum((r[3] or 0) for r in closed_trades_rows)
+            winners      = [r for r in closed_trades_rows if (r[3] or 0) > 0]
+            losers       = [r for r in closed_trades_rows if (r[3] or 0) <= 0]
+            win_rate     = round(100.0 * len(winners) / len(closed_trades_rows), 1)
+            avg_win_pct  = round(sum((r[2]/r[1]-1)*100 for r in winners) / len(winners), 1) if winners else 0
+            avg_loss_pct = round(sum((r[2]/r[1]-1)*100 for r in losers)  / len(losers),  1) if losers  else 0
+            lines.append(
+                f"  Win rate: {win_rate}% | Total P&L: ${total_pnl:+.2f} | "
+                f"Avg win: +{avg_win_pct}% | Avg loss: {avg_loss_pct}%"
+            )
+            # Breakdown by close reason
+            reasons = {}
+            for r in closed_trades_rows:
+                cr = r[6] or "manual"
+                reasons[cr] = reasons.get(cr, 0) + 1
+            lines.append("  Exit reasons: " + " | ".join(f"{k}={v}" for k, v in reasons.items()))
+            # Recent closed trades (last 5)
+            lines.append("  Recent:")
+            for r in closed_trades_rows[:5]:
+                sym, entry, exit_p, pnl, opened_at, closed_at, reason, mode = r
+                if entry and exit_p:
+                    pct = round((exit_p / entry - 1) * 100, 1)
+                    sign = "+" if pct >= 0 else ""
+                    lines.append(f"    {sym} {sign}{pct}% ({reason}) [{mode}]")
+        else:
+            lines.append("  No closed trades yet.")
 
         # Check cooldown: no proposals within 7 days of last weight change
         last_changed_row = conn.execute(
@@ -1229,22 +1607,71 @@ def _weekly_analysis():
             else:
                 lines.append("\nNo high-confidence weight changes proposed this week (n≥100 threshold not met or deviation <5pp).")
 
-        tg_text = "\n".join(lines)
-        _send_telegram_admin(tg_text)
+        # Escape bare < and > that aren't part of intentional HTML tags
+        # (e.g. "<10x" relvol bucket, "<5pp" thresholds) so Telegram HTML parser doesn't choke
+        import re as _re2
+        def _tg_escape(s: str) -> str:
+            # Replace < not followed by allowed tag names or / with &lt;
+            return _re2.sub(r'<(?!/?(?:b|i|a|code|pre|s|u)\b)', '&lt;', s)
+        tg_text = _tg_escape("\n".join(lines))
+        # Telegram max is 4096 chars — split into chunks at newline boundaries
+        _TG_LIMIT = 4000
+        if len(tg_text) <= _TG_LIMIT:
+            _send_telegram_admin(tg_text)
+        else:
+            chunks, current = [], []
+            current_len = 0
+            for line in lines:
+                if current_len + len(line) + 1 > _TG_LIMIT and current:
+                    _send_telegram_admin("\n".join(current))
+                    current, current_len = [], 0
+                current.append(line)
+                current_len += len(line) + 1
+            if current:
+                _send_telegram_admin("\n".join(current))
         print("WEEKLY ANALYSIS: report sent to Telegram")
 
-        # Build HTML email (plain text with minimal formatting)
+        # Build HTML email
+        # Strip Telegram bold tags first; HTML entities (&#NNN;) stay — they render fine in email HTML
         plain = tg_text.replace("<b>", "").replace("</b>", "")
+        import re as _re
+        _SECTION_HEADERS = (
+            "Score Buckets", "AI TRADE Precision",
+            "Relvol Tiers", "Daily Gain Buckets", "Day of Week",
+            "Float / Shares Buckets",
+            "Top Signals", "Bottom Signals",
+            "LSTM Gate Validation",
+            "Stop-Loss Parameters",
+            "AI TRADE Call Performance",
+            "Proposed Changes",
+        )
+        _ORANGE_HEADERS = ("Proposed Changes",)
+        _GREEN_HEADERS  = ("Open Positions",)
+        _RED_HEADERS    = ("Closed Trades",)
+
         html_rows = []
         for ln in plain.split("\n"):
             ln_stripped = ln.strip()
-            if ln_stripped.startswith("Weekly Model Analysis"):
-                html_rows.append(f"<h2>{ln_stripped}</h2>")
-            elif ln_stripped.startswith("Proposed Changes"):
-                html_rows.append(f"<h3 style='color:#e67e22'>{ln_stripped}</h3>")
+            # Strip leading emoji/non-word chars to match section header text
+            _text = _re.sub(r'^[^\w]+', '', ln_stripped).strip()
+
+            if _text.startswith("Weekly Model Analysis"):
+                html_rows.append(f"<h2 style='border-bottom:2px solid #2c3e50;padding-bottom:4px'>{ln_stripped}</h2>")
+            elif any(_text.startswith(h) for h in _ORANGE_HEADERS):
+                html_rows.append(f"<h3 style='color:#e67e22;margin-top:16px;margin-bottom:4px'>{ln_stripped}</h3>")
+            elif any(_text.startswith(h) for h in _GREEN_HEADERS):
+                html_rows.append(f"<h3 style='color:#27ae60;margin-top:16px;margin-bottom:4px'>{ln_stripped}</h3>")
+            elif any(_text.startswith(h) for h in _RED_HEADERS):
+                html_rows.append(f"<h3 style='color:#c0392b;margin-top:16px;margin-bottom:4px'>{ln_stripped}</h3>")
+            elif any(_text.startswith(h) for h in _SECTION_HEADERS):
+                html_rows.append(f"<h3 style='color:#2c3e50;margin-top:16px;margin-bottom:4px'>{ln_stripped}</h3>")
             elif ln_stripped.startswith("REDUCE") or ln_stripped.startswith("BOOST"):
                 color = "#c0392b" if ln_stripped.startswith("REDUCE") else "#27ae60"
-                html_rows.append(f"<p style='color:{color};margin:2px 0'>{ln_stripped}</p>")
+                html_rows.append(f"<p style='color:{color};margin:2px 0;font-weight:bold'>{ln_stripped}</p>")
+            elif "PENDING proposal" in ln_stripped:
+                html_rows.append(f"<p style='color:#e67e22;margin:2px 0;font-weight:bold'>{ln_stripped}</p>")
+            elif ln_stripped.startswith("Win rate:") or ln_stripped.startswith("Total TRADE calls"):
+                html_rows.append(f"<p style='margin:2px 0;font-weight:bold'>{ln_stripped}</p>")
             elif ln_stripped == "":
                 html_rows.append("<br>")
             else:
@@ -1260,7 +1687,10 @@ def _weekly_analysis():
         )
 
     except Exception as e:
-        print(f"WEEKLY ANALYSIS: failed — {e}")
+        import traceback
+        msg = f"WEEKLY ANALYSIS: failed — {e}\n{traceback.format_exc()}"
+        print(msg)
+        _send_telegram_admin(f"⚠️ <b>Weekly report failed</b>\n<code>{str(e)[:300]}</code>")
 
 
 _scheduler = BackgroundScheduler(timezone=pytz.timezone("America/New_York"))
@@ -1592,9 +2022,14 @@ def trades_page(request: Request):
         return RedirectResponse("/login")
 
     # --- Auto-close any positions that have hit their per-trade take-profit target ---
+    # Fetch prices once and cache; reuse for both auto-close check and display.
     auto_closed = []
     now = datetime.datetime.now()
+    _price_cache: dict = {}
     for pos in get_open_positions():
+        sym = pos["symbol"]
+        price = _fetch_current_price(sym, pos["entry_price"])
+        _price_cache[sym] = price
         # Grace period: never auto-close a trade opened less than 5 minutes ago
         try:
             opened_dt = datetime.datetime.fromisoformat(pos["opened_at"].replace(" ", "T"))
@@ -1604,14 +2039,13 @@ def trades_page(request: Request):
             print(f"TRADES: failed to parse opened_at for {pos.get('symbol','?')}: {_e}")
         take_profit_target = pos.get("take_profit_pct", 20.0)
         target_price = pos["entry_price"] * (1 + take_profit_target / 100)
-        current_price = _fetch_current_price(pos["symbol"], pos["entry_price"])
-        if current_price >= target_price:
-            result = close_trade(pos["trade_id"], current_price)
+        if price >= target_price:
+            result = close_trade(pos["trade_id"], price)
             if result:
-                broker_close(pos["symbol"])
+                broker_close(sym)
                 auto_closed.append({
-                    "symbol": pos["symbol"],
-                    "exit_price": round(current_price, 4),
+                    "symbol": sym,
+                    "exit_price": round(price, 4),
                     "realized_pnl": round(result["realized_pnl"], 2),
                 })
 
@@ -1622,7 +2056,7 @@ def trades_page(request: Request):
 
     open_value = 0.0
     for pos in positions:
-        current_price = _fetch_current_price(pos["symbol"], pos["entry_price"])
+        current_price = _price_cache.get(pos["symbol"]) or _fetch_current_price(pos["symbol"], pos["entry_price"])
         unrealized_pnl = (current_price - pos["entry_price"]) * pos["shares"]
         current_value = current_price * pos["shares"]
         open_value += current_value
@@ -2289,6 +2723,60 @@ def rescore_history(request: Request):
     weights = weights_data["weights"] if weights_data else DEFAULT_SQUEEZE_WEIGHTS
     n = rescore_historical_from_signals(weights)
     return RedirectResponse(f"/analytics?rescore=done&rows={n}", status_code=303)
+
+
+@app.post("/stop-loss-proposal/approve")
+def approve_stop_loss_proposal(request: Request, model_type: str = Form(...)):
+    """Admin approves a pending stop-loss parameter proposal and applies it."""
+    if "user" not in request.session or not is_user_admin(request.session["user"]):
+        return RedirectResponse("/login", status_code=303)
+    import json as _json, sqlite3 as _sq, os as _os
+    key = f"stop_loss_proposal_{model_type}"
+    try:
+        conn = _sq.connect(_os.environ.get("DB_PATH", "scan_history.db"))
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        conn.close()
+        if not row:
+            return RedirectResponse("/analytics?stop_loss=no_proposal", status_code=303)
+        proposal = _json.loads(row[0])
+        if proposal.get("status") != "pending":
+            return RedirectResponse("/analytics?stop_loss=already_actioned", status_code=303)
+        save_stop_loss_params(model_type, proposal["proposed_params"])
+        # Mark proposal as approved
+        proposal["status"] = "approved"
+        conn2 = _sq.connect(_os.environ.get("DB_PATH", "scan_history.db"))
+        conn2.execute("UPDATE settings SET value=?, updated_at=? WHERE key=?",
+                      (_json.dumps(proposal), datetime.datetime.utcnow().isoformat(), key))
+        conn2.commit()
+        conn2.close()
+        print(f"STOP-LOSS: {model_type} params approved by admin → {proposal['proposed_params']}")
+    except Exception as e:
+        print(f"STOP-LOSS: approve failed — {e}")
+    return RedirectResponse(f"/analytics?stop_loss=approved&model={model_type}", status_code=303)
+
+
+@app.post("/stop-loss-proposal/reject")
+def reject_stop_loss_proposal(request: Request, model_type: str = Form(...)):
+    """Admin rejects a pending stop-loss parameter proposal."""
+    if "user" not in request.session or not is_user_admin(request.session["user"]):
+        return RedirectResponse("/login", status_code=303)
+    import json as _json, sqlite3 as _sq, os as _os
+    key = f"stop_loss_proposal_{model_type}"
+    try:
+        conn = _sq.connect(_os.environ.get("DB_PATH", "scan_history.db"))
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        conn.close()
+        if row:
+            proposal = _json.loads(row[0])
+            proposal["status"] = "rejected"
+            conn2 = _sq.connect(_os.environ.get("DB_PATH", "scan_history.db"))
+            conn2.execute("UPDATE settings SET value=?, updated_at=? WHERE key=?",
+                          (_json.dumps(proposal), datetime.datetime.utcnow().isoformat(), key))
+            conn2.commit()
+            conn2.close()
+    except Exception as e:
+        print(f"STOP-LOSS: reject failed — {e}")
+    return RedirectResponse(f"/analytics?stop_loss=rejected&model={model_type}", status_code=303)
 
 
 @app.post("/backfill-signals")
@@ -3148,6 +3636,18 @@ async def feedback_import_backup(request: Request):
 
 
 # ---------------- LOGOUT ----------------
+@app.post("/admin/run-weekly-report")
+def run_weekly_report(request: Request):
+    """Manually trigger the weekly analysis report (admin only)."""
+    if "user" not in request.session:
+        return {"error": "not authenticated"}
+    if not is_user_admin(request.session["user"]):
+        return {"error": "admin only"}
+    import threading
+    threading.Thread(target=_weekly_analysis, daemon=True).start()
+    return {"status": "started", "message": "Weekly report is running — check Telegram and email in ~30 seconds."}
+
+
 @app.get("/logout")
 def logout(request: Request):
     request.session.clear()

@@ -422,6 +422,11 @@
         </div>
         <div style="font-size:11px; color:#9ca3af; margin-top:8px;">
             {{ o.total_with_outcomes }} scans with outcomes · {{ o.no_trade_calls }} NO TRADE calls
+            {% if o.outstanding and o.outstanding > 0 %}
+            · <span style="color:#d97706; font-weight:600;">{{ o.outstanding }} outstanding</span>
+            <span title="TRADE calls within the 10-day window — outcome not yet confirmed"
+                  style="cursor:help;">&#9432;</span>
+            {% endif %}
         </div>
     </div>
     {% endfor %}
@@ -467,6 +472,9 @@
             {# Auto AI columns #}
             <td style="padding:9px 8px; text-align:center; border-left:3px solid #ede9fe; color:#6b7280;">
                 {{ a.trade_calls if a.trade_calls else '—' }}
+                {% if a.outstanding and a.outstanding > 0 %}
+                <span style="font-size:10px; color:#d97706;" title="{{ a.outstanding }} outstanding">+{{ a.outstanding }}⏳</span>
+                {% endif %}
             </td>
             <td style="padding:9px 8px; text-align:center; font-weight:600;
                 color:{% if a.win_rate is not none and a.win_rate >= 55 %}#0f766e{% elif a.win_rate is not none and a.win_rate >= 40 %}#d97706{% elif a.win_rate is not none %}#dc2626{% else %}#9ca3af{% endif %};">
@@ -488,6 +496,9 @@
             {# Complex+AI columns #}
             <td style="padding:9px 8px; text-align:center; border-left:3px solid #d1fae5; color:#6b7280;">
                 {{ s.trade_calls if s.trade_calls else '—' }}
+                {% if s.outstanding and s.outstanding > 0 %}
+                <span style="font-size:10px; color:#d97706;" title="{{ s.outstanding }} outstanding">+{{ s.outstanding }}⏳</span>
+                {% endif %}
             </td>
             <td style="padding:9px 8px; text-align:center; font-weight:600;
                 color:{% if s.win_rate is not none and s.win_rate >= 55 %}#0f766e{% elif s.win_rate is not none and s.win_rate >= 40 %}#d97706{% elif s.win_rate is not none %}#dc2626{% else %}#9ca3af{% endif %};">

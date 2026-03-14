@@ -3,7 +3,7 @@ ML weight optimizer — gradient-boosted classifier trained on signals_json labe
 
 Replaces Claude's weight guessing once 500+ labeled live scans accumulate.
 Features: 23 binary signal flags from signals_json.
-Label:    days_to_20pct IS NOT NULL (stock hit +20% intraday within 7 days).
+Label:    days_to_20pct IS NOT NULL (stock hit +20% intraday within 10 trading days).
 
 Auto-transition logic:
   get_labeled_count() >= XGB_THRESHOLD  →  train_xgb_weights() returns a weights dict
@@ -46,7 +46,7 @@ _DEFAULT_BUDGET = sum(DEFAULT_SQUEEZE_WEIGHTS.values())
 
 
 def get_labeled_count() -> int:
-    """Count live scans with both signals_json and next_day_return (excluding historical mode)."""
+    """Count scans with both signals_json and a labeled outcome (all modes)."""
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
@@ -54,7 +54,6 @@ def get_labeled_count() -> int:
             SELECT COUNT(*) FROM scans
             WHERE signals_json IS NOT NULL
               AND next_day_return IS NOT NULL
-              AND mode != 'historical'
         """)
         count = cursor.fetchone()[0]
         conn.close()
@@ -65,7 +64,7 @@ def get_labeled_count() -> int:
 
 def _load_training_data():
     """
-    Load (X, y) training matrices from live scans.
+    Load (X, y) training matrices from all labeled scans that have signals_json.
     X: (N, 23) binary feature matrix parsed from signals_json.
     y: (N,) binary labels — 1 if days_to_20pct IS NOT NULL, else 0.
     Returns (X, y, feature_names) or (None, None, None) on failure.
@@ -77,8 +76,7 @@ def _load_training_data():
             SELECT signals_json, days_to_20pct FROM scans
             WHERE signals_json IS NOT NULL
               AND next_day_return IS NOT NULL
-              AND mode != 'historical'
-            ORDER BY id DESC LIMIT 2000
+            ORDER BY id DESC LIMIT 5000
         """)
         rows = cursor.fetchall()
         conn.close()

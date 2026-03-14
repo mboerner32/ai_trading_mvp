@@ -1,6 +1,8 @@
 import os
 import sqlite3
 import json
+import time
+import threading
 from datetime import datetime, timedelta
 import yfinance as yf
 from passlib.context import CryptContext
@@ -8,6 +10,37 @@ from passlib.context import CryptContext
 # On Render: mount a persistent disk at /data and set DB_PATH=/data/scan_history.db
 # Locally: falls back to scan_history.db in the project root
 DB_NAME = os.environ.get("DB_PATH", "scan_history.db")
+
+# ---------------------------------------------------------------------------
+# Simple thread-safe TTL cache for expensive read-only analytics aggregations.
+# Cache is keyed by (function_name, args_hash); entries expire after `ttl` seconds.
+# Call analytics_cache_clear() after writes that would change aggregated results.
+# ---------------------------------------------------------------------------
+_ANALYTICS_CACHE: dict = {}
+_ANALYTICS_CACHE_LOCK = threading.Lock()
+
+
+def _cache_get(key: str):
+    with _ANALYTICS_CACHE_LOCK:
+        entry = _ANALYTICS_CACHE.get(key)
+        if entry and time.monotonic() < entry["expires"]:
+            return entry["value"], True
+        return None, False
+
+
+def _cache_set(key: str, value, ttl_seconds: int):
+    with _ANALYTICS_CACHE_LOCK:
+        _ANALYTICS_CACHE[key] = {"value": value, "expires": time.monotonic() + ttl_seconds}
+
+
+def analytics_cache_clear(*keys):
+    """Clear specific cache keys, or all analytics cache entries if no keys given."""
+    with _ANALYTICS_CACHE_LOCK:
+        if keys:
+            for k in keys:
+                _ANALYTICS_CACHE.pop(k, None)
+        else:
+            _ANALYTICS_CACHE.clear()
 
 # Feedback backup lives alongside the DB so it persists on Render's disk too.
 # Download it periodically via /feedback/export for an off-disk copy.
@@ -278,6 +311,17 @@ def init_db():
     """)
     conn.commit()
 
+    # ---------------- TELEGRAM LOG TABLE ----------------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS telegram_log (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            sent_at  TEXT NOT NULL,
+            chat_id  TEXT NOT NULL,
+            message  TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+
     # ---------------- HYPOTHESIS RULES TABLE ----------------
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS hypothesis_rules (
@@ -380,6 +424,31 @@ def init_db():
         conn.commit()
     except sqlite3.OperationalError:
         pass  # column already exists
+
+    # ---------------- INDEXES ----------------
+    # These are CREATE IF NOT EXISTS so safe to run on every startup.
+    # Cover the most frequent query patterns in analytics and scan saving.
+    for idx_sql in [
+        # Analytics aggregations: mode + outcome filter (most queries)
+        "CREATE INDEX IF NOT EXISTS idx_scans_mode_ndr ON scans(mode, next_day_return)",
+        # Per-signal stats: signals_json present + outcome known
+        "CREATE INDEX IF NOT EXISTS idx_scans_signals_ndr ON scans(next_day_return, signals_json) WHERE signals_json IS NOT NULL",
+        # Model comparison: mode + ai_trade_rec + outcome
+        "CREATE INDEX IF NOT EXISTS idx_scans_mode_ai ON scans(mode, ai_trade_rec, next_day_return)",
+        # LSTM gate validation: lstm_prob + outcome
+        "CREATE INDEX IF NOT EXISTS idx_scans_lstm_ndr ON scans(lstm_prob, next_day_return, days_to_20pct)",
+        # Symbol + timestamp lookups (ticker history, dedup)
+        "CREATE INDEX IF NOT EXISTS idx_scans_symbol_ts ON scans(symbol, timestamp)",
+        # Hypothesis rule tag lookups (active_rule_ids)
+        "CREATE INDEX IF NOT EXISTS idx_scans_rule_ids ON scans(active_rule_ids) WHERE active_rule_ids IS NOT NULL",
+        # Trades: status filter (open positions)
+        "CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status)",
+    ]:
+        try:
+            cursor.execute(idx_sql)
+        except Exception:
+            pass
+    conn.commit()
 
     conn.close()
     _seed_user_observations()
@@ -570,6 +639,10 @@ def _mode_clause(modes):
 
 
 def get_holding_performance(modes=None):
+    _ck = f"holding_perf:{modes}"
+    _cached, _hit = _cache_get(_ck)
+    if _hit:
+        return _cached
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     mc, mp = _mode_clause(modes)
@@ -584,14 +657,20 @@ def get_holding_performance(modes=None):
         return None
     day1 = [r[0] for r in rows if r[0] is not None]
     day3 = [r[1] for r in rows if r[1] is not None]
-    return {
+    _result = {
         "avg_day1": round(sum(day1)/len(day1), 2) if day1 else 0,
         "avg_day3": round(sum(day3)/len(day3), 2) if day3 else 0
     }
+    _cache_set(_ck, _result, 3600)
+    return _result
 
 
 # ---------------- EQUITY CURVE ----------------
 def get_equity_curve(starting_capital=10000, modes=None):
+    _ck = f"equity_curve:{starting_capital}:{modes}"
+    _cached, _hit = _cache_get(_ck)
+    if _hit:
+        return _cached
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     mc, mp = _mode_clause(modes)
@@ -609,11 +688,16 @@ def get_equity_curve(starting_capital=10000, modes=None):
     for (ret,) in rows:
         capital *= (1 + ret / 100)
         equity.append(round(capital, 2))
+    _cache_set(_ck, equity, 7200)
     return equity
 
 
 # ---------------- SCORE BUCKETS ----------------
 def get_score_buckets(modes=None):
+    _ck = f"score_buckets:{modes}"
+    _cached, _hit = _cache_get(_ck)
+    if _hit:
+        return _cached
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     mc, mp = _mode_clause(modes)
@@ -656,12 +740,14 @@ def get_score_buckets(modes=None):
                 "hit_20pct": 0, "avg_days_to_20pct": None,
             }
 
+    _cache_set(_ck, results, 3600)
     return results
 
 
 def get_model_comparison_stats() -> dict:
     """
     Returns per-model (autoai vs squeeze) TRADE call performance broken down by score bucket.
+    Cached for 1800s (30 min); invalidate via analytics_cache_clear('model_comparison').
 
     For each model × score bucket, tracks:
       - trade_calls:    number of AI TRADE calls with known outcomes
@@ -676,6 +762,10 @@ def get_model_comparison_stats() -> dict:
     Only includes scans with next_day_return IS NOT NULL (outcomes known).
     Excludes 'historical' mode scans.
     """
+    _ck = "model_comparison"
+    _cached, _hit = _cache_get(_ck)
+    if _hit:
+        return _cached
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
@@ -690,13 +780,20 @@ def get_model_comparison_stats() -> dict:
     result = {}
 
     for mode_key, mode_label in MODELS.items():
-        # All TRADE calls with known returns for this mode
+        # All TRADE/NO_TRADE calls with known returns for this mode.
+        # We fetch timestamp so we can separate closed-window rows from pending ones.
+        # 10 trading days ≈ 14 calendar days. A row is "window closed" when either:
+        #   (a) days_to_20pct IS NOT NULL  — hit 20%, confirmed
+        #   (b) timestamp < now - 14 days  — enough time passed; stock didn't hit
+        # Rows where window is still open (< 14 days old, d20 IS NULL) are "outstanding"
+        # and are excluded from hit_20pct to avoid deflating the rate with pending trades.
         cursor.execute("""
             SELECT score,
                    next_day_return,
                    three_day_return,
                    days_to_20pct,
-                   json_extract(ai_trade_rec, '$.decision') as decision
+                   json_extract(ai_trade_rec, '$.decision') as decision,
+                   timestamp
             FROM scans
             WHERE next_day_return IS NOT NULL
               AND mode = ?
@@ -704,14 +801,35 @@ def get_model_comparison_stats() -> dict:
         """, (mode_key,))
         rows = cursor.fetchall()
 
+        def _window_closed(d20, ts):
+            """True if the 10-day outcome window has definitively closed."""
+            if d20 is not None:
+                return True  # already hit 20%
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                scan_dt = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+                age_days = (_dt.now(_tz.utc) - scan_dt.replace(tzinfo=_tz.utc)
+                            if scan_dt.tzinfo is None
+                            else _dt.now(_tz.utc) - scan_dt).days
+                return age_days >= 14
+            except Exception:
+                return True  # assume closed if we can't parse
+
         buckets = {}
         for bucket_label, lo, hi in BUCKET_DEFS:
+            # All TRADE rows in this bucket (for win_rate / avg_return calcs)
             trade_rows = [
-                (nd, td, d20) for score, nd, td, d20, dec in rows
+                (nd, td, d20) for score, nd, td, d20, dec, ts in rows
                 if lo <= score < hi and dec == "TRADE"
             ]
+            # Only closed-window rows for hit_20pct (excludes pending)
+            closed_trade_rows = [
+                (nd, td, d20) for score, nd, td, d20, dec, ts in rows
+                if lo <= score < hi and dec == "TRADE" and _window_closed(d20, ts)
+            ]
+            outstanding_count = len(trade_rows) - len(closed_trade_rows)
             no_trade_count = sum(
-                1 for score, nd, td, d20, dec in rows
+                1 for score, nd, td, d20, dec, ts in rows
                 if lo <= score < hi and dec == "NO_TRADE"
             )
             total_scored = sum(1 for score, *_ in rows if lo <= score < hi)
@@ -720,7 +838,8 @@ def get_model_comparison_stats() -> dict:
                 nd_vals   = [nd for nd, td, d20 in trade_rows if nd is not None]
                 td_vals   = [td for nd, td, d20 in trade_rows if td is not None]
                 wins      = [v for v in nd_vals if v > 0]
-                hits_20   = [d20 for nd, td, d20 in trade_rows if d20 is not None]
+                hits_20   = [d20 for nd, td, d20 in closed_trade_rows if d20 is not None]
+                denom_20  = len(closed_trade_rows)
                 avg_days  = round(sum(hits_20) / len(hits_20), 1) if hits_20 else None
                 nd_sorted = sorted(nd_vals)
                 td_sorted = sorted(td_vals)
@@ -728,12 +847,13 @@ def get_model_comparison_stats() -> dict:
                     "trade_calls":      len(trade_rows),
                     "no_trade_calls":   no_trade_count,
                     "total_scored":     total_scored,
+                    "outstanding":      outstanding_count,
                     "win_rate":         round(len(wins) / len(nd_vals) * 100, 1) if nd_vals else None,
                     "avg_next_day":     round(sum(nd_vals) / len(nd_vals), 2) if nd_vals else None,
                     "median_next_day":  round(nd_sorted[len(nd_sorted) // 2], 2) if nd_sorted else None,
                     "avg_3day":         round(sum(td_vals) / len(td_vals), 2) if td_vals else None,
                     "median_3day":      round(td_sorted[len(td_sorted) // 2], 2) if td_sorted else None,
-                    "hit_20pct":        round(len(hits_20) / len(trade_rows) * 100, 1),
+                    "hit_20pct":        round(len(hits_20) / denom_20 * 100, 1) if denom_20 else None,
                     "avg_days_to_20":   avg_days,
                 }
             else:
@@ -741,6 +861,7 @@ def get_model_comparison_stats() -> dict:
                     "trade_calls":      0,
                     "no_trade_calls":   no_trade_count,
                     "total_scored":     total_scored,
+                    "outstanding":      0,
                     "win_rate":         None,
                     "avg_next_day":     None,
                     "median_next_day":  None,
@@ -752,11 +873,17 @@ def get_model_comparison_stats() -> dict:
 
         # Overall totals for this model
         all_trade_rows = [
-            (nd, td, d20) for score, nd, td, d20, dec in rows if dec == "TRADE"
+            (nd, td, d20) for score, nd, td, d20, dec, ts in rows if dec == "TRADE"
         ]
+        all_closed_trade_rows = [
+            (nd, td, d20) for score, nd, td, d20, dec, ts in rows
+            if dec == "TRADE" and _window_closed(d20, ts)
+        ]
+        outstanding_total = len(all_trade_rows) - len(all_closed_trade_rows)
         nd_all  = [nd for nd, td, d20 in all_trade_rows if nd is not None]
         td_all  = [td for nd, td, d20 in all_trade_rows if td is not None]
-        h20_all = [d20 for nd, td, d20 in all_trade_rows if d20 is not None]
+        h20_all = [d20 for nd, td, d20 in all_closed_trade_rows if d20 is not None]
+        denom_20_all = len(all_closed_trade_rows)
         nd_all_sorted = sorted(nd_all)
         td_all_sorted = sorted(td_all)
 
@@ -764,20 +891,22 @@ def get_model_comparison_stats() -> dict:
             "label":   mode_label,
             "buckets": buckets,
             "overall": {
-                "trade_calls":       len(all_trade_rows),
-                "no_trade_calls":    sum(1 for *_, dec in rows if dec == "NO_TRADE"),
+                "trade_calls":         len(all_trade_rows),
+                "outstanding":         outstanding_total,
+                "no_trade_calls":      sum(1 for *_, dec, ts in rows if dec == "NO_TRADE"),
                 "total_with_outcomes": len(rows),
-                "win_rate":          round(sum(1 for v in nd_all if v > 0) / len(nd_all) * 100, 1) if nd_all else None,
-                "avg_next_day":      round(sum(nd_all) / len(nd_all), 2) if nd_all else None,
-                "median_next_day":   round(nd_all_sorted[len(nd_all_sorted) // 2], 2) if nd_all_sorted else None,
-                "avg_3day":          round(sum(td_all) / len(td_all), 2) if td_all else None,
-                "median_3day":       round(td_all_sorted[len(td_all_sorted) // 2], 2) if td_all_sorted else None,
-                "hit_20pct":         round(len(h20_all) / len(all_trade_rows) * 100, 1) if all_trade_rows else None,
-                "avg_days_to_20":    round(sum(h20_all) / len(h20_all), 1) if h20_all else None,
+                "win_rate":            round(sum(1 for v in nd_all if v > 0) / len(nd_all) * 100, 1) if nd_all else None,
+                "avg_next_day":        round(sum(nd_all) / len(nd_all), 2) if nd_all else None,
+                "median_next_day":     round(nd_all_sorted[len(nd_all_sorted) // 2], 2) if nd_all_sorted else None,
+                "avg_3day":            round(sum(td_all) / len(td_all), 2) if td_all else None,
+                "median_3day":         round(td_all_sorted[len(td_all_sorted) // 2], 2) if td_all_sorted else None,
+                "hit_20pct":           round(len(h20_all) / denom_20_all * 100, 1) if denom_20_all else None,
+                "avg_days_to_20":      round(sum(h20_all) / len(h20_all), 1) if h20_all else None,
             },
         }
 
     conn.close()
+    _cache_set(_ck, result, 1800)
     return result
 # ---------------- RETURN UPDATES ----------------
 def update_returns():
@@ -872,6 +1001,8 @@ def update_returns():
             """, (nd, td, d20, sid))
         conn.commit()
         conn.close()
+        # New outcome labels → analytics aggregations are stale
+        analytics_cache_clear()
 
 
 # ---------------- SAVE SCAN ----------------
@@ -1362,7 +1493,12 @@ def get_per_signal_stats(modes=None) -> dict:
     For each of the 22 signal keys, compute performance stats across scans
     where that signal fired AND outcomes are known (next_day_return IS NOT NULL).
     Optional modes filter restricts to specific scan modes (e.g. ['fivemin']).
+    Cached 3600s; call analytics_cache_clear('per_signal_stats') to invalidate.
     """
+    _ck = f"per_signal_stats:{modes}"
+    _cached, _hit = _cache_get(_ck)
+    if _hit:
+        return _cached
     conn = _connect()
     cursor = conn.cursor()
     mc, mp = _mode_clause(modes)
@@ -1408,7 +1544,9 @@ def get_per_signal_stats(modes=None) -> dict:
 
     conn.close()
     signal_results.sort(key=lambda x: x["hit_20pct"], reverse=True)
-    return {"baseline": baseline, "signals": signal_results}
+    _result = {"baseline": baseline, "signals": signal_results}
+    _cache_set(_ck, _result, 3600)
+    return _result
 
 
 # ---------------- FEEDBACK ----------------
@@ -1628,6 +1766,7 @@ def get_hypothesis_rules() -> list:
     Returns all hypothesis rules sorted by projected impact (bundles with highest
     hit_20pct delta first), then pending, then by generation.
     Includes live win/loss stats and projection_json for bundle rules.
+    Uses a single pre-aggregation pass instead of N+1 per-rule queries.
     """
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -1638,21 +1777,41 @@ def get_hypothesis_rules() -> list:
         ORDER BY generation DESC, id ASC
     """)
     rows = cursor.fetchall()
+
+    # Pre-aggregate rule stats in one query: fetch all labeled scans with rule IDs,
+    # then count in Python — avoids N separate LIKE queries (one per rule).
+    cursor.execute("""
+        SELECT active_rule_ids,
+               days_to_20pct IS NOT NULL as won
+        FROM scans
+        WHERE next_day_return IS NOT NULL
+          AND active_rule_ids IS NOT NULL
+          AND active_rule_ids != ''
+    """)
+    rule_totals: dict = {}   # {rule_id_int: {"total": int, "wins": int}}
+    for (rule_ids_str, won) in cursor.fetchall():
+        try:
+            # active_rule_ids stored as comma-separated ints or JSON array
+            if rule_ids_str.startswith("["):
+                ids = json.loads(rule_ids_str)
+            else:
+                ids = [int(x.strip()) for x in rule_ids_str.split(",") if x.strip().isdigit()]
+        except Exception:
+            continue
+        for rid_int in ids:
+            entry = rule_totals.setdefault(rid_int, {"total": 0, "wins": 0})
+            entry["total"] += 1
+            if won:
+                entry["wins"] += 1
+
+    conn.close()
+
     results = []
     for (rid, rule_text, source, status, generation, created_at,
          confidence_score, auto_applied, projection_json_str) in rows:
-        # Count trades and wins from scans tagged with this rule ID
-        cursor.execute("""
-            SELECT
-                COUNT(*) as total,
-                SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END) as wins
-            FROM scans
-            WHERE active_rule_ids LIKE ?
-              AND next_day_return IS NOT NULL
-        """, (f'%{rid}%',))
-        stat = cursor.fetchone()
-        total = stat[0] or 0
-        wins  = stat[1] or 0
+        stat = rule_totals.get(rid, {"total": 0, "wins": 0})
+        total    = stat["total"]
+        wins     = stat["wins"]
         win_rate = round(wins / total * 100, 1) if total > 0 else None
 
         projection = None
@@ -1679,7 +1838,6 @@ def get_hypothesis_rules() -> list:
             "projection":       projection,
             "_proj_delta_hit":  proj_delta_hit,
         })
-    conn.close()
 
     # Sort: bundles with projection by delta desc, then rest by status (pending first) + id
     def sort_key(r):
@@ -2670,6 +2828,10 @@ def get_validation_reports(limit: int = 10) -> list:
 # ---------------- RISK METRICS ----------------
 def get_risk_metrics() -> dict:
     """Compute Sharpe ratio, max drawdown, and win rate from closed trades."""
+    _ck = "risk_metrics"
+    _cached, _hit = _cache_get(_ck)
+    if _hit:
+        return _cached
     import math
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -2702,12 +2864,14 @@ def get_risk_metrics() -> dict:
         dd = (peak - equity) / peak * 100
         max_dd = max(max_dd, dd)
 
-    return {
+    _result = {
         "sharpe":        sharpe,
         "max_drawdown":  round(max_dd, 2),
         "win_rate":      win_rate,
         "total_closed":  len(rows),
     }
+    _cache_set(_ck, _result, 3600)
+    return _result
 
 
 # ---------------- MODEL VALIDATION ----------------
@@ -2716,7 +2880,12 @@ def get_model_validation_stats() -> dict | None:
     Validate AI model predictions against actual outcomes.
     Groups live labeled scans by AI decision, confidence, and score bucket.
     Returns None if fewer than 10 labeled live scans with AI calls exist.
+    Cached 3600s; invalidate via analytics_cache_clear('model_validation').
     """
+    _ck = "model_validation"
+    _cached, _hit = _cache_get(_ck)
+    if _hit:
+        return _cached
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
@@ -2772,12 +2941,14 @@ def get_model_validation_stats() -> dict | None:
             "avg_days_to_20": avg_days,
         }
 
-    return {
+    _result = {
         "total":         len(rows),
         "by_decision":   {k: _stats(v) for k, v in by_decision.items()   if v},
         "by_confidence": {k: _stats(v) for k, v in by_confidence.items() if v},
         "by_score":      {k: _stats(v) for k, v in by_score.items()      if v},
     }
+    _cache_set(_ck, _result, 3600)
+    return _result
 
 
 # ---------------- TELEGRAM RECIPIENTS ----------------

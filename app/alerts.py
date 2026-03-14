@@ -7,12 +7,29 @@ All functions are silent no-ops if the relevant env vars are not set.
 """
 
 import os
+import sqlite3
 import smtplib
 import requests
+from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from app.database import get_telegram_recipients
+
+
+def _log_telegram(chat_id: str, message: str):
+    """Persist outgoing Telegram message to telegram_log table for monitoring."""
+    db_path = os.environ.get("DB_PATH", "scan_history.db")
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO telegram_log (sent_at, chat_id, message) VALUES (?, ?, ?)",
+            (datetime.now(timezone.utc).isoformat(), chat_id, message),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 def _send_email(subject: str, body: str):
@@ -161,11 +178,13 @@ def _send_telegram_admin(message: str):
     if not token or not chat_id:
         return
     try:
-        requests.post(
+        resp = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
             timeout=10,
         )
+        if resp.ok:
+            _log_telegram(chat_id, message)
     except Exception as e:
         print(f"Telegram admin alert error: {e}")
 
@@ -215,6 +234,7 @@ def _send_telegram(message: str):
             )
             if resp.ok:
                 print(f"Telegram alert sent → {chat_id}")
+                _log_telegram(chat_id, message)
             else:
                 print(f"Telegram alert failed → {chat_id}: {resp.status_code} {resp.text[:120]}")
         except Exception as e:
@@ -278,7 +298,7 @@ def send_scan_alert(results: list, mode: str, min_score: int = 75,
             else:
                 ai_badge = f" ⚠️ <b>{decision}</b> ({confidence} · {model_label} — no position, LOW conf)"
         elif decision == "NO_TRADE":
-            ai_badge = f" ❌ {decision} ({confidence})"
+            ai_badge = f" ❌ {decision} ({confidence} · {model_label})"
         else:
             ai_badge = ""
         lstm_badge = f" · LSTM: {lstm_prob:.0%}" if lstm_prob is not None else ""

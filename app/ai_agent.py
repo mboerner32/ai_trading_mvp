@@ -1,5 +1,6 @@
 # ai_trading_mvp/app/ai_agent.py
 
+import json
 import os
 import re
 import base64
@@ -329,7 +330,7 @@ def recommend_trade(stock: dict, hypothesis: str = None,
     if lstm_prob is not None:
         lstm_section = (
             f"\nLSTM model (trained on historical setups): "
-            f"{lstm_prob:.0%} probability this stock hits +20% within 7 days. "
+            f"{lstm_prob:.0%} probability this stock hits +20% within 10 trading days. "
             f"{'LSTM disagrees with a TRADE call — require exceptional signal alignment to override.' if lstm_prob < 0.50 else ''}"
         )
     else:
@@ -1763,3 +1764,101 @@ Be specific with numbers. Use bullet points."""
 
     except Exception as e:
         return f"Could not analyze chart: {str(e)}"
+
+
+def optimize_stop_loss(model_type: str, current_params: dict,
+                       current_metrics: dict, proposed_params: dict,
+                       validation: dict) -> dict:
+    """
+    Ask Claude to evaluate a proposed stop-loss parameter change and return
+    a structured decision: approve / reject / suggest alternative.
+
+    model_type: "daily" or "5m"
+    current_params / proposed_params: parameter dicts from stop_loss_optimizer
+    current_metrics / validation: backtest results from validate_proposed_params()
+
+    Returns:
+    {
+        "decision":    "approve" | "reject" | "suggest",
+        "confidence":  0–100,
+        "rationale":   str,
+        "params":      dict   (approved or suggested params — may differ from proposed),
+    }
+    """
+    cm = current_metrics
+    pm = validation.get("proposed_metrics", {})
+
+    cur_params_str  = "\n".join(f"  {k}: {v}" for k, v in current_params.items())
+    prop_params_str = "\n".join(f"  {k}: {v}" for k, v in proposed_params.items())
+
+    prompt = f"""You are a quantitative risk manager reviewing a proposed stop-loss parameter change
+for a momentum stock scanner trading system ({model_type} model).
+
+## Current Parameters
+{cur_params_str}
+
+## Proposed Parameters
+{prop_params_str}
+
+## Backtest Results — Current Params
+  Scans tested         : {cm.get('n_scans', 0)}
+  Actual winners (hit 20%+): {cm.get('n_winners', 0)} ({cm.get('n_winners',0)/max(cm.get('n_scans',1),1)*100:.1f}%)
+  Avg loss on losers   : {cm.get('avg_loss_pct', 0):.1f}%
+  Exit reason breakdown: {cm.get('close_reason_counts', {})}
+
+## Backtest Results — Proposed Params
+  Winner preservation  : {validation.get('winner_preservation', 0):.1%}
+    (% of actual winners that still hit 20% — must stay ≥ 95%)
+  Premature stops      : {pm.get('premature_stops', '?')} winners killed early
+  Avg loss on losers   : {pm.get('avg_loss_pct', 0):.1f}%
+  Loss reduction       : {validation.get('loss_reduction', 0)*100:.1f}% improvement
+  Exit reason breakdown: {pm.get('close_reason_counts', {})}
+
+## Validation Status
+  Passes winner constraint: {'YES' if validation.get('winner_preservation', 0) >= 0.95 else 'NO'}
+  Passes loss constraint  : {'YES' if validation.get('loss_reduction', 0) >= 0.05 else 'NO'}
+  {'Failure reason: ' + validation['failure_reason'] if validation.get('failure_reason') else ''}
+
+## Your Mandate
+Approve only if BOTH constraints are met AND the change is conservative.
+Reject if either constraint fails with no good reason to override.
+Suggest alternative params if the direction is right but magnitude is off.
+
+Key principles:
+- Never tighten stop_loss_pct below 10% for daily (too many false stops on volatile names)
+- Never tighten stop_loss_pct below 8% for 5m (intraday noise is high on low-float stocks)
+- A 5–15% loss reduction while preserving 97%+ of winners is ideal
+- Time/staleness stops should not be shortened unless there is clear evidence of faster decay
+- When in doubt, reject — the current params stay until evidence is strong
+
+Respond with ONLY valid JSON (no markdown):
+{{
+  "decision": "approve" | "reject" | "suggest",
+  "confidence": <integer 0-100>,
+  "rationale": "<2-3 sentence explanation>",
+  "params": {{ <final parameter dict — use proposed if approve, current if reject, or your alternative if suggest> }}
+}}"""
+
+    try:
+        msg = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = _msg_text(msg).strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        result = json.loads(raw)
+        # Ensure params key always present
+        if "params" not in result:
+            result["params"] = current_params
+        return result
+    except Exception as e:
+        return {
+            "decision":   "reject",
+            "confidence": 0,
+            "rationale":  f"Claude call failed: {e}",
+            "params":     current_params,
+        }
