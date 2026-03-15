@@ -68,12 +68,12 @@ def _tod_factor() -> float:
 # ---------------------------------------------------
 BASE_URL = (
     "https://finviz.com/screener.ashx?"
-    "v=161&f=sh_curvol_o1000,"
+    "v=161&f=sh_curvol_o2000,"
     "sh_price_u5,sh_relvol_o10,ta_perf_d10o&ft=4"
 )
 BASE_URL_PREMARKET = (
     "https://finviz.com/screener.ashx?"
-    "v=161&f=sh_curvol_o1000,"
+    "v=161&f=sh_curvol_o2000,"
     "sh_price_u5,sh_relvol_o5,ta_perf_d5o&ft=4"
 )
 # Gap-up / extreme relvol path — catches low-float news plays that haven't yet
