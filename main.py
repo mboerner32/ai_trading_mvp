@@ -1218,6 +1218,475 @@ def _check_watchlist():
         print(f"WATCHLIST CHECK: failed — {e}")
 
 
+def _build_weekly_email_html(
+    date_str, baseline_n, baseline_hit,
+    ai_pct, ai_hits, ai_total, nt_pct, nt_hits, nt_total, ai_spread,
+    xgb_n, new_labeled,
+    score_rows, rv_rows, gain_rows, dow_rows, float_rows, sig_rows,
+    speed_rows, lstm_baseline, lstm_gate_rows, lstm_score_rows,
+    sl_lines, trade_scan_rows, open_trades, closed_trades_rows,
+    proposals,
+) -> str:
+    """Build a visually rich HTML email for the weekly analysis report."""
+
+    # ── CSS helpers ────────────────────────────────────────────────────────
+    BAR_W = 160  # max bar pixel width
+
+    def _bar(hit, baseline, max_v=100):
+        """CSS inline bar chart cell — returns two <td> elements."""
+        pct = hit or 0
+        bpx = max(2, int(pct / max_v * BAR_W))
+        rpx = BAR_W - bpx
+        bline_px = int((baseline or 0) / max_v * BAR_W)
+        if pct >= (baseline or 0) + 8:
+            col = "#27ae60"
+        elif pct <= (baseline or 0) - 5:
+            col = "#e74c3c"
+        else:
+            col = "#3498db"
+        # baseline tick as a thin border inside the bar container
+        bar_html = (
+            f"<div style='width:{BAR_W}px;background:#ecf0f1;border-radius:3px;"
+            f"height:14px;position:relative;display:inline-block'>"
+            f"<div style='width:{bpx}px;background:{col};height:14px;border-radius:3px'></div>"
+            f"<div style='position:absolute;left:{bline_px}px;top:0;width:2px;height:14px;"
+            f"background:#2c3e50;opacity:.4'></div>"
+            f"</div>"
+        )
+        vs = pct - (baseline or 0)
+        vs_col = "#27ae60" if vs >= 0 else "#e74c3c"
+        return (f"<td style='padding:3px 6px;vertical-align:middle'>{bar_html}</td>"
+                f"<td style='padding:3px 4px;font-weight:bold;color:{col}'>{pct}%</td>"
+                f"<td style='padding:3px 4px;font-size:11px;color:{vs_col}'>"
+                f"{'+'if vs>=0 else ''}{vs:.1f}pp</td>")
+
+    def _section(title, color="#2c3e50"):
+        return (f"<tr><td colspan='10' style='padding:18px 0 6px 0'>"
+                f"<div style='border-left:4px solid {color};padding-left:10px;"
+                f"font-size:15px;font-weight:bold;color:{color}'>{title}</div>"
+                f"</td></tr>")
+
+    def _metric_card(label, value, sub="", col="#2c3e50"):
+        return (
+            f"<td style='width:25%;padding:8px;vertical-align:top'>"
+            f"<div style='background:#fff;border:1px solid #e0e0e0;border-radius:6px;"
+            f"padding:12px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.07)'>"
+            f"<div style='font-size:22px;font-weight:bold;color:{col}'>{value}</div>"
+            f"<div style='font-size:11px;color:#7f8c8d;margin-top:4px'>{label}</div>"
+            + (f"<div style='font-size:10px;color:#aaa;margin-top:2px'>{sub}</div>" if sub else "")
+            + "</div></td>"
+        )
+
+    rows = []
+
+    # ── Header ──────────────────────────────────────────────────────────────
+    rows.append(
+        f"<tr><td colspan='10'>"
+        f"<div style='background:linear-gradient(135deg,#1a2332 0%,#2c3e50 100%);"
+        f"border-radius:8px;padding:24px 28px;color:white;margin-bottom:16px'>"
+        f"<div style='font-size:20px;font-weight:bold'>📈 AI Trading Model</div>"
+        f"<div style='font-size:13px;opacity:.8;margin-top:4px'>Weekly Analysis — {date_str}</div>"
+        f"<div style='margin-top:12px;font-size:12px;opacity:.7'>"
+        f"Labeled: {baseline_n} rows &nbsp;|&nbsp; Baseline: {baseline_hit}% &nbsp;|&nbsp; "
+        f"New this week: {new_labeled} &nbsp;|&nbsp; XGBoost: {xgb_n}/500</div>"
+        f"</div></td></tr>"
+    )
+
+    # ── Key Metric Cards ──────────────────────────────────────────────────
+    spread_col = "#27ae60" if ai_spread >= 5 else ("#e67e22" if ai_spread >= 0 else "#e74c3c")
+    spread_icon = "✅" if ai_spread >= 5 else ("⚠️" if ai_spread >= 0 else "🔴")
+    rows.append(
+        f"<tr><td colspan='10'><table width='100%' cellpadding='0' cellspacing='6'><tr>"
+        + _metric_card("Baseline Hit Rate", f"{baseline_hit}%", f"n={baseline_n}", "#7f8c8d")
+        + _metric_card("AI TRADE Precision", f"{ai_pct}%", f"{ai_hits}/{ai_total} calls", "#27ae60" if ai_pct > baseline_hit else "#e74c3c")
+        + _metric_card("NO_TRADE Hit Rate", f"{nt_pct}%", f"{nt_hits}/{nt_total} skips", "#3498db")
+        + _metric_card(f"TRADE vs NO_TRADE", f"{spread_icon} {ai_spread:+.1f}pp", "target: ≥+5pp", spread_col)
+        + f"</tr></table></td></tr>"
+    )
+
+    # ── Score Buckets ───────────────────────────────────────────────────────
+    rows.append(_section("Score Buckets (next_day_return ≥ 20%)"))
+    rows.append(
+        "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
+        "<tr style='background:#f0f0f0'>"
+        "<th style='padding:4px 8px;text-align:left'>Bucket</th>"
+        "<th style='padding:4px 8px;text-align:left' colspan='3'>Hit Rate</th>"
+        "<th style='padding:4px 8px;text-align:right'>n</th>"
+        "<th style='padding:4px 8px;text-align:right'>Conf</th>"
+        "</tr>"
+    )
+    for b, n, hit in score_rows:
+        conf = "High" if n >= 30 else ("Med" if n >= 10 else "Low")
+        flag = " ⚠️" if b == "75-84" and (hit or 0) < baseline_hit else ""
+        rows.append(
+            f"<tr style='border-bottom:1px solid #f5f5f5'>"
+            f"<td style='padding:3px 8px;font-weight:bold'>{b}{flag}</td>"
+            + _bar(hit, baseline_hit)
+            + f"<td style='padding:3px 8px;text-align:right;color:#888'>{n}</td>"
+            f"<td style='padding:3px 8px;text-align:right;font-size:11px;color:#aaa'>{conf}</td>"
+            f"</tr>"
+        )
+    rows.append("</table></td></tr>")
+
+    # ── LSTM Gate ───────────────────────────────────────────────────────────
+    lb_n, lb_hit = lstm_baseline
+    rows.append(_section("LSTM Gate Validation (days_to_20pct, 10-day window)", "#8e44ad"))
+    rows.append(
+        f"<tr><td colspan='10' style='padding:0 0 4px 0;font-size:11px;color:#7f8c8d'>"
+        f"Baseline (no LSTM filter): <b>{lb_hit}%</b> (n={lb_n}) — vertical line in bars below</td></tr>"
+    )
+    if lstm_gate_rows:
+        rows.append(
+            "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
+            "<tr style='background:#f0f0f0'>"
+            "<th style='padding:4px 8px;text-align:left'>LSTM Gate</th>"
+            "<th style='padding:4px 8px;text-align:left' colspan='3'>Hit Rate</th>"
+            "<th style='padding:4px 8px;text-align:right'>n</th>"
+            "<th style='padding:4px 8px;text-align:right'>Conf</th>"
+            "</tr>"
+        )
+        for gate, n, hit in lstm_gate_rows:
+            conf = "High" if n >= 30 else ("Med" if n >= 10 else "Low")
+            rows.append(
+                f"<tr style='border-bottom:1px solid #f5f5f5'>"
+                f"<td style='padding:3px 8px;font-weight:bold'>LSTM {gate}</td>"
+                + _bar(hit, lb_hit)
+                + f"<td style='padding:3px 8px;text-align:right;color:#888'>{n}</td>"
+                f"<td style='padding:3px 8px;text-align:right;font-size:11px;color:#aaa'>{conf}</td>"
+                f"</tr>"
+            )
+        rows.append("</table></td></tr>")
+
+    # ── LSTM × Score cross-tab ──────────────────────────────────────────────
+    if lstm_score_rows:
+        rows.append(_section("LSTM × Score Cross-Tab", "#8e44ad"))
+        rows.append(
+            "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
+            "<tr style='background:#f0f0f0'>"
+            "<th style='padding:4px 8px;text-align:left'>Score</th>"
+            "<th style='padding:4px 8px;text-align:right'>n (all)</th>"
+            "<th style='padding:4px 8px;text-align:right'>Hit% (all)</th>"
+            "<th style='padding:4px 8px;text-align:right'>n (LSTM≥55%)</th>"
+            "<th style='padding:4px 8px;text-align:right'>Hit% (gated)</th>"
+            "<th style='padding:4px 8px;text-align:right'>Lift</th>"
+            "</tr>"
+        )
+        for bucket, n_all, hit_all, n_gated, hit_gated in lstm_score_rows:
+            lift = round((hit_gated or 0) - (hit_all or 0), 1)
+            lift_col = "#27ae60" if lift >= 5 else ("#e74c3c" if lift < 0 else "#888")
+            gated_col = "#27ae60" if (hit_gated or 0) >= (lb_hit or 0) + 10 else "#2c3e50"
+            rows.append(
+                f"<tr style='border-bottom:1px solid #f5f5f5'>"
+                f"<td style='padding:3px 8px;font-weight:bold'>{bucket}</td>"
+                f"<td style='padding:3px 8px;text-align:right;color:#888'>{n_all}</td>"
+                f"<td style='padding:3px 8px;text-align:right'>{hit_all}%</td>"
+                f"<td style='padding:3px 8px;text-align:right;color:#888'>{n_gated or 0}</td>"
+                f"<td style='padding:3px 8px;text-align:right;font-weight:bold;color:{gated_col}'>"
+                f"{''+str(hit_gated)+'%' if hit_gated else '-'}</td>"
+                f"<td style='padding:3px 8px;text-align:right;font-weight:bold;color:{lift_col}'>"
+                f"{'+'if lift>=0 else ''}{lift}pp</td>"
+                f"</tr>"
+            )
+        rows.append("</table></td></tr>")
+
+    # ── Relvol Tiers ────────────────────────────────────────────────────────
+    rows.append(_section("Relative Volume Tiers"))
+    rows.append(
+        "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
+        "<tr style='background:#f0f0f0'>"
+        "<th style='padding:4px 8px;text-align:left'>Tier</th>"
+        "<th style='padding:4px 8px;text-align:left' colspan='3'>Hit Rate</th>"
+        "<th style='padding:4px 8px;text-align:right'>n</th>"
+        "</tr>"
+    )
+    for t, n, hit in rv_rows:
+        rows.append(
+            f"<tr style='border-bottom:1px solid #f5f5f5'>"
+            f"<td style='padding:3px 8px;font-weight:bold'>{t}</td>"
+            + _bar(hit, baseline_hit)
+            + f"<td style='padding:3px 8px;text-align:right;color:#888'>{n}</td>"
+            f"</tr>"
+        )
+    rows.append("</table></td></tr>")
+
+    # ── Top Signals ─────────────────────────────────────────────────────────
+    if sig_rows:
+        top_sigs = [r for r in sig_rows if (r[2] or 0) > baseline_hit][:10]
+        bot_sigs = [r for r in reversed(sig_rows) if (r[2] or 0) < baseline_hit - 3][:5]
+        if top_sigs or bot_sigs:
+            rows.append(_section("Signal Performance (n≥10)", "#16a085"))
+            rows.append(
+                "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
+                "<tr style='background:#f0f0f0'>"
+                "<th style='padding:4px 8px;text-align:left'>Signal</th>"
+                "<th style='padding:4px 8px;text-align:left' colspan='3'>Hit Rate</th>"
+                "<th style='padding:4px 8px;text-align:right'>n</th>"
+                "</tr>"
+            )
+            for k, n, hit in top_sigs:
+                rows.append(
+                    f"<tr style='border-bottom:1px solid #f5f5f5'>"
+                    f"<td style='padding:3px 8px'>{k}</td>"
+                    + _bar(hit, baseline_hit)
+                    + f"<td style='padding:3px 8px;text-align:right;color:#888'>{n}</td>"
+                    f"</tr>"
+                )
+            if bot_sigs:
+                rows.append(
+                    "<tr><td colspan='5' style='padding:4px 8px;font-size:11px;color:#e74c3c;"
+                    "font-style:italic'>⬇ Below-baseline signals:</td></tr>"
+                )
+                for k, n, hit in bot_sigs:
+                    rows.append(
+                        f"<tr style='border-bottom:1px solid #f5f5f5;opacity:.8'>"
+                        f"<td style='padding:3px 8px;color:#e74c3c'>{k}</td>"
+                        + _bar(hit, baseline_hit)
+                        + f"<td style='padding:3px 8px;text-align:right;color:#888'>{n}</td>"
+                        f"</tr>"
+                    )
+            rows.append("</table></td></tr>")
+
+    # ── Day of Week ─────────────────────────────────────────────────────────
+    dow_valid = [(d, n, hit) for d, n, hit in dow_rows if d]
+    if dow_valid:
+        rows.append(_section("Day of Week"))
+        rows.append(
+            "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
+            "<tr style='background:#f0f0f0'>"
+            "<th style='padding:4px 8px;text-align:left'>Day</th>"
+            "<th style='padding:4px 8px;text-align:left' colspan='3'>Hit Rate</th>"
+            "<th style='padding:4px 8px;text-align:right'>n</th>"
+            "</tr>"
+        )
+        for d, n, hit in dow_valid:
+            flag = " ⚠️" if (hit or 0) < 25 else ""
+            rows.append(
+                f"<tr style='border-bottom:1px solid #f5f5f5'>"
+                f"<td style='padding:3px 8px;font-weight:bold'>{d}{flag}</td>"
+                + _bar(hit, baseline_hit)
+                + f"<td style='padding:3px 8px;text-align:right;color:#888'>{n}</td>"
+                f"</tr>"
+            )
+        rows.append("</table></td></tr>")
+
+    # ── Float/Shares ────────────────────────────────────────────────────────
+    if float_rows:
+        rows.append(_section("Float / Shares Buckets"))
+        rows.append(
+            "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
+            "<tr style='background:#f0f0f0'>"
+            "<th style='padding:4px 8px;text-align:left'>Bucket</th>"
+            "<th style='padding:4px 8px;text-align:left' colspan='3'>Hit Rate</th>"
+            "<th style='padding:4px 8px;text-align:right'>n</th>"
+            "</tr>"
+        )
+        for b, n, hit in float_rows:
+            rows.append(
+                f"<tr style='border-bottom:1px solid #f5f5f5'>"
+                f"<td style='padding:3px 8px;font-weight:bold'>{b}</td>"
+                + _bar(hit, baseline_hit)
+                + f"<td style='padding:3px 8px;text-align:right;color:#888'>{n}</td>"
+                f"</tr>"
+            )
+        rows.append("</table></td></tr>")
+
+    # ── Hit Speed ───────────────────────────────────────────────────────────
+    if speed_rows:
+        total_sp = sum(r[1] for r in speed_rows) or 1
+        cum_sp = 0
+        rows.append(_section("Hit Speed (days to +20%)", "#e67e22"))
+        rows.append(
+            "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
+            "<tr style='background:#f0f0f0'>"
+            "<th style='padding:4px 8px'>Day</th>"
+            "<th style='padding:4px 8px'>Hits</th>"
+            "<th style='padding:4px 8px;text-align:left' colspan='2'>Progress</th>"
+            "<th style='padding:4px 8px'>Cumulative</th>"
+            "</tr>"
+        )
+        for day, n in speed_rows[:10]:
+            cum_sp += n
+            cum_pct = round(100 * cum_sp / total_sp, 1)
+            bar_px = max(2, int(n / total_sp * BAR_W))
+            rows.append(
+                f"<tr style='border-bottom:1px solid #f5f5f5'>"
+                f"<td style='padding:3px 8px'>Day {day}</td>"
+                f"<td style='padding:3px 8px;text-align:right'>{n}</td>"
+                f"<td colspan='2' style='padding:3px 8px'>"
+                f"<div style='background:#fdebd0;border-radius:3px;height:14px;width:{BAR_W}px'>"
+                f"<div style='background:#e67e22;height:14px;width:{bar_px}px;border-radius:3px'></div>"
+                f"</div></td>"
+                f"<td style='padding:3px 8px;text-align:right;font-weight:bold'>{cum_pct}%</td>"
+                f"</tr>"
+            )
+        rows.append("</table></td></tr>")
+
+    # ── Stop-Loss ───────────────────────────────────────────────────────────
+    rows.append(_section("🔒 Stop-Loss Parameters", "#c0392b"))
+    rows.append(
+        "<tr><td colspan='10'>"
+        "<div style='background:#fdf2f8;border:1px solid #f0d9e8;border-radius:6px;padding:12px;font-size:12px'>"
+        + "".join(f"<p style='margin:3px 0'>{l.strip()}</p>" for l in sl_lines)
+        + "</div></td></tr>"
+    )
+
+    # ── AI TRADE call performance ───────────────────────────────────────────
+    rows.append(_section("🎯 AI TRADE Call Performance"))
+    # Summary comparison row
+    rows.append(
+        f"<tr><td colspan='10'>"
+        f"<table width='100%' cellspacing='6'><tr>"
+        f"<td style='width:50%;padding:8px'>"
+        f"<div style='background:#eafaf1;border:1px solid #a9dfbf;border-radius:6px;padding:10px;text-align:center'>"
+        f"<div style='font-size:20px;font-weight:bold;color:#27ae60'>{ai_pct}%</div>"
+        f"<div style='font-size:11px;color:#7f8c8d'>TRADE calls hit 20%+ ({ai_hits}/{ai_total})</div>"
+        f"</div></td>"
+        f"<td style='width:50%;padding:8px'>"
+        f"<div style='background:#{'fef9e7' if nt_pct > baseline_hit - 3 else 'fdedec'};"
+        f"border:1px solid #{'f9e79f' if nt_pct > baseline_hit - 3 else 'f1948a'};"
+        f"border-radius:6px;padding:10px;text-align:center'>"
+        f"<div style='font-size:20px;font-weight:bold;color:#{'e67e22' if nt_pct > baseline_hit - 3 else 'e74c3c'}'>{nt_pct}%</div>"
+        f"<div style='font-size:11px;color:#7f8c8d'>NO_TRADE calls hit 20%+ ({nt_hits}/{nt_total})</div>"
+        f"</div></td>"
+        f"</tr></table>"
+        f"<p style='font-size:11px;color:#{'27ae60' if ai_spread>=5 else 'e67e22' if ai_spread>=0 else 'e74c3c'};"
+        f"margin:4px 0 8px 8px'>"
+        f"Spread: {'+'if ai_spread>=0 else ''}{ai_spread:.1f}pp — "
+        f"{'✅ AI is adding value' if ai_spread>=5 else '⚠️ Marginal — watch over next 4 weeks' if ai_spread>=0 else '🔴 AI is hurting — review prompt'}"
+        f"</p>"
+        f"</td></tr>"
+    )
+    if trade_scan_rows:
+        import datetime as _dt2
+        week_cutoff = (_dt2.datetime.utcnow() - _dt2.timedelta(days=7)).isoformat()[:10]
+        week_trades = [r for r in trade_scan_rows if str(r[6])[:10] >= week_cutoff]
+        if week_trades:
+            rows.append(
+                "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
+                "<tr style='background:#f0f0f0'>"
+                "<th style='padding:4px 8px'>Symbol</th><th style='padding:4px 8px'>Score</th>"
+                "<th style='padding:4px 8px'>LSTM</th><th style='padding:4px 8px'>Outcome</th>"
+                "</tr>"
+            )
+            for sym, score, today_r, ndr, d20, lp, ts, sp in week_trades[:12]:
+                lstm_s = f"{round(lp*100)}%" if lp else "—"
+                outcome = (f"<span style='color:#27ae60;font-weight:bold'>✓ Day {d20}</span>" if d20 else
+                           f"<span style='color:{'#27ae60' if (ndr or 0)>=0 else '#e74c3c'}'>"
+                           f"{'▲' if (ndr or 0)>=0 else '▼'} {(ndr or 0):+.1f}%</span>")
+                rows.append(
+                    f"<tr style='border-bottom:1px solid #f5f5f5'>"
+                    f"<td style='padding:3px 8px;font-weight:bold'>{sym}</td>"
+                    f"<td style='padding:3px 8px'>{score}</td>"
+                    f"<td style='padding:3px 8px'>{lstm_s}</td>"
+                    f"<td style='padding:3px 8px'>{outcome}</td>"
+                    f"</tr>"
+                )
+            rows.append("</table></td></tr>")
+
+    # ── Open Positions ──────────────────────────────────────────────────────
+    rows.append(_section(f"🟢 Open Positions ({len(open_trades)})", "#27ae60"))
+    if open_trades:
+        import datetime as _dt3
+        rows.append(
+            "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
+            "<tr style='background:#f0f0f0'>"
+            "<th style='padding:4px 8px'>Symbol</th><th style='padding:4px 8px'>Entry</th>"
+            "<th style='padding:4px 8px'>Peak Gain</th><th style='padding:4px 8px'>Age</th>"
+            "<th style='padding:4px 8px'>Mode</th></tr>"
+        )
+        for sym, entry, pos_size, opened_at, mode, hwm, tp in open_trades:
+            try:
+                days_open = (_dt3.datetime.utcnow() - _dt3.datetime.fromisoformat(opened_at)).days
+            except Exception:
+                days_open = "?"
+            hwm_pct = f"+{round((hwm/entry-1)*100,1)}%" if hwm and entry else "?"
+            rows.append(
+                f"<tr style='border-bottom:1px solid #f5f5f5'>"
+                f"<td style='padding:3px 8px;font-weight:bold'>{sym}</td>"
+                f"<td style='padding:3px 8px'>${entry:.2f}</td>"
+                f"<td style='padding:3px 8px;color:#27ae60;font-weight:bold'>{hwm_pct}</td>"
+                f"<td style='padding:3px 8px'>{days_open}d</td>"
+                f"<td style='padding:3px 8px;color:#7f8c8d'>{mode}</td>"
+                f"</tr>"
+            )
+        rows.append("</table></td></tr>")
+    else:
+        rows.append("<tr><td colspan='10' style='padding:4px 8px;color:#aaa;font-style:italic'>No open positions.</td></tr>")
+
+    # ── Closed Trades ────────────────────────────────────────────────────────
+    rows.append(_section(f"🔴 Closed Trades ({len(closed_trades_rows)} total)", "#c0392b"))
+    if closed_trades_rows:
+        winners = [r for r in closed_trades_rows if (r[3] or 0) > 0]
+        losers  = [r for r in closed_trades_rows if (r[3] or 0) <= 0]
+        wr = round(100.0 * len(winners) / len(closed_trades_rows), 1)
+        avg_w = round(sum((r[2]/r[1]-1)*100 for r in winners)/len(winners), 1) if winners else 0
+        avg_l = round(sum((r[2]/r[1]-1)*100 for r in losers)/len(losers), 1) if losers else 0
+        rows.append(
+            f"<tr><td colspan='10'>"
+            f"<div style='background:#fdedec;border:1px solid #f1948a;border-radius:6px;"
+            f"padding:10px;font-size:12px;margin-bottom:8px'>"
+            f"Win rate: <b>{wr}%</b> &nbsp;|&nbsp; "
+            f"Avg win: <b style='color:#27ae60'>+{avg_w}%</b> &nbsp;|&nbsp; "
+            f"Avg loss: <b style='color:#e74c3c'>{avg_l}%</b>"
+            f"</div></td></tr>"
+        )
+        rows.append(
+            "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
+            "<tr style='background:#f0f0f0'>"
+            "<th style='padding:4px 8px'>Symbol</th><th style='padding:4px 8px'>Entry</th>"
+            "<th style='padding:4px 8px'>Return</th><th style='padding:4px 8px'>Exit Reason</th>"
+            "<th style='padding:4px 8px'>Mode</th></tr>"
+        )
+        for sym, entry, exit_p, pnl, _, _, reason, mode in closed_trades_rows[:8]:
+            if entry and exit_p:
+                pct = round((exit_p / entry - 1) * 100, 1)
+                col = "#27ae60" if pct >= 0 else "#e74c3c"
+                rows.append(
+                    f"<tr style='border-bottom:1px solid #f5f5f5'>"
+                    f"<td style='padding:3px 8px;font-weight:bold'>{sym}</td>"
+                    f"<td style='padding:3px 8px'>${entry:.2f}</td>"
+                    f"<td style='padding:3px 8px;font-weight:bold;color:{col}'>{'+'if pct>=0 else ''}{pct}%</td>"
+                    f"<td style='padding:3px 8px;color:#7f8c8d'>{reason or '—'}</td>"
+                    f"<td style='padding:3px 8px;color:#7f8c8d'>{mode}</td>"
+                    f"</tr>"
+                )
+        rows.append("</table></td></tr>")
+
+    # ── Proposals ───────────────────────────────────────────────────────────
+    if proposals:
+        rows.append(_section("⚠️ Proposed Weight Changes", "#e67e22"))
+        rows.append(
+            "<tr><td colspan='10'>"
+            "<div style='background:#fef9e7;border:1px solid #f9e79f;border-radius:6px;padding:12px;font-size:12px'>"
+            "<p style='margin:0 0 6px 0;font-size:11px;color:#7f8c8d'>"
+            "Rules: n≥100 labeled rows per signal, ≥5pp vs baseline, 7-day cooldown</p>"
+        )
+        for p in proposals:
+            col = "#c0392b" if "REDUCE" in p else "#27ae60"
+            rows.append(f"<p style='margin:3px 0;font-weight:bold;color:{col}'>{p.strip()}</p>")
+        rows.append("</div></td></tr>")
+
+    # ── Footer ───────────────────────────────────────────────────────────────
+    rows.append(
+        f"<tr><td colspan='10' style='padding-top:24px'>"
+        f"<div style='border-top:1px solid #ecf0f1;padding-top:12px;font-size:10px;color:#bdc3c7;text-align:center'>"
+        f"AI Trading Model — Generated {date_str} &nbsp;|&nbsp; "
+        f"Baseline tick (▏) in bars = unfiltered hit rate &nbsp;|&nbsp; "
+        f"Green = +8pp above baseline &nbsp;|&nbsp; Red = -5pp below baseline"
+        f"</div></td></tr>"
+    )
+
+    body = (
+        "<html><body style='font-family:Arial,sans-serif;font-size:13px;"
+        "max-width:800px;margin:auto;padding:20px;background:#f8f9fa'>"
+        "<table width='100%' cellpadding='0' cellspacing='0' "
+        "style='background:#f8f9fa'>"
+        + "\n".join(rows)
+        + "</table></body></html>"
+    )
+    return body
+
+
 def _weekly_analysis():
     """
     Runs every Monday at 7:00 AM ET.
@@ -1883,11 +2352,21 @@ def _weekly_analysis():
         _flush_tg()
         print("WEEKLY ANALYSIS: report sent to Telegram")
 
-        # ── Send HTML email ───────────────────────────────────────────────
-        html_body = (
-            "<html><body style='font-family:Arial,sans-serif;font-size:13px;max-width:750px;margin:auto;padding:20px'>"
-            + "\n".join(html_secs)
-            + "</body></html>"
+        # ── Send HTML email (rich visual version) ─────────────────────────
+        html_body = _build_weekly_email_html(
+            date_str=date_str,
+            baseline_n=baseline_n, baseline_hit=baseline_hit,
+            ai_pct=ai_pct, ai_hits=ai_hits, ai_total=ai_total,
+            nt_pct=nt_pct, nt_hits=nt_hits, nt_total=nt_total,
+            ai_spread=ai_spread,
+            xgb_n=xgb_n, new_labeled=new_labeled,
+            score_rows=score_rows, rv_rows=rv_rows, gain_rows=gain_rows,
+            dow_rows=dow_rows, float_rows=float_rows, sig_rows=sig_rows,
+            speed_rows=speed_rows, lstm_baseline=lstm_baseline,
+            lstm_gate_rows=lstm_gate_rows, lstm_score_rows=lstm_score_rows,
+            sl_lines=sl_lines, trade_scan_rows=trade_scan_rows,
+            open_trades=open_trades, closed_trades_rows=closed_trades_rows,
+            proposals=proposals,
         )
         send_weekly_report_email(
             subject=f"AI Trading Model — Weekly Analysis {date_str}",
