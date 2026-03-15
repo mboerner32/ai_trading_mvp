@@ -1260,10 +1260,13 @@ def _build_weekly_email_html(
                 f"<td style='padding:3px 4px;font-size:11px;color:{vs_col}'>"
                 f"{'+'if vs>=0 else ''}{vs:.1f}pp</td>")
 
-    def _section(title, color="#2c3e50"):
+    def _section(title, color="#2c3e50", note=""):
+        note_html = (f"<div style='font-size:11px;color:#7f8c8d;margin-top:3px'>{note}</div>"
+                     if note else "")
         return (f"<tr><td colspan='10' style='padding:18px 0 6px 0'>"
-                f"<div style='border-left:4px solid {color};padding-left:10px;"
-                f"font-size:15px;font-weight:bold;color:{color}'>{title}</div>"
+                f"<div style='border-left:4px solid {color};padding-left:10px'>"
+                f"<div style='font-size:15px;font-weight:bold;color:{color}'>{title}</div>"
+                f"{note_html}</div>"
                 f"</td></tr>")
 
     def _metric_card(label, value, sub="", col="#2c3e50"):
@@ -1304,8 +1307,41 @@ def _build_weekly_email_html(
         + f"</tr></table></td></tr>"
     )
 
+    # ── How to read this report ──────────────────────────────────────────────
+    rows.append(
+        "<tr><td colspan='10'>"
+        "<div style='background:#eaf4fb;border:1px solid #aed6f1;border-radius:6px;"
+        "padding:14px 16px;font-size:12px;color:#2c3e50;margin:8px 0 4px 0'>"
+        "<b>📖 How to read this report</b><br><br>"
+        "<b>Score (0–100)</b> — Each stock that passes our screener gets a composite score "
+        "based on signals like relative volume, price action, and float size. Higher = stronger setup.<br><br>"
+        "<b>Hit Rate</b> — % of stocks in that group that gained +20% or more the same day. "
+        "The <b>Baseline</b> is the overall average across all scanned stocks "
+        f"({baseline_hit}%). Anything above baseline is the model adding value.<br><br>"
+        "<b>LSTM (AI Model)</b> — A neural network trained on 6+ years of historical price data. "
+        "It predicts the probability that a stock will hit +20% within 10 trading days. "
+        "We only send trade alerts when LSTM probability ≥ 55%. "
+        "Higher LSTM % = stronger AI conviction.<br><br>"
+        "<b>TRADE vs NO_TRADE</b> — After scoring and LSTM, a second AI (Claude) reviews each stock "
+        "and decides whether to alert. TRADE = alert sent. NO_TRADE = skipped. "
+        "The <b>Spread</b> shows how much better TRADE calls perform vs skipped stocks — "
+        "target is ≥+5pp (AI is adding real value).<br><br>"
+        "<b>Relvol (Relative Volume)</b> — How much more volume the stock is trading vs its normal daily average. "
+        "100x = 100× normal volume. Higher relvol = stronger momentum signal.<br><br>"
+        "<b>Conf (Confidence)</b> — Based on sample size: High = 30+ stocks, Med = 10–30, Low = under 10. "
+        "Low-confidence figures should be treated as directional, not conclusive.<br><br>"
+        "<b>Bar charts</b> — Each bar shows the hit rate for that group. "
+        "The thin vertical line inside each bar is the overall baseline. "
+        "Green bars beat baseline by 8pp+, red bars miss by 5pp+."
+        "</div></td></tr>"
+    )
+
     # ── Score Buckets ───────────────────────────────────────────────────────
-    rows.append(_section("Score Buckets (next_day_return ≥ 20%)"))
+    rows.append(_section(
+        "Score Buckets",
+        note="% of stocks in each score range that gained +20% the same day. "
+             "Higher score should mean higher hit rate — watch for anomalies."
+    ))
     rows.append(
         "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
         "<tr style='background:#f0f0f0'>"
@@ -1330,7 +1366,12 @@ def _build_weekly_email_html(
 
     # ── LSTM Gate ───────────────────────────────────────────────────────────
     lb_n, lb_hit = lstm_baseline
-    rows.append(_section("LSTM Gate Validation (days_to_20pct, 10-day window)", "#8e44ad"))
+    rows.append(_section(
+        "LSTM AI Gate Validation",
+        color="#8e44ad",
+        note="LSTM is our neural network AI. It scores each stock 0–100% (probability of hitting +20% within 10 days). "
+             "We only trade when LSTM ≥ 55%. This table shows how well each confidence tier actually performed."
+    ))
     rows.append(
         f"<tr><td colspan='10' style='padding:0 0 4px 0;font-size:11px;color:#7f8c8d'>"
         f"Baseline (no LSTM filter): <b>{lb_hit}%</b> (n={lb_n}) — vertical line in bars below</td></tr>"
@@ -1359,7 +1400,14 @@ def _build_weekly_email_html(
 
     # ── LSTM × Score cross-tab ──────────────────────────────────────────────
     if lstm_score_rows:
-        rows.append(_section("LSTM × Score Cross-Tab", "#8e44ad"))
+        rows.append(_section(
+            "LSTM AI × Score Cross-Tab",
+            color="#8e44ad",
+            note="Shows how score and LSTM work together. "
+                 "'Hit% (all)' = every stock in that score range. "
+                 "'Hit% (gated)' = only those that also passed the LSTM ≥55% filter. "
+                 "Lift = how much the LSTM filter improved results within each score bucket."
+        ))
         rows.append(
             "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
             "<tr style='background:#f0f0f0'>"
@@ -1390,7 +1438,11 @@ def _build_weekly_email_html(
         rows.append("</table></td></tr>")
 
     # ── Relvol Tiers ────────────────────────────────────────────────────────
-    rows.append(_section("Relative Volume Tiers"))
+    rows.append(_section(
+        "Relative Volume Tiers",
+        note="Relative volume (relvol) = how many times more volume a stock is trading vs its normal daily average. "
+             "500x+ means 500× normal volume — a very unusual day. Higher relvol historically predicts stronger moves."
+    ))
     rows.append(
         "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
         "<tr style='background:#f0f0f0'>"
@@ -1414,7 +1466,13 @@ def _build_weekly_email_html(
         top_sigs = [r for r in sig_rows if (r[2] or 0) > baseline_hit][:10]
         bot_sigs = [r for r in reversed(sig_rows) if (r[2] or 0) < baseline_hit - 3][:5]
         if top_sigs or bot_sigs:
-            rows.append(_section("Signal Performance (n≥10)", "#16a085"))
+            rows.append(_section(
+                "Signal Performance",
+                color="#16a085",
+                note="Individual signals that fired during a scan (e.g. 'yesterday_green' = stock was up the prior day). "
+                     "Shows which signals are actually predictive of a +20% move. "
+                     "Signals below the baseline line are hurting performance."
+            ))
             rows.append(
                 "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
                 "<tr style='background:#f0f0f0'>"
@@ -1449,7 +1507,11 @@ def _build_weekly_email_html(
     # ── Day of Week ─────────────────────────────────────────────────────────
     dow_valid = [(d, n, hit) for d, n, hit in dow_rows if d]
     if dow_valid:
-        rows.append(_section("Day of Week"))
+        rows.append(_section(
+            "Day of Week",
+            note="Hit rates broken down by day. Wednesday and Thursday historically underperform — "
+                 "the AI is given extra scrutiny instructions on those days."
+        ))
         rows.append(
             "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
             "<tr style='background:#f0f0f0'>"
@@ -1471,7 +1533,11 @@ def _build_weekly_email_html(
 
     # ── Float/Shares ────────────────────────────────────────────────────────
     if float_rows:
-        rows.append(_section("Float / Shares Buckets"))
+        rows.append(_section(
+            "Float / Shares Buckets",
+            note="Float = total shares available to trade. Smaller float = fewer shares = bigger moves when volume spikes. "
+                 "lt10m = under 10 million shares outstanding."
+        ))
         rows.append(
             "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
             "<tr style='background:#f0f0f0'>"
@@ -1494,7 +1560,12 @@ def _build_weekly_email_html(
     if speed_rows:
         total_sp = sum(r[1] for r in speed_rows) or 1
         cum_sp = 0
-        rows.append(_section("Hit Speed (days to +20%)", "#e67e22"))
+        rows.append(_section(
+            "Hit Speed (days to +20%)",
+            color="#e67e22",
+            note="Of stocks that eventually hit +20%, how quickly did they get there? "
+                 "Day 1 = hit +20% the same day as the scan. Cumulative % shows what fraction hit within that many days."
+        ))
         rows.append(
             "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
             "<tr style='background:#f0f0f0'>"
@@ -1522,7 +1593,13 @@ def _build_weekly_email_html(
         rows.append("</table></td></tr>")
 
     # ── Stop-Loss ───────────────────────────────────────────────────────────
-    rows.append(_section("🔒 Stop-Loss Parameters", "#c0392b"))
+    rows.append(_section(
+        "🔒 Stop-Loss Parameters",
+        color="#c0392b",
+        note="Rules that automatically close a paper trade to limit losses or lock in gains. "
+             "Hard stop = maximum loss before exit. Trailing stop = locks in gains once the stock rises, "
+             "then exits if it pulls back. Time stop = exit if the trade hasn't worked within N days."
+    ))
     rows.append(
         "<tr><td colspan='10'>"
         "<div style='background:#fdf2f8;border:1px solid #f0d9e8;border-radius:6px;padding:12px;font-size:12px'>"
@@ -1531,7 +1608,12 @@ def _build_weekly_email_html(
     )
 
     # ── AI TRADE call performance ───────────────────────────────────────────
-    rows.append(_section("🎯 AI TRADE Call Performance"))
+    rows.append(_section(
+        "🎯 AI TRADE Call Performance",
+        note="After scoring and LSTM, Claude AI reviews each stock and decides TRADE or NO_TRADE. "
+             "This section measures whether that final AI decision is actually adding value. "
+             "A healthy spread means the AI is correctly filtering out bad setups."
+    ))
     # Summary comparison row
     rows.append(
         f"<tr><td colspan='10'>"
