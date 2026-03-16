@@ -804,6 +804,7 @@ def _enrich_high_scorers(results: list, mode: str = None, scan_id_map: dict = No
 
 _LSTM_GATE = 0.55   # minimum LSTM probability for alerts and paper trades
 _LSTM_NONE_MIN_SCORE = 75  # if LSTM unavailable, require this score floor instead
+_DAILY_STOP_LOSS_PCT = 20.0  # hard stop-loss % for daily model paper trades
 
 
 def _passes_lstm_gate(r: dict) -> bool:
