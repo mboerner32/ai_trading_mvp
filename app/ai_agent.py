@@ -1222,6 +1222,65 @@ Day of Week:
             "(need 5+ scans with signals_json AND known outcomes)."
         )
 
+    # ---- Format trade signal autopsy section ----
+    try:
+        from app.database import get_trade_signal_autopsy
+        autopsy = get_trade_signal_autopsy()
+    except Exception:
+        autopsy = None
+
+    if autopsy and autopsy.get("total_trades", 0) >= 5:
+        at = autopsy
+        alines = [
+            f"TRADE SIGNAL AUTOPSY ({at['total_trades']} AI TRADE calls · "
+            f"{at['wins']}W / {at['losses']}L · overall win rate: {at['overall_win_rate']}%):"
+        ]
+        # Individual signals — show worst (false positive generators) and best
+        indiv = [s for s in at.get("individual", []) if s["fires"] >= 3]
+        if indiv:
+            worst = indiv[:5]  # already sorted worst-first
+            best  = list(reversed(indiv))[:5]
+            alines.append("  [INDIVIDUAL — FALSE POSITIVE SIGNALS (worst win rate on TRADE calls):]")
+            for s in worst:
+                arrow = "+" if s["vs_overall"] >= 0 else ""
+                alines.append(
+                    f"    {s['key']}: {s['fires']} fires | "
+                    f"{s['wins']}W/{s['losses']}L | {s['win_rate']}% win rate "
+                    f"({arrow}{s['vs_overall']}pp vs {at['overall_win_rate']}% overall)"
+                )
+            alines.append("  [INDIVIDUAL — STRONGEST SIGNALS (best win rate on TRADE calls):]")
+            for s in best:
+                arrow = "+" if s["vs_overall"] >= 0 else ""
+                alines.append(
+                    f"    {s['key']}: {s['fires']} fires | "
+                    f"{s['wins']}W/{s['losses']}L | {s['win_rate']}% win rate "
+                    f"({arrow}{s['vs_overall']}pp vs {at['overall_win_rate']}% overall)"
+                )
+        # Signal combos — worst combinations on losses
+        combos = [c for c in at.get("combos", []) if c["total"] >= 3]
+        if combos:
+            alines.append("  [SIGNAL COMBOS — WORST CO-FIRING PAIRS ON TRADE CALLS (lowest win rate):]")
+            for c in combos[:10]:
+                alines.append(
+                    f"    {' + '.join(c['signals'])}: "
+                    f"{c['total']} fires | {c['win_count']}W/{c['loss_count']}L | "
+                    f"{c['win_rate']}% win rate"
+                )
+            alines.append("  [SIGNAL COMBOS — STRONGEST CO-FIRING PAIRS ON TRADE CALLS (highest win rate):]")
+            best_combos = sorted(combos, key=lambda x: -x["win_rate"])[:5]
+            for c in best_combos:
+                alines.append(
+                    f"    {' + '.join(c['signals'])}: "
+                    f"{c['total']} fires | {c['win_count']}W/{c['loss_count']}L | "
+                    f"{c['win_rate']}% win rate"
+                )
+        autopsy_section = "\n".join(alines)
+    else:
+        autopsy_section = (
+            "TRADE SIGNAL AUTOPSY: Insufficient data "
+            "(need 5+ AI TRADE calls with known outcomes)."
+        )
+
     # ---- Format hypotheses-to-test section ----
     # Includes user observations + any pending rules waiting for AI validation
     to_test = []
@@ -1307,7 +1366,9 @@ EXISTING CRITERIA — set to 0 to remove if evidence shows it reduces win rate o
   rel_vol_500x, rel_vol_100x, rel_vol_50x, rel_vol_25x, rel_vol_10x, rel_vol_5x  [relative volume tiers, keep descending order]
   daily_sweet_20_40, daily_ok_10_20, daily_ok_40_100  [daily gain tiers]
   shares_lt10m, shares_lt30m, shares_lt100m            [share count tiers, keep descending order]
-  sideways_chop    10-day price range <20%: consolidation before breakout
+  sideways_chop          avg abs daily return last 5 days <10%: quiet chop-to-ignition setup (57% of winners)
+  momentum_continuation  avg abs daily return last 5 days >=10%: already running, catching the next leg (43% of winners)
+  [NOTE: sideways_chop and momentum_continuation are mutually exclusive — a stock fires exactly one or neither]
   yesterday_green  Prior day closed positive
   no_news_bonus    No recent news: organic move, not headline-chasing
   high_cash_bonus  Cash per share > stock price: balance sheet safety
@@ -1330,6 +1391,8 @@ OPTIONAL CRITERIA — disabled by default (weight=0), set 1-20 to enable if evid
 
 {per_signal_section}
 
+{autopsy_section}
+
 {hyp_section}
 
 {feedback_section}
@@ -1348,6 +1411,14 @@ OPTIONAL CRITERIA — disabled by default (weight=0), set 1-20 to enable if evid
 - Tier ordering: rel_vol_500x >= rel_vol_100x >= rel_vol_50x >= rel_vol_25x >= rel_vol_10x >= rel_vol_5x
 - Tier ordering: shares_lt10m >= shares_lt30m >= shares_lt100m
 - Include ALL 24 keys in the output weights dict (set unwanted ones to 0)
+
+## Data Integrity Rules — STRICT
+- DO NOT hallucinate signal performance. Every weight change and hypothesis MUST be grounded in a specific number from the Evidence section above (hit rate, sample size, pp vs baseline).
+- DO NOT invent hit rates, sample sizes, or patterns not present in the data provided.
+- If a signal has insufficient data (n < 10), state INSUFFICIENT_DATA — do not speculate about its direction.
+- Confidence rubric: Low = n<10, Medium = n 10–30, High = n 30+. Only raise weight_confidence >= 75 for High confidence signals with >= 5pp effect size.
+- Every rationale sentence must cite: signal name + hit rate % + sample size + pp vs baseline. No vague claims.
+- Double-check tier ordering constraints before outputting weights. Verify all 24 keys are present.
 
 ## Required Output Format
 Respond with ONLY a valid JSON object (no markdown, no code fences, no other text):

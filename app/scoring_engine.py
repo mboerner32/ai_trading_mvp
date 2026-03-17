@@ -125,13 +125,23 @@ def score_stock(symbol: str, df, fundamentals=None):
             score += 10
 
     # ------------------------------------------------------------------
-    # SIDEWAYS COMPRESSION — 8 pts
+    # CANDLESTICK PATTERN — 8 pts (mutually exclusive archetypes)
+    # sideways_chop:        avg absolute daily return last 5d < 10% → quiet consolidation before ignition
+    # momentum_continuation: avg absolute daily return last 5d >= 10% → already in motion, catching next leg
     # ------------------------------------------------------------------
     sideways_chop = False
-    if range_10d is not None:
-        sideways_chop = range_10d < 0.20
-        if sideways_chop:
-            score += 8
+    momentum_continuation = False
+    if len(df) >= 5:
+        last5_returns = [safe_float(df.iloc[i].get("daily_return")) for i in range(-5, 0)]
+        last5_returns = [r for r in last5_returns if r is not None]
+        if len(last5_returns) >= 3:
+            avg_abs_5d = sum(abs(r) for r in last5_returns) / len(last5_returns)
+            if avg_abs_5d < 0.10:
+                sideways_chop = True
+                score += 8
+            else:
+                momentum_continuation = True
+                score += 8
 
     # ------------------------------------------------------------------
     # YESTERDAY GREEN — 7 pts
@@ -243,8 +253,9 @@ DEFAULT_SQUEEZE_WEIGHTS = {
     "daily_sweet_20_40":    10,
     "daily_ok_10_20":      -5,   # PENALTY: 5.9% hit rate vs 12.1% baseline (n=1211, 2026-03-09)
     "daily_ok_40_100":      7,   # boosted: 14.2% hit rate (n=162, 2026-03-09)
-    "sideways_chop":        8,
-    "yesterday_green":      9,   # boosted: 14.4% hit rate (n=263, 2026-03-09)
+    "sideways_chop":          8,  # chop-to-ignition: avg_abs_5d < 10% (57% of winners, validated 2026-03-16)
+    "momentum_continuation":  6,  # already running: avg_abs_5d >= 10% (43% of winners, validated 2026-03-16)
+    "yesterday_green":        9,  # boosted: 14.4% hit rate (n=263, 2026-03-09)
     "shares_lt10m":         18,  # 41.1% hit rate (+10.3pp, n=1096, 2026-03-14)
     "shares_lt30m":         28,  # PRIMARY: 41.8% hit rate (+11.0pp, n=1091, 2026-03-14)
     "shares_lt100m":        8,
@@ -352,13 +363,24 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
             score += w["daily_ok_40_100"]
 
     # ------------------------------------------------------------------
-    # SIDEWAYS CONSOLIDATION
+    # CANDLESTICK PATTERN — mutually exclusive archetypes
+    # sideways_chop:         avg abs daily return last 5d < 10% → chop-to-ignition setup
+    # momentum_continuation: avg abs daily return last 5d >= 10% → already running, next leg
+    # Validated on 91/158 winners (chop) and 67/158 winners (momentum) — both archetypes score points
     # ------------------------------------------------------------------
     sideways_chop = False
-    if range_10d is not None:
-        sideways_chop = range_10d < 0.20
-        if sideways_chop:
-            score += w["sideways_chop"]
+    momentum_continuation = False
+    if len(df) >= 5:
+        last5_returns = [safe_float(df.iloc[i].get("daily_return")) for i in range(-5, 0)]
+        last5_returns = [r for r in last5_returns if r is not None]
+        if len(last5_returns) >= 3:
+            avg_abs_5d = sum(abs(r) for r in last5_returns) / len(last5_returns)
+            if avg_abs_5d < 0.10:
+                sideways_chop = True
+                score += w["sideways_chop"]
+            else:
+                momentum_continuation = True
+                score += w.get("momentum_continuation", 6)
 
     # Yesterday Green
     yesterday_green = False
@@ -484,8 +506,9 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
         elif shares_outstanding < 30_000_000: fired_signals["shares_lt30m"]  = True
         else:                                 fired_signals["shares_lt100m"] = True
 
-    if sideways_chop:    fired_signals["sideways_chop"]    = True
-    if yesterday_green:  fired_signals["yesterday_green"]  = True
+    if sideways_chop:           fired_signals["sideways_chop"]          = True
+    if momentum_continuation:   fired_signals["momentum_continuation"]  = True
+    if yesterday_green:         fired_signals["yesterday_green"]        = True
     if no_news_catalyst: fired_signals["no_news_bonus"]    = True
     if high_cash:        fired_signals["high_cash_bonus"]  = True
 
@@ -537,7 +560,7 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
             w.get("rel_vol_5x", 7), 0) +
         max(w["daily_sweet_20_40"], w["daily_ok_10_20"],
             w["daily_ok_40_100"], 0) +
-        w["sideways_chop"] +
+        max(w["sideways_chop"], w.get("momentum_continuation", 6)) +
         w["yesterday_green"] +
         max(w["shares_lt10m"], w["shares_lt30m"],
             w.get("shares_lt100m", 8), 0) +
@@ -586,6 +609,7 @@ def score_stock_squeeze(symbol: str, df, fundamentals=None, weights=None):
             "sweet_spot_squeeze": sweet_spot_squeeze,
             "daily_return_pct": round(daily_return * 100, 2) if daily_return else None,
             "sideways_chop": sideways_chop,
+            "momentum_continuation": momentum_continuation,
             "yesterday_green": yesterday_green,
             "institution_pct": round(institution_pct * 100, 1) if institution_pct is not None else None,
             "sector": sector,

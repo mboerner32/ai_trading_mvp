@@ -132,6 +132,7 @@ from app.database import (
     get_chat_suggestions,
     dismiss_chat_suggestion,
     get_per_signal_stats,
+    get_trade_signal_autopsy,
     refresh_bundle_projections,
     save_weight_version,
     get_current_version_id,
@@ -1226,7 +1227,7 @@ def _build_weekly_email_html(
     score_rows, rv_rows, gain_rows, dow_rows, float_rows, sig_rows,
     speed_rows, lstm_baseline, lstm_gate_rows, lstm_score_rows,
     sl_lines, trade_scan_rows, open_trades, closed_trades_rows,
-    proposals,
+    proposals, autopsy_data=None,
 ) -> str:
     """Build a visually rich HTML email for the weekly analysis report."""
 
@@ -1735,6 +1736,107 @@ def _build_weekly_email_html(
                 )
         rows.append("</table></td></tr>")
 
+    # ── Trade Signal Autopsy ────────────────────────────────────────────────
+    at = autopsy_data or {}
+    at_total = at.get("total_trades", 0)
+    rows.append(_section(
+        "🔬 Trade Signal Autopsy",
+        "#8e44ad",
+        note="Which signals (and signal combinations) drive wins vs losses on AI TRADE calls specifically"
+    ))
+    if at_total >= 5:
+        overall_wr = at.get("overall_win_rate", 0)
+        at_wins = at.get("wins", 0)
+        at_losses = at.get("losses", 0)
+        rows.append(
+            f"<tr><td colspan='10' style='padding:4px 8px'>"
+            f"<span style='font-size:13px'>"
+            f"<b>{at_total}</b> AI TRADE calls with outcomes &nbsp;·&nbsp; "
+            f"<span style='color:#27ae60'>{at_wins}W</span> / "
+            f"<span style='color:#e74c3c'>{at_losses}L</span> &nbsp;·&nbsp; "
+            f"<b>{overall_wr}%</b> overall win rate"
+            f"</span></td></tr>"
+        )
+        # Individual signals table
+        indiv = [s for s in at.get("individual", []) if s["fires"] >= 3]
+        if indiv:
+            rows.append(
+                "<tr><td colspan='10' style='padding:8px 8px 2px 8px'>"
+                "<b style='font-size:12px;color:#8e44ad'>Individual Signals</b>"
+                "<span style='font-size:11px;color:#7f8c8d'> — sorted by win rate (worst → best)</span>"
+                "</td></tr>"
+            )
+            rows.append(
+                "<tr><td colspan='10'><table style='width:100%;border-collapse:collapse;font-size:12px'>"
+                "<tr style='background:#f4ecf7'>"
+                "<th style='padding:4px 8px;text-align:left'>Signal</th>"
+                "<th style='padding:4px 8px'>Fires</th>"
+                "<th style='padding:4px 8px'>W/L</th>"
+                "<th style='padding:4px 8px'>Win Rate</th>"
+                "<th style='padding:4px 8px'>vs Overall</th>"
+                "</tr>"
+            )
+            for s in indiv:
+                wr_col = "#27ae60" if s["win_rate"] >= overall_wr + 5 else (
+                    "#e74c3c" if s["win_rate"] <= overall_wr - 5 else "#2c3e50")
+                vs_col = "#27ae60" if s["vs_overall"] >= 0 else "#e74c3c"
+                vs_str = ("+" if s["vs_overall"] >= 0 else "") + str(s["vs_overall"]) + "pp"
+                rows.append(
+                    f"<tr style='border-bottom:1px solid #f0e6f6'>"
+                    f"<td style='padding:3px 8px;font-family:monospace'>{s['key']}</td>"
+                    f"<td style='padding:3px 8px;text-align:center'>{s['fires']}</td>"
+                    f"<td style='padding:3px 8px;text-align:center'>"
+                    f"<span style='color:#27ae60'>{s['wins']}W</span>/"
+                    f"<span style='color:#e74c3c'>{s['losses']}L</span></td>"
+                    f"<td style='padding:3px 8px;text-align:center;font-weight:bold;color:{wr_col}'>{s['win_rate']}%</td>"
+                    f"<td style='padding:3px 8px;text-align:center;color:{vs_col}'>{vs_str}</td>"
+                    f"</tr>"
+                )
+            rows.append("</table></td></tr>")
+
+        # Signal combos table — worst and best
+        combos = [c for c in at.get("combos", []) if c["total"] >= 3]
+        if combos:
+            worst5 = combos[:5]
+            best5  = sorted(combos, key=lambda x: -x["win_rate"])[:5]
+            rows.append(
+                "<tr><td colspan='10' style='padding:10px 8px 2px 8px'>"
+                "<b style='font-size:12px;color:#8e44ad'>Signal Combinations</b>"
+                "<span style='font-size:11px;color:#7f8c8d'> — pairs that co-fire on TRADE calls</span>"
+                "</td></tr>"
+            )
+            rows.append(
+                "<tr><td colspan='5' style='padding:4px 8px;vertical-align:top'>"
+                "<div style='font-size:11px;font-weight:bold;color:#e74c3c;margin-bottom:4px'>❌ Worst combos (false positive pairs)</div>"
+                "<table style='font-size:11px;border-collapse:collapse'>"
+            )
+            for c in worst5:
+                wr_col = "#e74c3c" if c["win_rate"] < overall_wr else "#2c3e50"
+                rows.append(
+                    f"<tr><td style='padding:2px 6px;font-family:monospace;color:#555'>"
+                    f"{' + '.join(c['signals'])}</td>"
+                    f"<td style='padding:2px 6px'>{c['win_count']}W/{c['loss_count']}L</td>"
+                    f"<td style='padding:2px 6px;font-weight:bold;color:{wr_col}'>{c['win_rate']}%</td></tr>"
+                )
+            rows.append("</table></td>")
+            rows.append(
+                "<td colspan='5' style='padding:4px 8px;vertical-align:top'>"
+                "<div style='font-size:11px;font-weight:bold;color:#27ae60;margin-bottom:4px'>✅ Best combos (strongest pairs)</div>"
+                "<table style='font-size:11px;border-collapse:collapse'>"
+            )
+            for c in best5:
+                wr_col = "#27ae60" if c["win_rate"] >= overall_wr else "#2c3e50"
+                rows.append(
+                    f"<tr><td style='padding:2px 6px;font-family:monospace;color:#555'>"
+                    f"{' + '.join(c['signals'])}</td>"
+                    f"<td style='padding:2px 6px'>{c['win_count']}W/{c['loss_count']}L</td>"
+                    f"<td style='padding:2px 6px;font-weight:bold;color:{wr_col}'>{c['win_rate']}%</td></tr>"
+                )
+            rows.append("</table></td></tr>")
+    else:
+        rows.append("<tr><td colspan='10' style='padding:4px 8px;color:#aaa;font-style:italic'>"
+                    "Not enough data yet (need 5+ AI TRADE calls with known outcomes).</td></tr>")
+
     # ── Proposals ───────────────────────────────────────────────────────────
     if proposals:
         rows.append(_section("⚠️ Proposed Weight Changes", "#e67e22"))
@@ -1785,10 +1887,38 @@ def _weekly_analysis():
         conn = _sq.connect(db_path)
         c = conn.cursor()
 
+        # ── DEDUPLICATION BASE TABLE ───────────────────────────────────────────
+        # One row per symbol per day. Daily modes only (no fivemin/bt/legacy).
+        # Outcome confirmed: either stock hit 20% (best_d20 IS NOT NULL) OR
+        # 14+ calendar days have passed (enough time to confirm it didn't hit).
+        # MAX(ai_trade_rec) naturally picks TRADE over NO_TRADE (T > N alphabetically).
+        c.execute("DROP TABLE IF EXISTS _wr")
+        c.execute("""
+            CREATE TEMPORARY TABLE _wr AS
+            SELECT
+                symbol,
+                DATE(timestamp)          AS scan_date,
+                MIN(days_to_20pct)       AS best_d20,
+                MAX(score)               AS score,
+                MAX(relative_volume)     AS relative_volume,
+                MAX(today_return)        AS today_return,
+                MIN(shares_outstanding)  AS shares_outstanding,
+                MIN(timestamp)           AS timestamp,
+                MAX(ai_trade_rec)        AS ai_trade_rec,
+                MAX(lstm_prob)           AS lstm_prob,
+                MAX(signals_json)        AS signals_json
+            FROM scans
+            WHERE mode NOT IN ('fivemin','fivemin_bt','candidate_fivemin','standard','strict')
+              AND (days_to_20pct IS NOT NULL
+                   OR (julianday('now') - julianday(timestamp)) >= 14)
+            GROUP BY symbol, DATE(timestamp)
+        """)
+        conn.commit()
+
         # Baseline
         baseline_n, baseline_hit = c.execute(
-            "SELECT COUNT(*), ROUND(100.0*SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM scans WHERE next_day_return IS NOT NULL"
+            "SELECT COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM _wr"
         ).fetchone()
 
         # Score buckets
@@ -1796,24 +1926,23 @@ def _weekly_analysis():
             "SELECT CASE WHEN score<45 THEN '0-44' WHEN score<55 THEN '45-54' "
             "WHEN score<65 THEN '55-64' WHEN score<75 THEN '65-74' "
             "WHEN score<85 THEN '75-84' ELSE '85+' END as b, "
-            "COUNT(*), ROUND(100.0*SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM scans WHERE next_day_return IS NOT NULL GROUP BY b ORDER BY b"
+            "COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM _wr GROUP BY b ORDER BY b"
         ).fetchall()
 
         # AI TRADE precision
         ai_row = c.execute(
-            "SELECT COUNT(*), SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END) "
-            "FROM scans WHERE next_day_return IS NOT NULL "
-            "AND ai_trade_rec LIKE '%TRADE%' AND ai_trade_rec NOT LIKE '%NO_TRADE%'"
+            "SELECT COUNT(*), SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END) "
+            "FROM _wr "
+            "WHERE ai_trade_rec LIKE '%TRADE%' AND ai_trade_rec NOT LIKE '%NO_TRADE%'"
         ).fetchone()
         ai_total, ai_hits = ai_row
         ai_pct = round(100.0 * ai_hits / ai_total, 1) if ai_total else 0
 
         # NO_TRADE comparison
         no_trade_row = c.execute(
-            "SELECT COUNT(*), SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END) "
-            "FROM scans WHERE next_day_return IS NOT NULL "
-            "AND ai_trade_rec LIKE '%NO_TRADE%'"
+            "SELECT COUNT(*), SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END) "
+            "FROM _wr WHERE ai_trade_rec LIKE '%NO_TRADE%'"
         ).fetchone()
         nt_total, nt_hits = no_trade_row
         nt_pct = round(100.0 * nt_hits / nt_total, 1) if nt_total else 0
@@ -1823,8 +1952,8 @@ def _weekly_analysis():
             "SELECT CASE WHEN relative_volume>=500 THEN '500x+' WHEN relative_volume>=100 THEN '100-499x' "
             "WHEN relative_volume>=50 THEN '50-99x' WHEN relative_volume>=25 THEN '25-49x' "
             "WHEN relative_volume>=10 THEN '10-24x' ELSE '<10x' END as t, "
-            "COUNT(*), ROUND(100.0*SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM scans WHERE next_day_return IS NOT NULL AND relative_volume IS NOT NULL "
+            "COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM _wr WHERE relative_volume IS NOT NULL "
             "GROUP BY t ORDER BY MIN(relative_volume) DESC"
         ).fetchall()
 
@@ -1832,8 +1961,8 @@ def _weekly_analysis():
         gain_rows = c.execute(
             "SELECT CASE WHEN today_return>50 THEN '>50%' WHEN today_return>30 THEN '30-50%' "
             "WHEN today_return>20 THEN '20-30%' WHEN today_return>10 THEN '10-20%' ELSE '<10%' END as g, "
-            "COUNT(*), ROUND(100.0*SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM scans WHERE next_day_return IS NOT NULL AND today_return IS NOT NULL "
+            "COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM _wr WHERE today_return IS NOT NULL "
             "GROUP BY g ORDER BY MIN(today_return) DESC"
         ).fetchall()
 
@@ -1841,30 +1970,30 @@ def _weekly_analysis():
         dow_rows = c.execute(
             "SELECT CASE strftime('%w',timestamp) WHEN '1' THEN 'Mon' WHEN '2' THEN 'Tue' "
             "WHEN '3' THEN 'Wed' WHEN '4' THEN 'Thu' WHEN '5' THEN 'Fri' END as d, "
-            "COUNT(*), ROUND(100.0*SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM scans WHERE next_day_return IS NOT NULL GROUP BY d ORDER BY d"
+            "COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM _wr WHERE strftime('%w',timestamp) BETWEEN '1' AND '5' GROUP BY d ORDER BY d"
         ).fetchall()
 
-        # Per-signal stats (top 5 + bottom 5, min 5 fires)
+        # Per-signal stats (min 5 fires) — uses signals_json from deduped base
         sig_rows = c.execute(
             "SELECT key, COUNT(*) as n, "
-            "ROUND(100.0*SUM(CASE WHEN next_day_return>=20 THEN 1 ELSE 0 END)/COUNT(*),1) as hit "
-            "FROM (SELECT s.next_day_return, je.key FROM scans s, json_each(s.signals_json) je "
-            "WHERE s.next_day_return IS NOT NULL AND s.signals_json IS NOT NULL "
-            "AND s.signals_json!='{\"\":\"\"}' AND je.value=1) "
+            "ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) as hit "
+            "FROM (SELECT w.best_d20, je.key FROM _wr w, json_each(w.signals_json) je "
+            "WHERE w.signals_json IS NOT NULL AND w.signals_json!='{}' AND je.value=1) "
             "GROUP BY key HAVING n>=5 ORDER BY hit DESC"
         ).fetchall()
 
-        # XGBoost eligibility
+        # XGBoost eligibility — count live scan rows (not deduped, not historical)
         xgb_n = c.execute(
-            "SELECT COUNT(*) FROM scans WHERE next_day_return IS NOT NULL "
+            "SELECT COUNT(*) FROM scans "
+            "WHERE mode NOT IN ('historical','fivemin','fivemin_bt','candidate_fivemin','standard','strict') "
+            "AND (days_to_20pct IS NOT NULL OR (julianday('now')-julianday(timestamp))>=14) "
             "AND signals_json IS NOT NULL AND signals_json!='{}'"
         ).fetchone()[0]
 
-        # New labeled rows this week
+        # New labeled rows this week (deduped, confirmed outcomes)
         new_labeled = c.execute(
-            "SELECT COUNT(*) FROM scans WHERE next_day_return IS NOT NULL "
-            "AND timestamp >= date('now','-7 days')"
+            "SELECT COUNT(*) FROM _wr WHERE scan_date >= date('now','-7 days')"
         ).fetchone()[0]
 
         # Float/shares bucket hit rates
@@ -1873,27 +2002,27 @@ def _weekly_analysis():
             "WHEN shares_outstanding < 30000000 THEN 'lt30m' "
             "WHEN shares_outstanding < 100000000 THEN 'lt100m' "
             "ELSE '100m+' END as bucket, "
-            "COUNT(*), ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM scans WHERE next_day_return IS NOT NULL AND shares_outstanding IS NOT NULL "
+            "COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM _wr WHERE shares_outstanding IS NOT NULL "
             "GROUP BY bucket ORDER BY MIN(shares_outstanding)"
         ).fetchall()
 
-        # LSTM gate validation — hit rate at each threshold vs baseline (days_to_20pct label)
+        # LSTM gate validation — uses deduped base, lstm_prob from highest-score scan
         lstm_baseline = c.execute(
-            "SELECT COUNT(*), ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM scans WHERE next_day_return IS NOT NULL"
+            "SELECT COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "FROM _wr"
         ).fetchone()
         lstm_gate_rows = c.execute(
             "SELECT gate, COUNT(*), "
-            "ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
+            "ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
             "FROM ("
-            "  SELECT days_to_20pct, next_day_return, lstm_prob, "
+            "  SELECT best_d20, lstm_prob, "
             "    CASE WHEN lstm_prob >= 0.75 THEN '>=75%' "
             "         WHEN lstm_prob >= 0.65 THEN '65-74%' "
             "         WHEN lstm_prob >= 0.55 THEN '55-64%' "
             "         WHEN lstm_prob >= 0.35 THEN '35-54%' "
             "         ELSE '<35%' END as gate "
-            "  FROM scans WHERE next_day_return IS NOT NULL AND lstm_prob IS NOT NULL"
+            "  FROM _wr WHERE lstm_prob IS NOT NULL"
             ") GROUP BY gate ORDER BY MIN(lstm_prob) DESC"
         ).fetchall()
 
@@ -1912,50 +2041,46 @@ def _weekly_analysis():
         ).fetchone()
 
         # ── AI TRADE call summary ──────────────────────────────────────────
-        # All scans where AI called TRADE with known outcomes
+        # Deduped TRADE calls: one per symbol per day, confirmed outcomes only
         trade_scan_rows = c.execute(
-            "SELECT symbol, score, today_return, next_day_return, days_to_20pct, "
-            "       lstm_prob, timestamp, scan_price "
-            "FROM scans "
+            "SELECT symbol, score, today_return, NULL as next_day_return, best_d20 as days_to_20pct, "
+            "       lstm_prob, timestamp, NULL as scan_price "
+            "FROM _wr "
             "WHERE ai_trade_rec LIKE '%\"decision\": \"TRADE\"%' "
             "  AND ai_trade_rec NOT LIKE '%NO_TRADE%' "
-            "  AND next_day_return IS NOT NULL "
             "ORDER BY timestamp DESC LIMIT 100"
         ).fetchall()
 
-        # Hit speed distribution — days until 20%+ hit
+        # Hit speed distribution — days until 20%+ hit (deduped, daily modes only)
         speed_rows = c.execute(
-            "SELECT days_to_20pct, COUNT(*) FROM scans "
-            "WHERE days_to_20pct IS NOT NULL GROUP BY days_to_20pct ORDER BY days_to_20pct"
+            "SELECT best_d20, COUNT(*) FROM _wr "
+            "WHERE best_d20 IS NOT NULL GROUP BY best_d20 ORDER BY best_d20"
         ).fetchall()
 
-        # LSTM x score cross-tab (closed-window rows only)
+        # LSTM x score cross-tab (deduped base)
         lstm_score_rows = c.execute(
             "SELECT "
             "  CASE WHEN score>=65 THEN '65+' WHEN score>=55 THEN '55-64' "
             "       WHEN score>=45 THEN '45-54' ELSE '0-44' END as bucket, "
             "  COUNT(*) as n_all, "
-            "  ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) as hit_all, "
+            "  ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) as hit_all, "
             "  SUM(CASE WHEN lstm_prob>=0.55 THEN 1 ELSE 0 END) as n_gated, "
-            "  ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL AND lstm_prob>=0.55 THEN 1 ELSE 0 END)/"
+            "  ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL AND lstm_prob>=0.55 THEN 1 ELSE 0 END)/"
             "        NULLIF(SUM(CASE WHEN lstm_prob>=0.55 THEN 1 ELSE 0 END),0),1) as hit_gated "
-            "FROM scans WHERE next_day_return IS NOT NULL "
-            "  AND (days_to_20pct IS NOT NULL OR julianday('now')-julianday(timestamp)>=14) "
-            "GROUP BY bucket ORDER BY MIN(score) DESC"
+            "FROM _wr GROUP BY bucket ORDER BY MIN(score) DESC"
         ).fetchall()
 
-        # Day-of-week x LSTM cross-tab
+        # Day-of-week x LSTM cross-tab (deduped base)
         dow_lstm_rows = c.execute(
             "SELECT "
             "  CASE strftime('%w',timestamp) WHEN '1' THEN 'Mon' WHEN '2' THEN 'Tue' "
             "  WHEN '3' THEN 'Wed' WHEN '4' THEN 'Thu' WHEN '5' THEN 'Fri' END as d, "
             "  COUNT(*) as n_all, "
-            "  ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) as hit_all, "
+            "  ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) as hit_all, "
             "  SUM(CASE WHEN lstm_prob>=0.55 THEN 1 ELSE 0 END) as n_gated, "
-            "  ROUND(100.0*SUM(CASE WHEN days_to_20pct IS NOT NULL AND lstm_prob>=0.55 THEN 1 ELSE 0 END)/"
+            "  ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL AND lstm_prob>=0.55 THEN 1 ELSE 0 END)/"
             "        NULLIF(SUM(CASE WHEN lstm_prob>=0.55 THEN 1 ELSE 0 END),0),1) as hit_gated "
-            "FROM scans WHERE next_day_return IS NOT NULL "
-            "  AND (days_to_20pct IS NOT NULL OR julianday('now')-julianday(timestamp)>=14) "
+            "FROM _wr WHERE strftime('%w',timestamp) BETWEEN '1' AND '5' "
             "GROUP BY d HAVING d IS NOT NULL "
             "ORDER BY CASE d WHEN 'Mon' THEN 1 WHEN 'Tue' THEN 2 WHEN 'Wed' THEN 3 "
             "                WHEN 'Thu' THEN 4 WHEN 'Fri' THEN 5 END"
@@ -2449,7 +2574,7 @@ def _weekly_analysis():
             lstm_gate_rows=lstm_gate_rows, lstm_score_rows=lstm_score_rows,
             sl_lines=sl_lines, trade_scan_rows=trade_scan_rows,
             open_trades=open_trades, closed_trades_rows=closed_trades_rows,
-            proposals=proposals,
+            proposals=proposals, autopsy_data=get_trade_signal_autopsy(),
         )
         send_weekly_report_email(
             subject=f"AI Trading Model — Weekly Analysis {date_str}",

@@ -1417,12 +1417,16 @@ def get_optimization_data():
     """
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    # Deduped base: one row per symbol per day, daily modes only, confirmed outcomes.
     cursor.execute("""
-        SELECT relative_volume, today_return, shares_outstanding,
-               next_day_return, days_to_20pct, timestamp
+        SELECT MAX(relative_volume), MAX(today_return), MIN(shares_outstanding),
+               MAX(next_day_return), MIN(days_to_20pct), MIN(timestamp)
         FROM scans
-        WHERE next_day_return IS NOT NULL
-        ORDER BY id DESC LIMIT 500
+        WHERE mode NOT IN ('fivemin','fivemin_bt','candidate_fivemin','standard','strict')
+          AND (days_to_20pct IS NOT NULL
+               OR (julianday('now') - julianday(timestamp)) >= 14)
+        GROUP BY symbol, DATE(timestamp)
+        ORDER BY MIN(timestamp) DESC LIMIT 500
     """)
     rows = cursor.fetchall()
     conn.close()
@@ -1504,7 +1508,7 @@ _ALL_SIGNAL_KEYS = [
     "rel_vol_500x", "rel_vol_100x",
     "rel_vol_50x", "rel_vol_25x", "rel_vol_10x", "rel_vol_5x",
     "daily_sweet_20_40", "daily_ok_10_20", "daily_ok_40_100",
-    "sideways_chop", "yesterday_green",
+    "sideways_chop", "momentum_continuation", "yesterday_green",
     "shares_lt10m", "shares_lt30m", "shares_lt100m",
     "no_news_bonus", "high_cash_bonus",
     "institution_moderate", "institution_strong", "sector_biotech_bonus",
@@ -1542,10 +1546,29 @@ def get_per_signal_stats(modes=None) -> dict:
             "avg_return": round(sum(nd_vals) / len(nd_vals), 2),
         }
 
-    cursor.execute(f"""
-        SELECT next_day_return, days_to_20pct FROM scans
-        WHERE next_day_return IS NOT NULL AND signals_json IS NOT NULL{mc}
-    """, mp)
+    # Deduped base: one row per symbol per day, daily modes only, confirmed outcomes.
+    # MAX(next_day_return) keeps win_rate metric; MIN(days_to_20pct) is the hit metric.
+    _excl = "mode NOT IN ('fivemin','fivemin_bt','candidate_fivemin','standard','strict')"
+    _outcome = "(days_to_20pct IS NOT NULL OR (julianday('now') - julianday(timestamp)) >= 14)"
+    _mode_extra = f" AND mode IN ({','.join('?'*len(modes))})" if modes else ""
+    _dedup_cte = f"""
+        WITH deduped AS (
+          SELECT symbol, DATE(timestamp) as sd,
+                 MIN(days_to_20pct)   AS best_d20,
+                 MAX(next_day_return) AS best_ndr,
+                 MAX(signals_json)    AS signals_json
+          FROM scans
+          WHERE {_excl} AND {_outcome}
+            AND signals_json IS NOT NULL AND signals_json != '{{}}'
+            {_mode_extra}
+          GROUP BY symbol, DATE(timestamp)
+        )
+    """
+    _mp = list(modes) if modes else []
+
+    cursor.execute(
+        _dedup_cte + "SELECT best_ndr, best_d20 FROM deduped", _mp
+    )
     baseline_rows = cursor.fetchall()
 
     if not baseline_rows:
@@ -1557,10 +1580,10 @@ def get_per_signal_stats(modes=None) -> dict:
     signal_results = []
     for key in _ALL_SIGNAL_KEYS:
         cursor.execute(
-            f"SELECT next_day_return, days_to_20pct FROM scans "
-            f"WHERE next_day_return IS NOT NULL AND signals_json IS NOT NULL{mc} "
-            f"AND json_extract(signals_json, '$.' || ?) = 1",
-            mp + [key]
+            _dedup_cte +
+            "SELECT best_ndr, best_d20 FROM deduped "
+            "WHERE json_extract(signals_json, '$.' || ?) = 1",
+            _mp + [key]
         )
         rows = cursor.fetchall()
         s = _stats(rows)
@@ -1573,6 +1596,145 @@ def get_per_signal_stats(modes=None) -> dict:
     _result = {"baseline": baseline, "signals": signal_results}
     _cache_set(_ck, _result, 3600)
     return _result
+
+
+# ---------------- TRADE SIGNAL AUTOPSY ----------------
+
+def get_trade_signal_autopsy() -> dict:
+    """
+    For every AI TRADE call with a known outcome (next_day_return IS NOT NULL),
+    compute per-signal and signal-combination win/loss rates.
+
+    Returns:
+      {
+        "total_trades": int,   # AI TRADE calls with outcomes
+        "wins": int,
+        "losses": int,
+        "overall_win_rate": float,
+        "individual": [         # per-signal breakdown, sorted by win_rate asc (worst first)
+          {"key": str, "fires": int, "wins": int, "losses": int, "win_rate": float,
+           "vs_overall": float}  # pp delta vs overall TRADE win rate
+          ...
+        ],
+        "combos": [             # top co-firing combos on LOSING trades (n>=3), sorted by loss_count desc
+          {"signals": [str, ...], "loss_count": int, "win_count": int, "win_rate": float}
+          ...
+        ]
+      }
+    Cached 3600s.
+    """
+    _ck = "trade_signal_autopsy"
+    _cached, _hit = _cache_get(_ck)
+    if _hit:
+        return _cached
+
+    conn = _connect()
+    cursor = conn.cursor()
+
+    # Deduped TRADE calls: one per symbol per day, daily modes, confirmed outcomes.
+    # A symbol+day counts as a TRADE call if any scan that day called TRADE.
+    cursor.execute("""
+        SELECT MIN(days_to_20pct) as best_d20, MAX(signals_json) as signals_json
+        FROM scans
+        WHERE mode NOT IN ('fivemin','fivemin_bt','candidate_fivemin','standard','strict')
+          AND signals_json IS NOT NULL AND signals_json != '{}'
+          AND ai_trade_rec LIKE '%"decision": "TRADE"%'
+          AND (days_to_20pct IS NOT NULL
+               OR (julianday('now') - julianday(timestamp)) >= 14)
+        GROUP BY symbol, DATE(timestamp)
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        result = {"total_trades": 0, "wins": 0, "losses": 0,
+                  "overall_win_rate": 0.0, "individual": [], "combos": []}
+        _cache_set(_ck, result, 3600)
+        return result
+
+    total = len(rows)
+    wins_total = sum(1 for d20, _ in rows if d20 is not None)
+    losses_total = total - wins_total
+    overall_wr = round(wins_total / total * 100, 1) if total else 0.0
+
+    # --- Individual signal breakdown ---
+    signal_stats: dict[str, dict] = {}
+    for d20, sj in rows:
+        try:
+            fired = json.loads(sj) if sj else {}
+        except (json.JSONDecodeError, TypeError):
+            fired = {}
+        is_win = d20 is not None
+        for key in fired:
+            if key not in signal_stats:
+                signal_stats[key] = {"wins": 0, "losses": 0}
+            if is_win:
+                signal_stats[key]["wins"] += 1
+            else:
+                signal_stats[key]["losses"] += 1
+
+    individual = []
+    for key, s in signal_stats.items():
+        fires = s["wins"] + s["losses"]
+        if fires < 3:
+            continue
+        wr = round(s["wins"] / fires * 100, 1)
+        individual.append({
+            "key": key,
+            "fires": fires,
+            "wins": s["wins"],
+            "losses": s["losses"],
+            "win_rate": wr,
+            "vs_overall": round(wr - overall_wr, 1),
+        })
+    individual.sort(key=lambda x: x["win_rate"])  # worst first
+
+    # --- Signal combination breakdown on LOSING trades ---
+    # Find pairs/triples that co-fire frequently on losses
+    from itertools import combinations as _combos
+    combo_counts: dict[tuple, dict] = {}
+    for d20, sj in rows:
+        try:
+            fired = json.loads(sj) if sj else {}
+        except (json.JSONDecodeError, TypeError):
+            fired = {}
+        is_win = d20 is not None
+        keys = sorted(fired.keys())
+        # Only pairs (triples get noisy with small n)
+        for pair in _combos(keys, 2):
+            if pair not in combo_counts:
+                combo_counts[pair] = {"wins": 0, "losses": 0}
+            if is_win:
+                combo_counts[pair]["wins"] += 1
+            else:
+                combo_counts[pair]["losses"] += 1
+
+    combos = []
+    for pair, s in combo_counts.items():
+        total_c = s["wins"] + s["losses"]
+        if total_c < 3:
+            continue
+        wr = round(s["wins"] / total_c * 100, 1)
+        combos.append({
+            "signals": list(pair),
+            "total": total_c,
+            "loss_count": s["losses"],
+            "win_count": s["wins"],
+            "win_rate": wr,
+        })
+    # Sort: lowest win rate first (worst combos), then by total fires desc for ties
+    combos.sort(key=lambda x: (x["win_rate"], -x["total"]))
+
+    result = {
+        "total_trades": total,
+        "wins": wins_total,
+        "losses": losses_total,
+        "overall_win_rate": overall_wr,
+        "individual": individual,
+        "combos": combos[:20],  # top 20 worst combos
+    }
+    _cache_set(_ck, result, 3600)
+    return result
 
 
 # ---------------- FEEDBACK ----------------
