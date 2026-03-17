@@ -1536,14 +1536,14 @@ def get_per_signal_stats(modes=None) -> dict:
     def _stats(rows):
         if not rows:
             return {"count": 0, "win_rate": 0.0, "hit_20pct": 0.0, "avg_return": 0.0}
-        nd_vals = [nd for nd, d20 in rows]
+        nd_vals = [nd for nd, d20 in rows if nd is not None]
         wins    = [nd for nd in nd_vals if nd > 0]
         hits    = [d20 for nd, d20 in rows if d20 is not None]
         return {
             "count":      len(rows),
-            "win_rate":   round(len(wins) / len(rows) * 100, 1),
+            "win_rate":   round(len(wins) / len(nd_vals) * 100, 1) if nd_vals else 0.0,
             "hit_20pct":  round(len(hits) / len(rows) * 100, 1),
-            "avg_return": round(sum(nd_vals) / len(nd_vals), 2),
+            "avg_return": round(sum(nd_vals) / len(nd_vals), 2) if nd_vals else 0.0,
         }
 
     # Deduped base: one row per symbol per day, daily modes only, confirmed outcomes.
