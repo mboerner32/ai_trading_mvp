@@ -1439,15 +1439,15 @@ def get_optimization_data():
         if not items:
             return {"count": 0, "avg_return": 0.0, "win_rate": 0.0,
                     "hit_20pct": 0.0, "avg_days_to_20pct": None}
-        values  = [nd for nd, d in items]
-        wins    = [nd for nd in values if nd > 0]
-        hits_20 = [(nd, d) for nd, d in items if d is not None]  # intraday HIGH touched +20%
+        values     = [nd for nd, d in items if nd is not None]
+        wins       = [nd for nd in values if nd > 0]
+        hits_20    = [(nd, d) for nd, d in items if d is not None]
         valid_days = [d for nd, d in hits_20]
-        avg_days = round(sum(valid_days) / len(valid_days), 1) if valid_days else None
+        avg_days   = round(sum(valid_days) / len(valid_days), 1) if valid_days else None
         return {
             "count":             len(items),
-            "avg_return":        round(sum(values) / len(values), 2),
-            "win_rate":          round(len(wins)    / len(items) * 100, 1),
+            "avg_return":        round(sum(values) / len(values), 2) if values else 0.0,
+            "win_rate":          round(len(wins) / len(values) * 100, 1) if values else 0.0,
             "hit_20pct":         round(len(hits_20) / len(items) * 100, 1),
             "avg_days_to_20pct": avg_days,
         }
@@ -2476,7 +2476,9 @@ def save_scan_cache(mode: str, results: list, summary: dict):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     now = datetime.utcnow().isoformat()
-    value = json.dumps({"results": results, "summary": summary, "cached_at": now})
+    # Strip any non-serializable fields (e.g. _df pandas DataFrames) before caching
+    clean = [{k: v for k, v in r.items() if k != "_df"} for r in results]
+    value = json.dumps({"results": clean, "summary": summary, "cached_at": now})
     cursor.execute("""
         INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
