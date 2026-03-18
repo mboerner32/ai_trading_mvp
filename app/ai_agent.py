@@ -371,20 +371,20 @@ def recommend_trade(stock: dict, hypothesis: str = None,
             lines.append(f"  {h['timestamp']}: score={h['score']}, relvol={relvol:.1f}x{nd}")
         history_section = "\n".join(lines)
 
-    # Context 4: market context (day of week) — real hit rates from 4133-row DB, 2026-03-14
+    # Context 4: market context (day of week) — clean deduped data, days_to_20pct metric, 2026-03-17
+    # Baseline: 49.4% (n=2432 unique symbol-days, daily modes only, confirmed outcomes)
     day_name = datetime.now().strftime("%A")
     _dow_data = {
-        "Monday":    ("34.6%", "+3.8pp", "normal scrutiny"),
-        "Tuesday":   ("34.7%", "+3.9pp", "normal scrutiny"),
-        "Wednesday": ("20.1%", "-10.7pp", "ELEVATED SCRUTINY — historically weakest day, 15pp below Mon/Tue/Fri"),
-        "Thursday":  ("20.4%", "-10.4pp", "ELEVATED SCRUTINY — historically weak day, 15pp below Mon/Tue/Fri"),
-        "Friday":    ("36.0%", "+5.2pp", "normal scrutiny"),
+        "Monday":    ("51.5%", "+2.1pp", "normal scrutiny"),
+        "Tuesday":   ("46.5%", "-2.9pp", "slightly below baseline — apply mild additional scrutiny"),
+        "Wednesday": ("43.7%", "-5.7pp", "ELEVATED SCRUTINY — historically weakest day, 7pp below Friday"),
+        "Thursday":  ("51.9%", "+2.5pp", "normal scrutiny — above baseline, good day for setups"),
+        "Friday":    ("53.2%", "+3.9pp", "normal scrutiny — historically strongest day"),
     }
     _dow = _dow_data.get(day_name, ("N/A", "N/A", "normal scrutiny"))
     market_section = (f"\nMarket context: Today is {day_name} "
-                      f"(hit rate: {_dow[0]}, {_dow[1]} vs baseline — {_dow[2]}). "
-                      f"On Wed/Thu the model historically struggles to find profitable setups — "
-                      f"you must find a specific edge that overcomes this headwind or call NO_TRADE.")
+                      f"(hit rate: {_dow[0]}, {_dow[1]} vs 49.4% baseline — {_dow[2]}). "
+                      f"Only Wednesday shows meaningful underperformance historically.")
 
     # Context 5: LSTM model prediction + live backtested tier performance
     _lstm_tier_context = _get_lstm_tier_context()
