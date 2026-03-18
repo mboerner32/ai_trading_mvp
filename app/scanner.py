@@ -630,6 +630,9 @@ def run_scan(mode="standard", premarket: bool = False):
                     fundamentals["institution_pct"] = q["institution_pct"]
             result = scorer(symbol, df, fundamentals=fundamentals)
             if result:
+                # Stash the prepared df so _enrich_one() can pass it to the LSTM
+                # without a second yfinance call. Removed after enrichment.
+                result["_df"] = df
                 results.append(result)
                 summary["qualified"] += 1
         except Exception as e:

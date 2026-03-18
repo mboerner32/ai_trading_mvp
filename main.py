@@ -760,22 +760,25 @@ def _enrich_high_scorers(results: list, mode: str = None, scan_id_map: dict = No
     def _enrich_one(stock):
         try:
             checklist = stock.get("checklist", {})
-            # LSTM: fivemin gated at 75; daily models gated at 50 (matches AI enrichment threshold)
+            # Pop stashed df (added by run_scan) — used to avoid a second yfinance call
+            stock_df = stock.pop("_df", None)
             lstm_prob = None
-            lstm_threshold = 75 if mode == "fivemin" else 44
-            if stock.get("score", 0) >= lstm_threshold:
-                if mode == "fivemin":
+            if mode == "fivemin":
+                # 5m LSTM gated at 75 (unchanged)
+                if stock.get("score", 0) >= 75:
                     lstm_prob = predict_5m_hit_probability(
                         stock["symbol"],
                         shares_outstanding=checklist.get("shares_outstanding"),
                         sector=checklist.get("sector"),
                     )
-                else:
-                    lstm_prob = predict_hit_probability(
-                        stock["symbol"],
-                        shares_outstanding=checklist.get("shares_outstanding"),
-                        sector=checklist.get("sector"),
-                    )
+            else:
+                # Daily LSTM: run on ALL high-scorers, passing pre-fetched df
+                lstm_prob = predict_hit_probability(
+                    stock["symbol"],
+                    shares_outstanding=checklist.get("shares_outstanding"),
+                    sector=checklist.get("sector"),
+                    df=stock_df,
+                )
             stock["lstm_prob"] = lstm_prob
             ticker_history = get_ticker_scan_history(stock["symbol"])
             news = get_stock_news(stock["symbol"])
@@ -803,23 +806,42 @@ def _enrich_high_scorers(results: list, mode: str = None, scan_id_map: dict = No
     return results
 
 
-_LSTM_GATE = 0.55   # minimum LSTM probability for alerts and paper trades
-_LSTM_NONE_MIN_SCORE = 75  # if LSTM unavailable, require this score floor instead
 _DAILY_STOP_LOSS_PCT = 20.0  # hard stop-loss % for daily model paper trades
 
 
 def _passes_lstm_gate(r: dict) -> bool:
     """
-    Returns True if the stock passes the LSTM quality gate:
-      - lstm_prob >= 55%  (model agrees the setup is likely to hit)
-      - OR lstm_prob is None AND score >= 75  (no model data but very high scorer)
-    Stocks with lstm_prob < 55% or (None + score < 75) are filtered out.
+    Tier-aware LSTM quality gate for daily model alerts.
+
+    Tier 1 (relvol ≥100x): LSTM is informational only — always passes.
+      Historical hit rate ~80-90% (after survivor-bias correction). Rejecting T1
+      requires a specific red flag identified by the AI, not an LSTM threshold.
+
+    Tier 2 (relvol 50–99x): LSTM ≥ 50% required.
+      Fallback (no LSTM data): score ≥ 60.
+
+    Tier 3 (relvol <50x or shares >30M): LSTM ≥ 65% required.
+      Fallback (no LSTM data): score ≥ 70.
     """
-    lstm = r.get("lstm_prob")
+    lstm  = r.get("lstm_prob")
     score = r.get("score", 0)
+    relvol = r.get("relative_volume") or 0
+    shares = (r.get("checklist") or {}).get("shares_outstanding") or 0
+
+    # T1: relvol ≥ 100x — LSTM informational, never blocks
+    if relvol >= 100:
+        return True
+
+    # T2: relvol 50–99x — lower threshold (model has survivor bias; 50% still adds lift)
+    if relvol >= 50:
+        if lstm is None:
+            return score >= 60
+        return lstm >= 0.50
+
+    # T3: relvol < 50x or large float — high bar
     if lstm is None:
-        return score >= _LSTM_NONE_MIN_SCORE
-    return lstm >= _LSTM_GATE
+        return score >= 70
+    return lstm >= 0.65
 
 
 def _auto_paper_trade(results: list, today_str: str, mode: str = "squeeze") -> set:

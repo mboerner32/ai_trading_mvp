@@ -361,12 +361,21 @@ def predict_hit_probability_as_of(symbol: str,
 
 def predict_hit_probability(symbol: str,
                             shares_outstanding: int = None,
-                            sector: str = None) -> float | None:
+                            sector: str = None,
+                            df=None) -> float | None:
     """
-    Fetch the last 3 months of OHLCV for symbol, extract the 20-day window
-    ending the day before today (matching training distribution), run the LSTM,
-    and return a 0–1 probability of hitting +20% within 10 trading days.
-    Returns None on any error (model not trained, bad data, etc.).
+    Run LSTM inference for symbol and return a 0–1 probability of hitting
+    +20% within 10 trading days.
+
+    If `df` is provided (a prepared_dataframe already fetched by the scanner),
+    it is used directly — no second yfinance call. This is the preferred path:
+    the scanner already fetches OHLCV, so reusing it avoids duplicate API calls
+    and allows LSTM to run on every scanned stock regardless of score threshold.
+
+    If `df` is None, falls back to fetching the last 3 months from yfinance
+    (legacy path — used when calling predict_hit_probability standalone).
+
+    Returns None on any error (model not trained, insufficient history, etc.).
     """
     try:
         import torch
@@ -377,13 +386,15 @@ def predict_hit_probability(symbol: str,
         if model is None:
             return None
 
-        df = yf.download(symbol, period="3mo", interval="1d",
-                         progress=False, auto_adjust=False)
-        # Need SEQUENCE_LEN + 1 rows so we can exclude today (last row)
-        if df.empty or len(df) < SEQUENCE_LEN + 1:
-            return None
+        if df is None:
+            # Legacy path: fetch from yfinance
+            df = yf.download(symbol, period="3mo", interval="1d",
+                             progress=False, auto_adjust=False)
+            if df.empty or len(df) < SEQUENCE_LEN + 1:
+                return None
+            df = prepare_dataframe(df)
 
-        df = prepare_dataframe(df)
+        # Need SEQUENCE_LEN + 1 rows so we can exclude today (last row)
         if len(df) < SEQUENCE_LEN + 1:
             return None
 

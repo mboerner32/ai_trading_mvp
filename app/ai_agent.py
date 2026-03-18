@@ -476,6 +476,7 @@ def recommend_trade(stock: dict, hypothesis: str = None,
         accuracy_section = "\n".join(parts)
 
     relvol_raw = checklist.get('relative_volume')
+    shares_raw = checklist.get('shares_outstanding') or 0
     relvol_tier_label = (
         "Extreme (≥500x)" if relvol_raw and relvol_raw >= 500 else
         "Exceptional (≥100x)" if relvol_raw and relvol_raw >= 100 else
@@ -485,9 +486,44 @@ def recommend_trade(stock: dict, hypothesis: str = None,
         "Adequate (≥5x)" if relvol_raw and relvol_raw >= 5 else "Low"
     )
 
+    # Tier classification and tier-specific AI instructions
+    relvol_val = relvol_raw or 0
+    if relvol_val >= 100:
+        tier_block = (
+            "\n*** TIER 1 ALERT — relvol ≥100x ***\n"
+            "Historical hit rate in our screener: ~80-90% (after survivor-bias correction). "
+            "This is the strongest signal in our model. "
+            "Call NO_TRADE ONLY if you identify a specific disqualifying red flag "
+            "(confirmed bankruptcy, trading halt, obvious pump-and-dump with no fundamental basis). "
+            "Vague hesitation or missing confirming signals do NOT override a Tier 1 signal. "
+            "Default to TRADE unless you can name a concrete red flag."
+        )
+    elif relvol_val >= 50:
+        tier_block = (
+            "\n*** TIER 2 ALERT — relvol 50-99x ***\n"
+            "Historical hit rate: ~45-60%. Standard scrutiny applies. "
+            "Require 2+ confirming signals (float <30M, LSTM ≥50%, daily gain 40%+, sideways compression). "
+            "Without at least 2 confirming signals, call NO_TRADE."
+        )
+    elif shares_raw > 30_000_000:
+        tier_block = (
+            "\n*** TIER 3 — large float (>30M shares) ***\n"
+            "Hit rate near baseline (49%). Large float reduces squeeze potential. "
+            "Require LSTM ≥65% + relvol ≥50x + 2 other strong signals. "
+            "High bar — most of these should be NO_TRADE unless exceptional catalyst."
+        )
+    else:
+        tier_block = (
+            "\n*** TIER 3 — below threshold relvol (<50x) ***\n"
+            "Hit rate near baseline (49%). Weak relvol signal. "
+            "Require LSTM ≥65% + float <30M + 2 other strong signals. "
+            "High bar — most of these should be NO_TRADE."
+        )
+
     prompt = f"""You are a momentum trading AI making a TRADE or NO_TRADE call. Treat this as if you are trading with your own money — every TRADE call costs real capital, and losses come out of your pocket. Be selective. Be precise.
 
 Strategy: identify low-float microcaps with unusual volume that will hit +20% above alert price within 5 trading days (77% of winners hit Day 1, 97% by Day 5). Target precision: 60%+ of TRADE calls hit +20% (baseline is 49.4% — you need a clear edge above that). Be selective but not paralyzed — 2–5 quality TRADE calls per day is the goal.
+{tier_block}
 
 Stock: {stock['symbol']} | Score: {stock['score']}/100 | Price: ${stock['price']}
 Signals:
@@ -526,20 +562,20 @@ Key findings:
 - Daily gain 40–100% (+6.8pp) is a meaningful positive. 20–40% is neutral.
 
 RELVOL SCRUTINY TIERS:
-- ≥100x relvol: clear edge — standard conviction required.
-- 50–99x relvol: meaningful signal — require 2+ confirming signals (float <30M, sideways compression, biotech catalyst, LSTM ≥55%).
-- 25–49x relvol: HIGH SCRUTINY — win rate drops significantly here. Require ALL of: float <30M + LSTM ≥60% + 1 other strong signal. Do not call TRADE on relvol alone.
-- 10–24x relvol: HIGH SCRUTINY — weak setup. Require LSTM ≥65% + float <30M + at least 2 other strong signals. Very few setups justify TRADE at this tier.
+- ≥100x relvol (T1): clear edge — call TRADE unless specific red flag identified (see TIER 1 block above).
+- 50–99x relvol (T2): meaningful signal — require 2+ confirming signals (float <30M, LSTM ≥50%, daily gain 40%+, sideways compression).
+- 25–49x relvol (T3): HIGH SCRUTINY — require ALL of: float <30M + LSTM ≥65% + 1 other strong signal.
+- 10–24x relvol (T3): HIGH SCRUTINY — weak setup. Require LSTM ≥65% + float <30M + 2 other strong signals.
 
 FLOAT/SHARES SCRUTINY:
 - <30M shares: acceptable — standard scrutiny applies.
-- 30–100M shares: HIGH SCRUTINY — win rate drops significantly. Require relvol ≥100x OR LSTM ≥65% to compensate. Do not call TRADE on moderate relvol + large float alone.
+- 30–100M shares (T3): HIGH SCRUTINY — win rate drops significantly. Require relvol ≥100x OR LSTM ≥65% to compensate.
 
 TRADE calls require genuine conviction. Ask: what specific edge does this stock have over the baseline 49.4% hit rate?
 
 Confidence criteria:
-- HIGH: relvol ≥100x + float <30M + 1+ other signals aligned, no red flags
-- MEDIUM: relvol 50–99x with 2+ confirming signals, OR relvol 25–49x with LSTM ≥60% + float <30M
+- HIGH: relvol ≥100x (T1) + no red flags, OR T2 with float <30M + LSTM ≥50% + 1 other signal
+- MEDIUM: T2 with 2+ confirming signals, OR T3 with LSTM ≥65% + float <30M + 2 signals
 - LOW: weak relvol or large float with limited supporting signals — usually NO_TRADE territory
 
 Respond EXACTLY (no other text):

@@ -263,6 +263,33 @@ def _process_ticker(symbol, weights=None):
         gc.collect()
 
 
+def get_screener_universe() -> list:
+    """
+    Return all distinct symbols that have ever appeared in the live daily screener
+    (squeeze / autoai modes). Excludes fivemin modes and synthetic historical rows.
+    This gives ~700 symbols including losers — a representative sample for unbiased
+    LSTM training, unlike SEED_TICKERS which are pre-selected winners.
+    Falls back to SEED_TICKERS if the DB is empty or too small (fresh deploy).
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT DISTINCT symbol FROM scans "
+            "WHERE mode NOT IN "
+            "('fivemin', 'fivemin_bt', 'candidate_fivemin', 'standard', 'strict', 'historical')"
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        symbols = [r[0] for r in rows if r[0]]
+        if len(symbols) >= 50:
+            return symbols
+        # Not enough live data yet — fall back to SEED_TICKERS
+        return SEED_TICKERS[:]
+    except Exception:
+        return SEED_TICKERS[:]
+
+
 def _get_db_tickers():
     """Return unique tickers already scanned (excluding historical mode)."""
     try:
@@ -442,6 +469,9 @@ def build_historical_dataset(max_workers=2, weights=None):
 
     db_tickers = _get_db_tickers()
 
+    # Screener universe: all symbols from live daily screener (includes losers — unbiased)
+    screener_universe = get_screener_universe()
+
     # Fetch dynamic universe from Finviz (price < $10, avg vol > 200K)
     try:
         dynamic_tickers = fetch_backfill_universe(max_tickers=1000)
@@ -452,10 +482,12 @@ def build_historical_dataset(max_workers=2, weights=None):
     # Load broad US ticker universe for extra coverage
     us_tickers = _load_us_tickers()
 
-    # Merge seed + dynamic + us_tickers + known tickers, deduplicated, seed list first
+    # Merge screener_universe first (replaces SEED_TICKERS as primary source),
+    # then dynamic + us_tickers + db_tickers for additional coverage.
+    # screener_universe already falls back to SEED_TICKERS when DB is too small.
     seen = set()
     all_tickers = []
-    for t in SEED_TICKERS + dynamic_tickers + us_tickers + db_tickers:
+    for t in screener_universe + dynamic_tickers + us_tickers + db_tickers:
         if t not in seen:
             seen.add(t)
             all_tickers.append(t)
@@ -463,7 +495,7 @@ def build_historical_dataset(max_workers=2, weights=None):
     total = len(all_tickers)
     set_backfill_status("running", 0, total, 0)
     print(f"Backfill: starting — {total} tickers "
-          f"(seed={len(SEED_TICKERS)}, finviz={len(dynamic_tickers)}, "
+          f"(screener={len(screener_universe)}, finviz={len(dynamic_tickers)}, "
           f"us_tickers={len(us_tickers)}, db={len(db_tickers)})")
 
     batch = []          # full example dicts — flushed every 50 tickers
