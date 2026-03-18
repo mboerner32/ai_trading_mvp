@@ -740,7 +740,7 @@ def _auto_ai_optimize():
 
 def _enrich_high_scorers(results: list, mode: str = None, scan_id_map: dict = None) -> list:
     """
-    For each stock scoring >= 50, add lstm_prob and ai_trade_call to the result dict.
+    For each stock scoring >= 44, add lstm_prob and ai_trade_call to the result dict.
     Called during scheduled and intraday scans so alerts carry full AI context.
     Runs in parallel (max 4 workers); gracefully skips on error.
     mode is passed through to get_active_hypothesis_text() so Auto AI uses its own
@@ -755,14 +755,14 @@ def _enrich_high_scorers(results: list, mode: str = None, scan_id_map: dict = No
     ai_accuracy      = get_ai_decision_accuracy()
     _modes           = _FIVEMIN_MODES if mode == "fivemin" else _DAILY_MODES
     _per_signal      = get_per_signal_stats(modes=_modes)
-    high_scorers     = [r for r in results if r.get("score", 0) >= 50]
+    high_scorers     = [r for r in results if r.get("score", 0) >= 44]
 
     def _enrich_one(stock):
         try:
             checklist = stock.get("checklist", {})
             # LSTM: fivemin gated at 75; daily models gated at 50 (matches AI enrichment threshold)
             lstm_prob = None
-            lstm_threshold = 75 if mode == "fivemin" else 50
+            lstm_threshold = 75 if mode == "fivemin" else 44
             if stock.get("score", 0) >= lstm_threshold:
                 if mode == "fivemin":
                     lstm_prob = predict_5m_hit_probability(
@@ -919,7 +919,7 @@ def _scheduled_scan():
             save_scan_cache(mode, data["results"], data["summary"])
             print(f"SCHEDULER: {mode} scan complete ({len(data['results'])} results)")
             if mode in ("autoai", "squeeze"):
-                # Enrich score >= 50 with AI calls + LSTM before alerting; persist to DB
+                # Enrich score >= 44 with AI calls + LSTM before alerting; persist to DB
                 _enrich_high_scorers(data["results"], mode=mode, scan_id_map=scan_ids)
                 # Auto paper-trade FIRST so Alpaca order is queued before Telegram fires
                 traded = _auto_paper_trade(data["results"], today_str)
@@ -1048,7 +1048,7 @@ def _intraday_scan():
         except Exception as ae:
             print(f"INTRADAY SCAN: autoai cache update failed — {ae}")
 
-        # Enrich score >= 50 stocks not yet alerted; persist lstm_prob + ai_trade_rec to DB
+        # Enrich score >= 44 stocks not yet alerted; persist lstm_prob + ai_trade_rec to DB
         new_candidates = [
             r for r in data["results"]
             if r.get("symbol") not in _alerted_today
@@ -2812,9 +2812,9 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
             stock["ai_target"] = predict_price_target(stock, sizing_stats, hypothesis_text)
         else:
             stock["ai_target"] = {"target_pct": 20, "rationale": ""}
-        # Local LSTM inference — daily models run at 50 (matches AI enrichment threshold)
+        # Local LSTM inference — daily models run at 44 (matches AI enrichment threshold)
         lstm_prob = None
-        if stock["score"] >= 50:
+        if stock["score"] >= 44:
             checklist = stock.get("checklist", {})
             lstm_prob = predict_hit_probability(
                 stock["symbol"],
