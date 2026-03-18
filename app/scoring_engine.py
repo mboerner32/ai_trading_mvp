@@ -246,19 +246,19 @@ def score_stock(symbol: str, df, fundamentals=None):
 DEFAULT_SQUEEZE_WEIGHTS = {
     "rel_vol_500x":         45,   # extreme event (≥500x) — 66.7% hit rate (+35.9pp, n=135, 2026-03-14)
     "rel_vol_100x":         40,   # very high (100–499x) — 59.9% hit rate (+29.1pp, n=364, 2026-03-14)
-    "rel_vol_50x":          28,   # high (50–99x) — 30.3% hit rate (-0.5pp, n=426) — AI must validate
-    "rel_vol_25x":          14,   # reduced: 25.6% hit rate (-5.2pp, n=1053, 2026-03-14)
-    "rel_vol_10x":          8,    # reduced: 26.0% hit rate (-4.8pp, n=2051, 2026-03-14)
+    "rel_vol_50x":          8,    # 50–99x — 45.5% hit rate (-4.5pp, n=297, 2026-03-17 clean) — REDUCED
+    "rel_vol_25x":          14,   # 25–49x — 49.5% hit rate (-0.4pp, n=687, 2026-03-17 clean)
+    "rel_vol_10x":          8,    # 10–24x — 48.2% hit rate (-1.7pp, n=1374, 2026-03-17 clean)
     "rel_vol_5x":           3,
-    "daily_sweet_20_40":    10,
-    "daily_ok_10_20":      -5,   # PENALTY: 5.9% hit rate vs 12.1% baseline (n=1211, 2026-03-09)
-    "daily_ok_40_100":      7,   # boosted: 14.2% hit rate (n=162, 2026-03-09)
+    "daily_sweet_20_40":    3,    # 20–40% — 49.4% hit rate (-0.5pp, n=952, 2026-03-17 clean) — at baseline
+    "daily_ok_10_20":      -5,   # PENALTY: 44.0% hit rate (-5.9pp, n=754, 2026-03-17 clean)
+    "daily_ok_40_100":      10,   # 40–100% — 56.7% hit rate (+6.8pp, n=723, 2026-03-17 clean) — BOOSTED
     "sideways_chop":          8,  # chop-to-ignition: avg_abs_5d < 10% (57% of winners, validated 2026-03-16)
     "momentum_continuation":  6,  # already running: avg_abs_5d >= 10% (43% of winners, validated 2026-03-16)
     "yesterday_green":        9,  # boosted: 14.4% hit rate (n=263, 2026-03-09)
-    "shares_lt10m":         18,  # 41.1% hit rate (+10.3pp, n=1096, 2026-03-14)
-    "shares_lt30m":         28,  # PRIMARY: 41.8% hit rate (+11.0pp, n=1091, 2026-03-14)
-    "shares_lt100m":        8,
+    "shares_lt10m":         8,    # <10M — 48.9% hit rate (-1.0pp, n=427, 2026-03-17 clean) — REDUCED
+    "shares_lt30m":         28,   # 10–30M — 53.8% hit rate (+3.9pp, n=515, 2026-03-17 clean) — PRIMARY
+    "shares_lt100m":        0,    # 30–100M — 48.3% hit rate (-1.7pp, n=717, 2026-03-17 clean) — ZEROED
     "no_news_bonus":        5,    # nice-to-have
     "high_cash_bonus":      5,    # nice-to-have
     "institution_moderate": 2,    # 15–39% institutional ownership

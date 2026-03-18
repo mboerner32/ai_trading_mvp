@@ -350,10 +350,19 @@ def get_fundamentals(symbol):
             news = ticker.news
             if news:
                 cutoff_ts = time.time() - (3 * 24 * 3600)
-                recent_news_present = any(
-                    a.get("providerPublishTime", 0) > cutoff_ts
-                    for a in news[:5]
-                )
+                def _news_ts(item):
+                    ts = item.get("providerPublishTime", 0)
+                    if not ts:
+                        pub_date = item.get("content", {}).get("pubDate", "")
+                        if pub_date:
+                            try:
+                                ts = int(datetime.datetime.fromisoformat(
+                                    pub_date.replace("Z", "+00:00")
+                                ).timestamp())
+                            except Exception:
+                                pass
+                    return ts or 0
+                recent_news_present = any(_news_ts(a) > cutoff_ts for a in news[:5])
                 # Extract top 3 headlines with human-readable timestamps
                 for item in news[:5]:
                     # Handle both old flat format and newer nested content format
