@@ -2628,6 +2628,30 @@ if _os.environ.get("ANTHROPIC_API_KEY"):
 else:
     print("STARTUP: WARNING — ANTHROPIC_API_KEY is NOT set. AI features will fail.")
 
+# Auto-rescore on startup if DEFAULT_SQUEEZE_WEIGHTS differ from saved weights.
+# Ensures Render's DB is always rescored after a code deploy that changes scoring.
+try:
+    _saved_wd = get_squeeze_weights()
+    _saved_w  = _saved_wd["weights"] if _saved_wd else None
+    if _saved_w:
+        _drifted = [k for k in DEFAULT_SQUEEZE_WEIGHTS
+                    if DEFAULT_SQUEEZE_WEIGHTS[k] != _saved_w.get(k)]
+        if _drifted:
+            print(f"STARTUP: DEFAULT_SQUEEZE_WEIGHTS differs from saved weights on {len(_drifted)} key(s): {_drifted}")
+            print("STARTUP: Merging code defaults into saved weights and rescoring...")
+            _merged = dict(_saved_w)
+            _merged.update(DEFAULT_SQUEEZE_WEIGHTS)
+            from app.database import rescore_historical_from_signals, save_squeeze_weights as _save_w
+            _save_w(_merged, rationale="Auto-merged on startup after code weight change",
+                    source="startup")
+            print("STARTUP: Rescore complete ✓")
+        else:
+            print("STARTUP: Saved weights match DEFAULT_SQUEEZE_WEIGHTS ✓")
+    else:
+        print("STARTUP: No saved weights — DEFAULT_SQUEEZE_WEIGHTS active")
+except Exception as _sw_err:
+    print(f"STARTUP: Weight sync check failed (non-fatal) — {_sw_err}")
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 templates = Jinja2Templates(directory="templates", autoescape=True)

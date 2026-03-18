@@ -21,6 +21,26 @@ venv/bin/python3 -u backfill_lstm.py --reset   # clears existing values first
 
 There is no test suite — validation is done via live FinViz cross-checks (`/validation/run`).
 
+## Scoring Change Protocol
+
+**Every time `DEFAULT_SQUEEZE_WEIGHTS` or any signal logic in `scoring_engine.py` changes**, run these steps in order:
+
+1. **Merge audited values into saved weights** (the DB `squeeze_weights` key overrides code defaults at runtime):
+   ```python
+   # Merge only changed keys into existing saved weights, then rescore
+   conn = sqlite3.connect("scan_history.db")
+   row = conn.execute("SELECT value FROM settings WHERE key='squeeze_weights'").fetchone()
+   weights = json.loads(row[0]) if row else DEFAULT_SQUEEZE_WEIGHTS.copy()
+   weights.update({<changed_keys_only>})
+   conn.execute("UPDATE settings SET value=? WHERE key='squeeze_weights'", (json.dumps(weights),))
+   conn.commit()
+   from app.database import rescore_historical_from_signals
+   rescore_historical_from_signals(weights)
+   ```
+2. **After deploy to Render**: trigger `POST /rescore-history` on the live app (uses the DB's saved weights — applies the same update to Render's `/data/scan_history.db`).
+
+**Why**: The `score` column in the scans table reflects the weights at scan time. Stale scores corrupt score-bucket hit rate analysis and LSTM gating thresholds. `rescore_historical_from_signals()` recomputes scores from `signals_json` flags — no re-download needed. `save_squeeze_weights()` already calls this automatically for AI optimizer updates; manual code changes require the explicit steps above.
+
 ## Architecture
 
 **FastAPI app** (`main.py`, ~3.5K lines) with APScheduler background jobs, SQLite persistence, and three ML models.
