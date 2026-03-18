@@ -21,6 +21,10 @@ venv/bin/python3 -u backfill_lstm.py --reset   # clears existing values first
 
 There is no test suite — validation is done via live FinViz cross-checks (`/validation/run`).
 
+## Deploy Policy — STRICT
+
+**Never run `git push` without explicit user approval.** `git push` triggers an automatic Render deploy (live production). Always commit locally, summarize what's ready, and wait for the user to say "push it" or equivalent before pushing.
+
 ## Scoring Change Protocol
 
 **Every time `DEFAULT_SQUEEZE_WEIGHTS` or any signal logic in `scoring_engine.py` changes**, run these steps in order:
