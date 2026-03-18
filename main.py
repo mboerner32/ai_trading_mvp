@@ -2821,18 +2821,24 @@ def dashboard(request: Request, mode: str = "squeeze", trade_error: str = "",
     if "user" not in request.session:
         return RedirectResponse("/login")
 
-    # Serve from cache (15-min TTL) unless user clicked Refresh
-    cached = None if refresh else get_scan_cache(mode)
+    # Serve from cache unless user explicitly clicked Refresh.
+    # Never run a scan on a plain page load — scans are triggered by the
+    # scheduler or by the Refresh button. This keeps the dashboard instant.
     scan_id_map = {}
-    if cached:
-        scan_data = {"results": cached["results"], "summary": cached["summary"]}
-        cache_age = cached["cache_age_minutes"]
-    else:
+    if refresh:
         scan_data = run_scan_5m() if mode == "fivemin" else run_scan(mode=mode)
         scan_id_map = save_scan(scan_data["results"], mode)
         update_returns()
         save_scan_cache(mode, scan_data["results"], scan_data["summary"])
         cache_age = 0
+    else:
+        cached = get_scan_cache(mode, max_age_minutes=99999)  # always serve cache, any age
+        if cached:
+            scan_data = {"results": cached["results"], "summary": cached["summary"]}
+            cache_age = cached["cache_age_minutes"]
+        else:
+            scan_data = {"results": [], "summary": {"total_scanned": 0, "qualified": 0}}
+            cache_age = None
 
     available_cash  = get_portfolio_summary()["cash"]
     hypothesis_text = get_active_hypothesis_text(mode=mode)
