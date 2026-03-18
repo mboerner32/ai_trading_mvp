@@ -487,7 +487,7 @@ def recommend_trade(stock: dict, hypothesis: str = None,
 
     prompt = f"""You are a momentum trading AI making a TRADE or NO_TRADE call. Treat this as if you are trading with your own money — every TRADE call costs real capital, and losses come out of your pocket. Be selective. Be precise.
 
-Strategy: identify low-float microcaps with unusual volume that will hit +20% above alert price within 5 trading days (77% of winners hit Day 1, 97% by Day 5). Target precision: 70%+ of TRADE calls must hit +20%. Most stocks should be NO_TRADE.
+Strategy: identify low-float microcaps with unusual volume that will hit +20% above alert price within 5 trading days (77% of winners hit Day 1, 97% by Day 5). Target precision: 60%+ of TRADE calls hit +20% (baseline is 49.4% — you need a clear edge above that). Be selective but not paralyzed — 2–5 quality TRADE calls per day is the goal.
 
 Stock: {stock['symbol']} | Score: {stock['score']}/100 | Price: ${stock['price']}
 Signals:
@@ -499,38 +499,44 @@ Signals:
 - Institutional Ownership: {str(checklist.get('institution_pct')) + '%' if checklist.get('institution_pct') is not None else 'N/A'}
 - Sector/Industry: {checklist.get('sector') or 'N/A'} / {checklist.get('industry') or 'N/A'}{signal_perf_section}{calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}{news_section}{accuracy_section}
 
-BACKTESTED PERFORMANCE (4,133 labeled live scans, 2026-03-14):
-Relvol tiers — hit rates vs 30.8% baseline:
-  ≥500x:    66.7% (+35.9pp, n=135) — strong edge, HIGH confidence warranted if other signals align
-  100–499x: 59.9% (+29.1pp, n=364) — strong edge, good foundation for TRADE
-  50–99x:   30.3% (-0.5pp,  n=426) — at baseline, NO inherent edge; need 3+ other strong signals to justify TRADE
-  25–49x:   25.6% (-5.2pp,  n=1053) — below baseline; requires exceptional setup to overcome headwind
-  10–24x:   26.0% (-4.8pp,  n=2051) — below baseline; requires exceptional setup to overcome headwind
+BACKTESTED PERFORMANCE (2,438 deduped symbol-days, clean methodology, 2026-03-17):
+Baseline: 49.4% hit +20% within 10 trading days.
+Relvol tiers:
+  ≥500x:    100% (n=18)  — extreme event, very strong signal
+  100–499x: 100% (n=39)  — exceptional event, strong signal
+  50–99x:   45.5% (-3.9pp, n=297) — slightly below baseline; 1–2 confirming signals needed
+  25–49x:   49.5% (-0.4pp, n=687) — at baseline; standard conviction required
+  10–24x:   48.2% (-1.7pp, n=1374) — near baseline; standard conviction required
 
 Float/shares tiers:
-  <10M:     41.1% (+10.3pp) — strong signal
-  10–30M:   41.8% (+11.0pp) — strongest tier
-  30–100M:  22.9% (-7.9pp)  — significant drag
+  10–30M:   53.8% (+3.9pp, n=515) — strongest tier, positive signal
+  <10M:     48.9% (-1.0pp, n=427) — at baseline, not a meaningful edge alone
+  30–100M:  48.3% (-1.7pp, n=717) — at baseline
   >100M:    filtered out
 
-Day of week (built into market context above — use it).
+Daily gain tiers:
+  40–100%:  56.7% (+6.8pp, n=723) — strongest daily gain signal
+  20–40%:   49.4% (-0.5pp, n=952) — at baseline
+  10–20%:   44.0% (-5.9pp, n=754) — below baseline, weaker setup
 
 Key findings:
-- institution_strong (40%+ ownership) is HARMFUL: 13.6% hit rate (-17.2pp). Do NOT treat high institutional ownership as a positive.
-- 77% of winners hit within Day 1. If this stock doesn't have an obvious near-term catalyst, it probably won't hit 20% in time.
-- The window is 5 days, not 2 weeks. Ask: will this stock move 20%+ in the next 5 trading days specifically?
+- institution_strong (40%+ ownership) is HARMFUL — do NOT treat high institutional ownership as positive.
+- 77% of winners hit within Day 1, 97% by Day 5. Ask: will this stock move +20% within 5 trading days?
+- 10–30M float is the sweet spot. <10M is not inherently better than larger float.
+- Daily gain 40–100% (+6.8pp) is a meaningful positive. 20–40% is neutral.
 
 RELVOL SCRUTINY TIERS:
-- ≥100x relvol: standard conviction required. Take-profit set at 25% (these stocks run).
-- 50–99x relvol: you need 3+ additional strong signals (low float <30M, sideways compression, yesterday green, biotech catalyst) to justify TRADE. Without them, call NO_TRADE.
-- <50x relvol: requires truly exceptional setup — near-perfect alignment of signals. Default to NO_TRADE unless you have clear conviction.
+- ≥100x relvol: clear edge — standard conviction required.
+- 50–99x relvol: slightly below baseline — require 2+ confirming signals (low float, sideways compression, biotech catalyst, strong LSTM).
+- 25–49x relvol: at baseline — standard scrutiny. Call TRADE if 2+ signals align and no red flags.
+- 10–24x relvol: near baseline — require clear positive edge from other signals (LSTM ≥55%, float 10–30M, daily gain 40%+).
 
-TRADE calls require genuine conviction. Ask: what specific reason will cause this stock to be 20%+ higher within 5 trading days? If the answer is vague, call NO_TRADE.
+TRADE calls require genuine conviction. Ask: what specific edge does this stock have over the baseline 49.4% hit rate?
 
 Confidence criteria:
-- HIGH: relvol ≥100x + float <30M + 2+ other signals aligned, no red flags
-- MEDIUM: relvol 50–99x with 3+ strong signals, OR relvol ≥100x with minor concern
-- LOW: weak relvol with compensating signals — usually NO_TRADE territory
+- HIGH: relvol ≥100x + float 10–30M + 1+ other signals aligned, no red flags
+- MEDIUM: relvol 25–99x with 2+ confirming signals
+- LOW: weak relvol with limited supporting signals — usually NO_TRADE territory
 
 Respond EXACTLY (no other text):
 DECISION: TRADE or NO_TRADE
