@@ -202,6 +202,7 @@ def _init_alerted_today() -> set:
 
 _alerted_today: set = _init_alerted_today()
 _alerted_date:  str = datetime.datetime.now(pytz.timezone("America/New_York")).date().isoformat()
+_alerted_lock = __import__("threading").Lock()  # protects _alerted_today + _alerted_date
 
 # (no daily trade cap — available cash is the natural gate)
 
@@ -933,9 +934,10 @@ def _scheduled_scan():
     today_str = et_now.date().isoformat()
 
     # Reset daily dedup set on each new trading day — re-seed from DB to survive restarts
-    if today_str != _alerted_date:
-        _alerted_today = get_alerted_symbols_today(today_str)
-        _alerted_date  = today_str
+    with _alerted_lock:
+        if today_str != _alerted_date:
+            _alerted_today = get_alerted_symbols_today(today_str)
+            _alerted_date  = today_str
 
     for mode in ["autoai", "squeeze", "strict", "standard"]:
         try:
@@ -952,9 +954,10 @@ def _scheduled_scan():
                 # Alert TRADE calls that pass LSTM quality gate (55%+ or None+score>=75)
                 gated_alerts = [r for r in data["results"] if _passes_lstm_gate(r)]
                 send_scan_alert(gated_alerts, mode, min_score=0, ai_trade_only=True, traded_symbols=traded)
-                for r in gated_alerts:
-                    if (r.get("ai_trade_call") or {}).get("decision") == "TRADE":
-                        _alerted_today.add(r.get("symbol"))
+                with _alerted_lock:
+                    for r in gated_alerts:
+                        if (r.get("ai_trade_call") or {}).get("decision") == "TRADE":
+                            _alerted_today.add(r.get("symbol"))
                 # Log near-misses (40-74) to watchlist for intraday re-checking
                 for r in data["results"]:
                     score = r.get("score", 0)
@@ -1056,9 +1059,10 @@ def _intraday_scan():
     today_str = et_now.date().isoformat()
 
     # Safety: re-seed from DB if we somehow missed the morning reset
-    if today_str != _alerted_date:
-        _alerted_today = get_alerted_symbols_today(today_str)
-        _alerted_date  = today_str
+    with _alerted_lock:
+        if today_str != _alerted_date:
+            _alerted_today = get_alerted_symbols_today(today_str)
+            _alerted_date  = today_str
 
     print(f"INTRADAY SCAN: running at {et_now.strftime('%H:%M')} ET...")
     try:
@@ -1092,8 +1096,9 @@ def _intraday_scan():
             traded = _auto_paper_trade(new_alerts, today_str)
             send_scan_alert(new_alerts, f"Intraday {et_now.strftime('%H:%M')}",
                             min_score=0, ai_trade_only=True, traded_symbols=traded)
-            for r in new_alerts:
-                _alerted_today.add(r.get("symbol"))
+            with _alerted_lock:
+                for r in new_alerts:
+                    _alerted_today.add(r.get("symbol"))
 
         # Check take-profit on open positions every intraday cycle
         _autoclose_take_profit()
@@ -1128,9 +1133,10 @@ def _fivemin_spike_scan():
     if et_now.hour > 15 or (et_now.hour == 15 and et_now.minute > 30):
         return
 
-    if today_str != _alerted_date:
-        _alerted_today = get_alerted_symbols_today(today_str)
-        _alerted_date  = today_str
+    with _alerted_lock:
+        if today_str != _alerted_date:
+            _alerted_today = get_alerted_symbols_today(today_str)
+            _alerted_date  = today_str
 
     print(f"5M SPIKE SCAN: running at {et_now.strftime('%H:%M')} ET...")
     try:
@@ -1149,8 +1155,9 @@ def _fivemin_spike_scan():
             gated_5m = [r for r in new_alerts if _passes_lstm_gate(r)]
             traded = _auto_paper_trade(gated_5m, today_str, mode="fivemin")
             send_scan_alert(gated_5m, f"5m Spike {et_now.strftime('%H:%M')}", traded_symbols=traded)
-            for r in new_alerts:  # mark all as alerted regardless of gate
-                _alerted_today.add(r.get("symbol"))
+            with _alerted_lock:
+                for r in new_alerts:  # mark all as alerted regardless of gate
+                    _alerted_today.add(r.get("symbol"))
 
         # Check take-profit on open positions every 5m cycle
         _autoclose_take_profit()
@@ -1234,7 +1241,8 @@ def _check_watchlist():
                         symbol, result["score"], result.get("price"), old_score
                     )
                     mark_watchlist_alerted(symbol)
-                    _alerted_today.add(symbol)
+                    with _alerted_lock:
+                        _alerted_today.add(symbol)
                     print(
                         f"WATCHLIST: {symbol} rose to {result['score']} "
                         f"(from {old_score}) — alert sent"

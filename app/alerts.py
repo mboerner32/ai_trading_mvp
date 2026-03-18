@@ -28,8 +28,8 @@ def _log_telegram(chat_id: str, message: str):
         )
         conn.commit()
         conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"telegram_log write failed: {e}")
 
 
 def _send_email(subject: str, body: str):
@@ -220,8 +220,8 @@ def _send_telegram(message: str):
             if cid and cid not in seen:
                 chat_ids.append(cid)
                 seen.add(cid)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Telegram recipient fetch failed: {e}")
 
     if not chat_ids:
         return

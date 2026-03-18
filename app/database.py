@@ -1013,7 +1013,8 @@ def update_returns():
                 scan_id,
             ))
 
-        except Exception:
+        except Exception as e:
+            print(f"update_returns: skipping scan_id={scan_id} symbol={symbol} — {e}")
             continue
 
     if updates:
