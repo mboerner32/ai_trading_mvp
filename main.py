@@ -803,6 +803,10 @@ def _enrich_high_scorers(results: list, mode: str = None, scan_id_map: dict = No
     with ThreadPoolExecutor(max_workers=4) as ex:
         list(ex.map(_enrich_one, high_scorers))
 
+    # Strip stashed DataFrames from all results — not JSON-serializable and not needed downstream
+    for _r in results:
+        _r.pop("_df", None)
+
     return results
 
 
