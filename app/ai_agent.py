@@ -527,16 +527,20 @@ Key findings:
 
 RELVOL SCRUTINY TIERS:
 - ≥100x relvol: clear edge — standard conviction required.
-- 50–99x relvol: slightly below baseline — require 2+ confirming signals (low float, sideways compression, biotech catalyst, strong LSTM).
-- 25–49x relvol: at baseline — standard scrutiny. Call TRADE if 2+ signals align and no red flags.
-- 10–24x relvol: near baseline — require clear positive edge from other signals (LSTM ≥55%, float 10–30M, daily gain 40%+).
+- 50–99x relvol: meaningful signal — require 2+ confirming signals (float <30M, sideways compression, biotech catalyst, LSTM ≥55%).
+- 25–49x relvol: HIGH SCRUTINY — win rate drops significantly here. Require ALL of: float <30M + LSTM ≥60% + 1 other strong signal. Do not call TRADE on relvol alone.
+- 10–24x relvol: HIGH SCRUTINY — weak setup. Require LSTM ≥65% + float <30M + at least 2 other strong signals. Very few setups justify TRADE at this tier.
+
+FLOAT/SHARES SCRUTINY:
+- <30M shares: acceptable — standard scrutiny applies.
+- 30–100M shares: HIGH SCRUTINY — win rate drops significantly. Require relvol ≥100x OR LSTM ≥65% to compensate. Do not call TRADE on moderate relvol + large float alone.
 
 TRADE calls require genuine conviction. Ask: what specific edge does this stock have over the baseline 49.4% hit rate?
 
 Confidence criteria:
-- HIGH: relvol ≥100x + float 10–30M + 1+ other signals aligned, no red flags
-- MEDIUM: relvol 25–99x with 2+ confirming signals
-- LOW: weak relvol with limited supporting signals — usually NO_TRADE territory
+- HIGH: relvol ≥100x + float <30M + 1+ other signals aligned, no red flags
+- MEDIUM: relvol 50–99x with 2+ confirming signals, OR relvol 25–49x with LSTM ≥60% + float <30M
+- LOW: weak relvol or large float with limited supporting signals — usually NO_TRADE territory
 
 Respond EXACTLY (no other text):
 DECISION: TRADE or NO_TRADE
