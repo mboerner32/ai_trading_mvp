@@ -2636,43 +2636,56 @@ _scheduler.add_job(run_health_checks, "interval", minutes=30)
 _scheduler.add_job(_weekly_analysis, "cron", day_of_week="sat", hour=8, minute=0)
 _scheduler.start()
 
-# Warm up yfinance crumb on startup so the first scheduled scan doesn't hit a 401.
-# Yahoo Finance rotates crumbs periodically; this forces a fresh fetch at boot time.
-try:
-    yf.download("SPY", period="1d", interval="1d", progress=False, auto_adjust=False)
-    print("STARTUP: yfinance crumb refreshed ✓")
-except Exception as _yf_err:
-    print(f"STARTUP: yfinance warm-up failed (non-fatal) — {_yf_err}")
-
 # Log API key status at startup so it's visible in Render logs
 if _os.environ.get("ANTHROPIC_API_KEY"):
     print("STARTUP: ANTHROPIC_API_KEY is set ✓")
 else:
     print("STARTUP: WARNING — ANTHROPIC_API_KEY is NOT set. AI features will fail.")
 
-# Auto-rescore on startup if DEFAULT_SQUEEZE_WEIGHTS differ from saved weights.
-# Ensures Render's DB is always rescored after a code deploy that changes scoring.
-try:
-    _saved_wd = get_squeeze_weights()
-    _saved_w  = _saved_wd["weights"] if _saved_wd else None
-    if _saved_w:
-        _drifted = [k for k in DEFAULT_SQUEEZE_WEIGHTS
-                    if DEFAULT_SQUEEZE_WEIGHTS[k] != _saved_w.get(k)]
-        if _drifted:
-            print(f"STARTUP: DEFAULT_SQUEEZE_WEIGHTS differs from saved weights on {len(_drifted)} key(s): {_drifted}")
-            print("STARTUP: Merging code defaults into saved weights and rescoring...")
-            _merged = dict(_saved_w)
-            _merged.update(DEFAULT_SQUEEZE_WEIGHTS)
-            from app.database import rescore_historical_from_signals, save_squeeze_weights as _save_w
-            _save_w(_merged, rationale="Auto-merged on startup after code weight change",
-                    source="startup")
-            print("STARTUP: Rescore complete ✓")
-        else:
-            print("STARTUP: Saved weights match DEFAULT_SQUEEZE_WEIGHTS ✓")
-    else:
-        print("STARTUP: No saved weights — DEFAULT_SQUEEZE_WEIGHTS active")
-except Exception as _sw_err:
-    print(f"STARTUP: Weight sync check failed (non-fatal) — {_sw_err}")
+
+def _startup_background_tasks():
+    """
+    Run blocking startup tasks in a background thread so the server can start
+    accepting requests immediately (avoids Render health-check timeouts and
+    slow first page loads).
+    """
+    import threading as _threading
+    def _run():
+        # 1. Warm up yfinance crumb so the first scheduled scan doesn't hit a 401.
+        try:
+            yf.download("SPY", period="1d", interval="1d", progress=False, auto_adjust=False)
+            print("STARTUP: yfinance crumb refreshed ✓")
+        except Exception as _yf_err:
+            print(f"STARTUP: yfinance warm-up failed (non-fatal) — {_yf_err}")
+
+        # 2. Auto-rescore if DEFAULT_SQUEEZE_WEIGHTS differ from saved weights.
+        try:
+            _saved_wd = get_squeeze_weights()
+            _saved_w  = _saved_wd["weights"] if _saved_wd else None
+            if _saved_w:
+                _drifted = [k for k in DEFAULT_SQUEEZE_WEIGHTS
+                            if DEFAULT_SQUEEZE_WEIGHTS[k] != _saved_w.get(k)]
+                if _drifted:
+                    print(f"STARTUP: DEFAULT_SQUEEZE_WEIGHTS differs from saved weights "
+                          f"on {len(_drifted)} key(s): {_drifted}")
+                    print("STARTUP: Merging code defaults into saved weights and rescoring...")
+                    _merged = dict(_saved_w)
+                    _merged.update(DEFAULT_SQUEEZE_WEIGHTS)
+                    from app.database import save_squeeze_weights as _save_w
+                    _save_w(_merged, rationale="Auto-merged on startup after code weight change",
+                            source="startup")
+                    print("STARTUP: Rescore complete ✓")
+                else:
+                    print("STARTUP: Saved weights match DEFAULT_SQUEEZE_WEIGHTS ✓")
+            else:
+                print("STARTUP: No saved weights — DEFAULT_SQUEEZE_WEIGHTS active")
+        except Exception as _sw_err:
+            print(f"STARTUP: Weight sync check failed (non-fatal) — {_sw_err}")
+
+    _threading.Thread(target=_run, daemon=True, name="startup-bg").start()
+
+
+_startup_background_tasks()
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
