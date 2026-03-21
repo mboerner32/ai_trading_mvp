@@ -1531,6 +1531,22 @@
                 </button>
             </form>
 
+            <form method="post" action="/backfill-history"
+                  onsubmit="return confirm('Run historical backfill? This downloads years of OHLCV data for all screener symbols and takes several hours.')">
+                <button type="submit"
+                        {% if backfill_status and backfill_status.running %}disabled{% endif %}
+                        style="background:{% if backfill_status and backfill_status.running %}#9ca3af{% else %}#065f46{% endif %};
+                               color:white; border:none; padding:10px 22px; border-radius:8px;
+                               cursor:{% if backfill_status and backfill_status.running %}default{% else %}pointer{% endif %};
+                               font-size:14px; font-weight:600;">
+                    {% if backfill_status and backfill_status.running %}
+                        Historical Backfill Running…
+                    {% else %}
+                        Run Historical Backfill
+                    {% endif %}
+                </button>
+            </form>
+
             <form method="post" action="/apply-default-weights"
                   onsubmit="return confirm('Save DEFAULT_SQUEEZE_WEIGHTS from code to live scorer and rescore all history? Use after code-level weight changes.')">
                 <button type="submit"
