@@ -1359,7 +1359,7 @@ def _build_weekly_email_html(
         "The <b>Baseline</b> is the overall average across all scanned stocks "
         f"({baseline_hit}%). Anything above baseline is the model adding value.<br><br>"
         "<b>LSTM (AI Model)</b> — A neural network trained on 6+ years of historical price data. "
-        "It predicts the probability that a stock will hit +20% within 10 trading days. "
+        "It predicts the probability that a stock will hit +20% within 5 trading days. "
         "We only send trade alerts when LSTM probability ≥ 55%. "
         "Higher LSTM % = stronger AI conviction.<br><br>"
         "<b>TRADE vs NO_TRADE</b> — After scoring and LSTM, a second AI (Claude) reviews each stock "
@@ -1409,7 +1409,7 @@ def _build_weekly_email_html(
     rows.append(_section(
         "LSTM AI Gate Validation",
         color="#8e44ad",
-        note="LSTM is our neural network AI. It scores each stock 0–100% (probability of hitting +20% within 10 days). "
+        note="LSTM is our neural network AI. It scores each stock 0–100% (probability of hitting +20% within 5 trading days). "
              "We only trade when LSTM ≥ 55%. This table shows how well each confidence tier actually performed."
     ))
     rows.append(
@@ -1422,9 +1422,9 @@ def _build_weekly_email_html(
             f"<tr><td colspan='10' style='padding:4px 8px;background:#fff3cd;border-radius:4px;"
             f"font-size:11px;color:#856404'>"
             f"⚠️ <b>Data quality warning:</b> {lstm_bias_pct}% of LSTM-scored rows are confirmed winners "
-            f"(only {lstm_losers} confirmed losers). The 10-day outcome window hasn't closed for most "
+            f"(only {lstm_losers} confirmed losers). The 5-day outcome window hasn't closed for most "
             f"recent scans yet — hit rates are inflated by survivor selection. "
-            f"Stats will be reliable once ≥30 confirmed losers per bucket accumulate (~mid-April).</td></tr>"
+            f"Stats will be reliable once ≥30 confirmed losers per bucket accumulate (a few more weeks of live scanning).</td></tr>"
         )
     if lstm_gate_rows:
         rows.append(
@@ -1938,7 +1938,8 @@ def _weekly_analysis():
         # ── DEDUPLICATION BASE TABLE ───────────────────────────────────────────
         # One row per symbol per day. Daily modes only (no fivemin/bt/legacy).
         # Outcome confirmed: either stock hit 20% (best_d20 IS NOT NULL) OR
-        # 14+ calendar days have passed (enough time to confirm it didn't hit).
+        # 8+ calendar days have passed (5 trading days + weekend buffer — enough time to confirm
+        # it didn't hit the +20% target within the 5-trading-day window).
         # MAX(ai_trade_rec) naturally picks TRADE over NO_TRADE (T > N alphabetically).
         c.execute("DROP TABLE IF EXISTS _wr")
         c.execute("""
@@ -1958,7 +1959,7 @@ def _weekly_analysis():
             FROM scans
             WHERE mode NOT IN ('fivemin','fivemin_bt','candidate_fivemin','standard','strict')
               AND (days_to_20pct IS NOT NULL
-                   OR (julianday('now') - julianday(timestamp)) >= 14)
+                   OR (julianday('now') - julianday(timestamp)) >= 8)
             GROUP BY symbol, DATE(timestamp)
         """)
         conn.commit()
@@ -2035,7 +2036,7 @@ def _weekly_analysis():
         xgb_n = c.execute(
             "SELECT COUNT(*) FROM scans "
             "WHERE mode NOT IN ('historical','fivemin','fivemin_bt','candidate_fivemin','standard','strict') "
-            "AND (days_to_20pct IS NOT NULL OR (julianday('now')-julianday(timestamp))>=14) "
+            "AND (days_to_20pct IS NOT NULL OR (julianday('now')-julianday(timestamp))>=8) "
             "AND signals_json IS NOT NULL AND signals_json!='{}'"
         ).fetchone()[0]
 

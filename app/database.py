@@ -961,8 +961,8 @@ def update_returns():
             if (today - scan_date).days < 2:
                 continue
 
-            # Fetch 21 calendar days to cover 10 trading days (2 weeks), incl. holiday-heavy weeks
-            end_date = min(scan_date + timedelta(days=21), today)
+            # Fetch 11 calendar days to cover 5 trading days, incl. weekends and one holiday buffer
+            end_date = min(scan_date + timedelta(days=11), today)
 
             data = yf.download(
                 symbol,
@@ -997,11 +997,11 @@ def update_returns():
             if next_day  is not None and abs(next_day)  > 500: next_day  = None
             if three_day is not None and abs(three_day) > 500: three_day = None
 
-            # Check next 10 trading days (d=1..10) for intraday HIGH ≥20% above alert price.
+            # Check next 5 trading days (d=1..5) for intraday HIGH ≥20% above alert price.
             # d=0 (same-day) excluded: the day's high may predate the alert, making it
             # unreachable — entry price is the scan_price at alert time, not the open.
             days_to_20pct = None
-            for d in range(1, min(11, len(highs))):
+            for d in range(1, min(6, len(highs))):
                 if (highs[d] / base - 1) >= 0.20:
                     days_to_20pct = d
                     break

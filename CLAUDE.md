@@ -68,7 +68,7 @@ FinViz screener → score_stock_squeeze() → LSTM inference → Claude AI → T
 | `app/scanner.py` | FinViz screener + yfinance OHLCV fetcher |
 | `app/scoring_engine.py` | Squeeze signal scoring (0–100 pts); `DEFAULT_SQUEEZE_WEIGHTS` |
 | `app/ai_agent.py` | Claude API calls: trade rec, price target, weight optimization, stop-loss review |
-| `app/lstm_model.py` | Daily LSTM (20 days × 12 features → P(hit +20% in 10 days)) |
+| `app/lstm_model.py` | Daily LSTM (20 days × 12 features → P(hit +20% in 5 trading days)) |
 | `app/lstm_5m.py` | 5-minute intraday LSTM (12 bars × 7 features) |
 | `app/ml_optimizer.py` | XGBoost on `signals_json` flags; auto-activates at 500 labeled rows |
 | `app/stop_loss_optimizer.py` | Backtest exit rules; validate proposed param changes |
@@ -87,11 +87,11 @@ Scoring weights live in two places: `DEFAULT_SQUEEZE_WEIGHTS` (code default) and
 
 | Model | Gate | Purpose |
 |-------|------|---------|
-| Daily LSTM | score >= 50 | P(hit +20% within 10 trading days); trained on `days_to_20pct IS NOT NULL` label |
+| Daily LSTM | score >= 50 | P(hit +20% within 5 trading days); trained on `days_to_20pct IS NOT NULL` label |
 | 5m LSTM | score >= 75 | P(intraday high hits +20% before 3:50 PM) |
 | XGBoost | 500 labeled rows | Auto-replaces `DEFAULT_SQUEEZE_WEIGHTS`; trained on `signals_json` binary flags |
 
-**Critical:** LSTM is validated against `days_to_20pct IS NOT NULL` (10-day window), NOT `next_day_return >= 20`. The gate threshold 55% provides +10.3pp lift; going above 55% adds no additional lift.
+**Critical:** LSTM is validated against `days_to_20pct IS NOT NULL` (5-trading-day window), NOT `next_day_return >= 20`. The gate threshold 55% provides +10.3pp lift; going above 55% adds no additional lift.
 
 ### Daily vs 5m Model Split
 
