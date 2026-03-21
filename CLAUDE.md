@@ -21,6 +21,24 @@ venv/bin/python3 -u backfill_lstm.py --reset   # clears existing values first
 
 There is no test suite — validation is done via live FinViz cross-checks (`/validation/run`).
 
+## Process Change Protocol — See Around Corners
+
+**Any time a workflow transitions from manual → automated, or a data source changes, stop and ask:**
+
+1. **Data environment mismatch** — Does the manual process use local data and the automated process use Render's DB? Are those in sync? (Example: manual weekly reports queried local DB with full backfill; automated scheduler queries Render DB which had no backfill → 100% hit rate inflation.)
+
+2. **Infrastructure assumptions** — What does the new process assume exists that the old one had available? (Schema columns, populated tables, env vars, trained models, backfilled data.)
+
+3. **First-run vs steady-state** — Will the first automated run behave differently than subsequent ones? Does it need a warm-up (backfill, retrain, seed data)?
+
+4. **Failure modes** — If this runs automatically and silently produces wrong output, will anyone notice? Add a data quality gate or suppression guard if not.
+
+5. **Direction of data flow** — When syncing between local and Render, confirm which direction. `make sync` pulls FROM Render TO local. `/backfill-history` pushes data INTO Render. Never assume they're interchangeable.
+
+**For any significant process change, proactively list these risks and recommended mitigations before implementing.**
+
+---
+
 ## Deploy Policy — STRICT
 
 **Never run `git push` without explicit user approval.** `git push` triggers an automatic Render deploy (live production). Always commit locally, summarize what's ready, and wait for the user to say "push it" or equivalent before pushing.
