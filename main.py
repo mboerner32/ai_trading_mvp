@@ -1975,6 +1975,32 @@ def _weekly_analysis():
             "FROM _wr"
         ).fetchone()
 
+        # ── Data quality gate ─────────────────────────────────────────────────
+        # If the dataset has < 200 confirmed rows OR > 90% are winners (no losers
+        # to compare against), the report metrics are meaningless. Abort early
+        # so a garbage report isn't sent.
+        _wr_losers_count = c.execute(
+            "SELECT COUNT(*) FROM _wr WHERE best_d20 IS NULL"
+        ).fetchone()[0]
+        _wr_winners_count = baseline_n - _wr_losers_count
+        _data_bias_pct = round(100.0 * _wr_winners_count / baseline_n, 1) if baseline_n else 100
+        if baseline_n < 200 or _data_bias_pct > 90:
+            msg = (
+                f"⚠️ WEEKLY REPORT SUPPRESSED — data quality too low to report.\n"
+                f"  Confirmed rows: {baseline_n} (need ≥200)\n"
+                f"  Winner bias: {_data_bias_pct}% (need ≤90% — too few confirmed losers)\n"
+                f"  Root cause: historical backfill data not present in production DB.\n"
+                f"  Fix: upload local DB to Render or run /backfill on the production instance."
+            )
+            print(msg)
+            try:
+                from app.alerts import send_admin_alert
+                send_admin_alert(msg)
+            except Exception:
+                pass
+            conn.close()
+            return
+
         # Score buckets
         score_rows = c.execute(
             "SELECT CASE WHEN score<45 THEN '0-44' WHEN score<55 THEN '45-54' "
