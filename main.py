@@ -422,7 +422,7 @@ def _auto_learn():
 AUTOAI_CONFIDENCE_HYPOTHESIS = 80   # >= auto-activate hypothesis
 AUTOAI_CONFIDENCE_WEIGHTS    = 75   # >= auto-apply weights
 AUTOAI_MIN_CLOSED_TRADES     = 10   # minimum closed trades before weights auto-apply
-AUTOAI_MIN_NEW_OUTCOMES      = 5    # new outcome-labeled scans needed to trigger a run
+AUTOAI_MIN_NEW_OUTCOMES      = 50   # new outcome-labeled scans needed to trigger a run
 AUTOAI_MAX_WEIGHT_DRIFT      = 0.40 # cap any single weight to ±40% of its default
 
 # --- Chat rate limiting (in-process, per user) ---
@@ -4712,14 +4712,12 @@ async def feedback_import_backup(request: Request):
 # ---------------- LOGOUT ----------------
 @app.post("/admin/run-weekly-report")
 def run_weekly_report(request: Request):
-    """Manually trigger the weekly analysis report (admin only)."""
+    """Manually trigger the weekly analysis report (login required)."""
     if "user" not in request.session:
         return {"error": "not authenticated"}
-    if not is_user_admin(request.session["user"]):
-        return {"error": "admin only"}
     import threading
     threading.Thread(target=_weekly_analysis, daemon=True).start()
-    return {"status": "started", "message": "Weekly report is running — check Telegram and email in ~30 seconds."}
+    return {"status": "started", "message": "Weekly report is running — check email in ~30 seconds."}
 
 
 @app.get("/logout")
