@@ -1260,8 +1260,9 @@ def _build_weekly_email_html(
     xgb_n, new_labeled,
     score_rows, rv_rows, gain_rows, dow_rows, float_rows, sig_rows,
     speed_rows, lstm_baseline, lstm_gate_rows, lstm_score_rows,
-    sl_lines, trade_scan_rows, open_trades, closed_trades_rows,
-    proposals, autopsy_data=None,
+    lstm_bias_pct=None, lstm_losers=None, winner_bias_pct=None,
+    sl_lines=None, trade_scan_rows=None, open_trades=None, closed_trades_rows=None,
+    proposals=None, autopsy_data=None,
 ) -> str:
     """Build a visually rich HTML email for the weekly analysis report."""
 
@@ -1332,14 +1333,17 @@ def _build_weekly_email_html(
     )
 
     # ── Key Metric Cards ──────────────────────────────────────────────────
-    spread_col = "#27ae60" if ai_spread >= 5 else ("#e67e22" if ai_spread >= 0 else "#e74c3c")
-    spread_icon = "✅" if ai_spread >= 5 else ("⚠️" if ai_spread >= 0 else "🔴")
+    # If most of the dataset are winners (not enough loser data yet), the spread is unreliable
+    _spread_biased = winner_bias_pct is not None and winner_bias_pct > 75
+    spread_col = "#7f8c8d" if _spread_biased else ("#27ae60" if ai_spread >= 5 else ("#e67e22" if ai_spread >= 0 else "#e74c3c"))
+    spread_icon = "⏳" if _spread_biased else ("✅" if ai_spread >= 5 else ("⚠️" if ai_spread >= 0 else "🔴"))
+    spread_note = "too early — data maturing" if _spread_biased else "target: ≥+5pp"
     rows.append(
         f"<tr><td colspan='10'><table width='100%' cellpadding='0' cellspacing='6'><tr>"
         + _metric_card("Baseline Hit Rate", f"{baseline_hit}%", f"n={baseline_n}", "#7f8c8d")
         + _metric_card("AI TRADE Precision", f"{ai_pct}%", f"{ai_hits}/{ai_total} calls", "#27ae60" if ai_pct > baseline_hit else "#e74c3c")
         + _metric_card("NO_TRADE Hit Rate", f"{nt_pct}%", f"{nt_hits}/{nt_total} skips", "#3498db")
-        + _metric_card(f"TRADE vs NO_TRADE", f"{spread_icon} {ai_spread:+.1f}pp", "target: ≥+5pp", spread_col)
+        + _metric_card(f"TRADE vs NO_TRADE", f"{spread_icon} {ai_spread:+.1f}pp", spread_note, spread_col)
         + f"</tr></table></td></tr>"
     )
 
@@ -1412,6 +1416,16 @@ def _build_weekly_email_html(
         f"<tr><td colspan='10' style='padding:0 0 4px 0;font-size:11px;color:#7f8c8d'>"
         f"Baseline (no LSTM filter): <b>{lb_hit}%</b> (n={lb_n}) — vertical line in bars below</td></tr>"
     )
+    # Data health warning — if most LSTM-scored rows are winners, stats are biased
+    if lstm_bias_pct is not None and lstm_bias_pct > 75:
+        rows.append(
+            f"<tr><td colspan='10' style='padding:4px 8px;background:#fff3cd;border-radius:4px;"
+            f"font-size:11px;color:#856404'>"
+            f"⚠️ <b>Data quality warning:</b> {lstm_bias_pct}% of LSTM-scored rows are confirmed winners "
+            f"(only {lstm_losers} confirmed losers). The 10-day outcome window hasn't closed for most "
+            f"recent scans yet — hit rates are inflated by survivor selection. "
+            f"Stats will be reliable once ≥30 confirmed losers per bucket accumulate (~mid-April).</td></tr>"
+        )
     if lstm_gate_rows:
         rows.append(
             "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
@@ -2046,6 +2060,25 @@ def _weekly_analysis():
             "SELECT COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
             "FROM _wr"
         ).fetchone()
+        # Data health: what fraction of _wr rows are age-confirmed losers vs winner-only?
+        _wr_health = c.execute(
+            "SELECT COUNT(*), "
+            "SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END) as winners, "
+            "SUM(CASE WHEN best_d20 IS NULL THEN 1 ELSE 0 END) as losers "
+            "FROM _wr"
+        ).fetchone()
+        _wr_total, _wr_winners, _wr_losers = _wr_health
+        _winner_bias_pct = round(100.0 * _wr_winners / _wr_total, 1) if _wr_total else 0
+        # Same health check restricted to lstm_prob rows (recent live scans only)
+        _lstm_health = c.execute(
+            "SELECT COUNT(*), "
+            "SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN best_d20 IS NULL THEN 1 ELSE 0 END) "
+            "FROM _wr WHERE lstm_prob IS NOT NULL"
+        ).fetchone()
+        _lstm_n, _lstm_winners, _lstm_losers = _lstm_health
+        _lstm_bias_pct = round(100.0 * _lstm_winners / _lstm_n, 1) if _lstm_n else 0
+
         lstm_gate_rows = c.execute(
             "SELECT gate, COUNT(*), "
             "ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
@@ -2288,7 +2321,10 @@ def _weekly_analysis():
 
         # LSTM Gate
         lb_n, lb_hit = lstm_baseline
-        tg_parts.append((f"\n<b>LSTM GATE</b> (days_to_20pct label | baseline: {lb_hit}% n={lb_n})", False))
+        _lstm_bias_note = ""
+        if _lstm_bias_pct > 75:
+            _lstm_bias_note = f" ⚠️ biased ({_lstm_bias_pct}% winners, only {_lstm_losers} losers — data maturing)"
+        tg_parts.append((f"\n<b>LSTM GATE</b> (days_to_20pct label | baseline: {lb_hit}% n={lb_n}){_lstm_bias_note}", False))
         if lstm_gate_rows:
             lg_tbl, lg_colors = [], {}
             for i, (gate, n, hit) in enumerate(lstm_gate_rows):
@@ -2606,6 +2642,8 @@ def _weekly_analysis():
             dow_rows=dow_rows, float_rows=float_rows, sig_rows=sig_rows,
             speed_rows=speed_rows, lstm_baseline=lstm_baseline,
             lstm_gate_rows=lstm_gate_rows, lstm_score_rows=lstm_score_rows,
+            lstm_bias_pct=_lstm_bias_pct, lstm_losers=_lstm_losers,
+            winner_bias_pct=_winner_bias_pct,
             sl_lines=sl_lines, trade_scan_rows=trade_scan_rows,
             open_trades=open_trades, closed_trades_rows=closed_trades_rows,
             proposals=proposals, autopsy_data=get_trade_signal_autopsy(),
