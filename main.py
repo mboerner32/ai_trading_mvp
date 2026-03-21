@@ -1264,6 +1264,7 @@ def _build_weekly_email_html(
     lstm_bias_pct=None, lstm_losers=None, winner_bias_pct=None,
     sl_lines=None, trade_scan_rows=None, open_trades=None, closed_trades_rows=None,
     proposals=None, autopsy_data=None, sig_coverage=None,
+    live_nd_n=0, trade_calls_pending=0,
 ) -> str:
     """Build a visually rich HTML email for the weekly analysis report."""
 
@@ -1328,7 +1329,7 @@ def _build_weekly_email_html(
         f"<div style='font-size:20px;font-weight:bold'>📈 AI Trading Model</div>"
         f"<div style='font-size:13px;opacity:.8;margin-top:4px'>Weekly Analysis — {date_str}</div>"
         f"<div style='margin-top:12px;font-size:12px;opacity:.7'>"
-        f"Labeled: {baseline_n} rows &nbsp;|&nbsp; Baseline: {baseline_hit}% &nbsp;|&nbsp; "
+        f"Live scans (next-day confirmed): {live_nd_n} &nbsp;|&nbsp; 10-day confirmed: {baseline_n} &nbsp;|&nbsp; "
         f"New this week: {new_labeled} &nbsp;|&nbsp; XGBoost: {xgb_n}/500</div>"
         f"</div></td></tr>"
     )
@@ -1342,7 +1343,7 @@ def _build_weekly_email_html(
     rows.append(
         f"<tr><td colspan='10'><table width='100%' cellpadding='0' cellspacing='6'><tr>"
         + _metric_card("Baseline Hit Rate", f"{baseline_hit}%", f"n={baseline_n}", "#7f8c8d")
-        + _metric_card("AI TRADE Precision", f"{ai_pct}%", f"{ai_hits}/{ai_total} calls", "#27ae60" if ai_pct > baseline_hit else "#e74c3c")
+        + _metric_card("AI TRADE Precision", f"{ai_pct}%", f"{ai_hits}/{ai_total} confirmed · {trade_calls_pending} pending", "#27ae60" if ai_pct > baseline_hit else "#e74c3c")
         + _metric_card("NO_TRADE Hit Rate", f"{nt_pct}%", f"{nt_hits}/{nt_total} skips", "#3498db")
         + _metric_card(f"TRADE vs NO_TRADE", f"{spread_icon} {ai_spread:+.1f}pp", spread_note, spread_col)
         + f"</tr></table></td></tr>"
@@ -1941,14 +1942,36 @@ def _weekly_analysis():
         conn = _sq.connect(db_path)
         c = conn.cursor()
 
-        # ── DEDUPLICATION BASE TABLE ───────────────────────────────────────────
-        # One row per symbol per day. Daily modes only (no fivemin/bt/legacy).
-        # Outcome confirmed: either stock hit 20% (best_d20 IS NOT NULL) OR
-        # 14+ calendar days have passed (enough time to confirm it didn't hit within 10 trading days).
-        # MAX(ai_trade_rec) naturally picks TRADE over NO_TRADE (T > N alphabetically).
-        c.execute("DROP TABLE IF EXISTS _wr")
+        # ── LIVE SCAN BASE TABLES ──────────────────────────────────────────────
+        # _live_nd: all live scans with next-day return confirmed (available ~1 day after scan)
+        # Used for: win rate, avg return, score buckets, relvol tiers, per-signal, LSTM lift, DOW
+        # _live_10d: live scans with 10-day outcome confirmed (hit 20% OR 14+ calendar days passed)
+        # Used for: 20%+ hit rate, AI TRADE precision, LSTM gate validation
+        # Both: live modes only (squeeze/autoai) — no historical backfill data mixed in
+        c.execute("DROP TABLE IF EXISTS _live_nd")
         c.execute("""
-            CREATE TEMPORARY TABLE _wr AS
+            CREATE TEMPORARY TABLE _live_nd AS
+            SELECT
+                symbol,
+                DATE(timestamp)          AS scan_date,
+                MAX(score)               AS score,
+                MAX(relative_volume)     AS relative_volume,
+                MAX(today_return)        AS today_return,
+                MIN(shares_outstanding)  AS shares_outstanding,
+                MIN(timestamp)           AS timestamp,
+                MAX(ai_trade_rec)        AS ai_trade_rec,
+                MAX(lstm_prob)           AS lstm_prob,
+                MAX(signals_json)        AS signals_json,
+                MAX(next_day_return)     AS next_day_return,
+                MIN(days_to_20pct)       AS best_d20
+            FROM scans
+            WHERE mode IN ('squeeze', 'autoai')
+              AND next_day_return IS NOT NULL
+            GROUP BY symbol, DATE(timestamp)
+        """)
+        c.execute("DROP TABLE IF EXISTS _live_10d")
+        c.execute("""
+            CREATE TEMPORARY TABLE _live_10d AS
             SELECT
                 symbol,
                 DATE(timestamp)          AS scan_date,
@@ -1962,22 +1985,32 @@ def _weekly_analysis():
                 MAX(lstm_prob)           AS lstm_prob,
                 MAX(signals_json)        AS signals_json
             FROM scans
-            WHERE mode NOT IN ('fivemin','fivemin_bt','candidate_fivemin','standard','strict')
+            WHERE mode IN ('squeeze', 'autoai')
               AND (days_to_20pct IS NOT NULL
                    OR (julianday('now') - julianday(timestamp)) >= 14)
             GROUP BY symbol, DATE(timestamp)
         """)
         conn.commit()
 
+        # Count TRADE calls still in the pending window (< 14 days, no 20%+ hit yet)
+        _trade_calls_pending = c.execute("""
+            SELECT COUNT(DISTINCT symbol || DATE(timestamp))
+            FROM scans
+            WHERE mode IN ('squeeze','autoai')
+              AND ai_trade_rec LIKE '%"decision": "TRADE"%'
+              AND days_to_20pct IS NULL
+              AND (julianday('now') - julianday(timestamp)) < 14
+        """).fetchone()[0]
+
         # Baseline
         baseline_n, baseline_hit = c.execute(
             "SELECT COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM _wr"
+            "FROM _live_10d"
         ).fetchone()
 
         # ── Data quality warning ───────────────────────────────────────────────
         _wr_losers_count = c.execute(
-            "SELECT COUNT(*) FROM _wr WHERE best_d20 IS NULL"
+            "SELECT COUNT(*) FROM _live_10d WHERE best_d20 IS NULL"
         ).fetchone()[0]
         _wr_winners_count = baseline_n - _wr_losers_count
         _data_bias_pct = round(100.0 * _wr_winners_count / baseline_n, 1) if baseline_n else 100
@@ -1986,7 +2019,8 @@ def _weekly_analysis():
             # Truly too little data — hard suppress
             msg = (
                 f"⚠️ WEEKLY REPORT SUPPRESSED — only {baseline_n} confirmed rows (need ≥50).\n"
-                f"  Run /backfill-history on Render to generate historical data."
+                f"  Root cause: not enough live scan outcomes have confirmed yet (need 14+ days to pass).\n"
+                f"Check back when more live scans age past the 14-day confirmation window."
             )
             print(msg)
             try:
@@ -2010,13 +2044,13 @@ def _weekly_analysis():
             "WHEN score<65 THEN '55-64' WHEN score<75 THEN '65-74' "
             "WHEN score<85 THEN '75-84' ELSE '85+' END as b, "
             "COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM _wr GROUP BY b ORDER BY b"
+            "FROM _live_nd GROUP BY b ORDER BY b"
         ).fetchall()
 
         # AI TRADE precision
         ai_row = c.execute(
             "SELECT COUNT(*), SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END) "
-            "FROM _wr "
+            "FROM _live_10d "
             "WHERE ai_trade_rec LIKE '%TRADE%' AND ai_trade_rec NOT LIKE '%NO_TRADE%'"
         ).fetchone()
         ai_total, ai_hits = ai_row
@@ -2025,7 +2059,7 @@ def _weekly_analysis():
         # NO_TRADE comparison
         no_trade_row = c.execute(
             "SELECT COUNT(*), SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END) "
-            "FROM _wr WHERE ai_trade_rec LIKE '%NO_TRADE%'"
+            "FROM _live_10d WHERE ai_trade_rec LIKE '%NO_TRADE%'"
         ).fetchone()
         nt_total, nt_hits = no_trade_row
         nt_pct = round(100.0 * nt_hits / nt_total, 1) if nt_total else 0
@@ -2036,7 +2070,7 @@ def _weekly_analysis():
             "WHEN relative_volume>=50 THEN '50-99x' WHEN relative_volume>=25 THEN '25-49x' "
             "WHEN relative_volume>=10 THEN '10-24x' ELSE '<10x' END as t, "
             "COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM _wr WHERE relative_volume IS NOT NULL "
+            "FROM _live_nd WHERE relative_volume IS NOT NULL "
             "GROUP BY t ORDER BY MIN(relative_volume) DESC"
         ).fetchall()
 
@@ -2045,7 +2079,7 @@ def _weekly_analysis():
             "SELECT CASE WHEN today_return>50 THEN '>50%' WHEN today_return>30 THEN '30-50%' "
             "WHEN today_return>20 THEN '20-30%' WHEN today_return>10 THEN '10-20%' ELSE '<10%' END as g, "
             "COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM _wr WHERE today_return IS NOT NULL "
+            "FROM _live_nd WHERE today_return IS NOT NULL "
             "GROUP BY g ORDER BY MIN(today_return) DESC"
         ).fetchall()
 
@@ -2054,21 +2088,21 @@ def _weekly_analysis():
             "SELECT CASE strftime('%w',timestamp) WHEN '1' THEN 'Mon' WHEN '2' THEN 'Tue' "
             "WHEN '3' THEN 'Wed' WHEN '4' THEN 'Thu' WHEN '5' THEN 'Fri' END as d, "
             "COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM _wr WHERE strftime('%w',timestamp) BETWEEN '1' AND '5' GROUP BY d ORDER BY d"
+            "FROM _live_nd WHERE strftime('%w',timestamp) BETWEEN '1' AND '5' GROUP BY d ORDER BY d"
         ).fetchall()
 
         # Per-signal stats (min 5 fires) — uses signals_json from deduped base
         sig_rows = c.execute(
             "SELECT key, COUNT(*) as n, "
             "ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) as hit "
-            "FROM (SELECT w.best_d20, je.key FROM _wr w, json_each(w.signals_json) je "
+            "FROM (SELECT w.best_d20, je.key FROM _live_nd w, json_each(w.signals_json) je "
             "WHERE w.signals_json IS NOT NULL AND w.signals_json!='{}' AND je.value=1) "
             "GROUP BY key HAVING n>=5 ORDER BY hit DESC"
         ).fetchall()
 
-        # Signal coverage — how many _wr rows have signals_json populated
+        # Signal coverage — how many _live_nd rows have signals_json populated
         _sig_coverage = c.execute(
-            "SELECT COUNT(*) FROM _wr WHERE signals_json IS NOT NULL AND signals_json!='{}'"
+            "SELECT COUNT(*) FROM _live_nd WHERE signals_json IS NOT NULL AND signals_json!='{}'"
         ).fetchone()[0]
 
         # XGBoost eligibility — count live scan rows (not deduped, not historical)
@@ -2081,7 +2115,7 @@ def _weekly_analysis():
 
         # New labeled rows this week (deduped, confirmed outcomes)
         new_labeled = c.execute(
-            "SELECT COUNT(*) FROM _wr WHERE scan_date >= date('now','-7 days')"
+            "SELECT COUNT(*) FROM _live_nd WHERE scan_date >= date('now','-7 days')"
         ).fetchone()[0]
 
         # Float/shares bucket hit rates
@@ -2091,21 +2125,21 @@ def _weekly_analysis():
             "WHEN shares_outstanding < 100000000 THEN 'lt100m' "
             "ELSE '100m+' END as bucket, "
             "COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM _wr WHERE shares_outstanding IS NOT NULL "
+            "FROM _live_nd WHERE shares_outstanding IS NOT NULL "
             "GROUP BY bucket ORDER BY MIN(shares_outstanding)"
         ).fetchall()
 
         # LSTM gate validation — uses deduped base, lstm_prob from highest-score scan
         lstm_baseline = c.execute(
             "SELECT COUNT(*), ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END)/COUNT(*),1) "
-            "FROM _wr"
+            "FROM _live_10d"
         ).fetchone()
-        # Data health: what fraction of _wr rows are age-confirmed losers vs winner-only?
+        # Data health: what fraction of _live_10d rows are age-confirmed losers vs winner-only?
         _wr_health = c.execute(
             "SELECT COUNT(*), "
             "SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END) as winners, "
             "SUM(CASE WHEN best_d20 IS NULL THEN 1 ELSE 0 END) as losers "
-            "FROM _wr"
+            "FROM _live_10d"
         ).fetchone()
         _wr_total, _wr_winners, _wr_losers = _wr_health
         _winner_bias_pct = round(100.0 * _wr_winners / _wr_total, 1) if _wr_total else 0
@@ -2114,7 +2148,7 @@ def _weekly_analysis():
             "SELECT COUNT(*), "
             "SUM(CASE WHEN best_d20 IS NOT NULL THEN 1 ELSE 0 END), "
             "SUM(CASE WHEN best_d20 IS NULL THEN 1 ELSE 0 END) "
-            "FROM _wr WHERE lstm_prob IS NOT NULL"
+            "FROM _live_10d WHERE lstm_prob IS NOT NULL"
         ).fetchone()
         _lstm_n, _lstm_winners, _lstm_losers = _lstm_health
         _lstm_bias_pct = round(100.0 * _lstm_winners / _lstm_n, 1) if _lstm_n else 0
@@ -2129,7 +2163,7 @@ def _weekly_analysis():
             "         WHEN lstm_prob >= 0.55 THEN '55-64%' "
             "         WHEN lstm_prob >= 0.35 THEN '35-54%' "
             "         ELSE '<35%' END as gate "
-            "  FROM _wr WHERE lstm_prob IS NOT NULL"
+            "  FROM _live_10d WHERE lstm_prob IS NOT NULL"
             ") GROUP BY gate ORDER BY MIN(lstm_prob) DESC"
         ).fetchall()
 
@@ -2152,25 +2186,25 @@ def _weekly_analysis():
         trade_scan_rows = c.execute(
             "SELECT symbol, score, today_return, NULL as next_day_return, best_d20 as days_to_20pct, "
             "       lstm_prob, timestamp, NULL as scan_price "
-            "FROM _wr "
+            "FROM _live_10d "
             "WHERE ai_trade_rec LIKE '%\"decision\": \"TRADE\"%' "
             "  AND ai_trade_rec NOT LIKE '%NO_TRADE%' "
             "ORDER BY timestamp DESC LIMIT 100"
         ).fetchall()
 
         # Hit speed — cumulative hit rate across ALL confirmed outcomes (winners + losers)
-        _wr_total_n = c.execute("SELECT COUNT(*) FROM _wr").fetchone()[0]
+        _wr_total_n = c.execute("SELECT COUNT(*) FROM _live_10d").fetchone()[0]
         speed_rows = c.execute(
             "SELECT d.day, "
             "COUNT(CASE WHEN w.best_d20 <= d.day THEN 1 END) as hits, "
             f"{_wr_total_n} as total, "
             f"ROUND(100.0*COUNT(CASE WHEN w.best_d20 <= d.day THEN 1 END)/{_wr_total_n}, 1) as pct "
-            "FROM _wr w "
+            "FROM _live_10d w "
             "CROSS JOIN (SELECT 1 as day UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5) d "
             "GROUP BY d.day ORDER BY d.day"
         ).fetchall()
         # Add 'missed' row: stocks that never hit +20% within window
-        _wr_missed = _wr_total_n - (c.execute("SELECT COUNT(*) FROM _wr WHERE best_d20 IS NOT NULL").fetchone()[0])
+        _wr_missed = _wr_total_n - (c.execute("SELECT COUNT(*) FROM _live_10d WHERE best_d20 IS NOT NULL").fetchone()[0])
         speed_rows = list(speed_rows) + [("missed", _wr_missed, _wr_total_n, round(100.0 * _wr_missed / _wr_total_n, 1) if _wr_total_n else 0)]
 
         # LSTM x score cross-tab (deduped base)
@@ -2183,7 +2217,7 @@ def _weekly_analysis():
             "  SUM(CASE WHEN lstm_prob>=0.55 THEN 1 ELSE 0 END) as n_gated, "
             "  ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL AND lstm_prob>=0.55 THEN 1 ELSE 0 END)/"
             "        NULLIF(SUM(CASE WHEN lstm_prob>=0.55 THEN 1 ELSE 0 END),0),1) as hit_gated "
-            "FROM _wr GROUP BY bucket ORDER BY MIN(score) DESC"
+            "FROM _live_10d GROUP BY bucket ORDER BY MIN(score) DESC"
         ).fetchall()
 
         # Day-of-week x LSTM cross-tab (deduped base)
@@ -2196,7 +2230,7 @@ def _weekly_analysis():
             "  SUM(CASE WHEN lstm_prob>=0.55 THEN 1 ELSE 0 END) as n_gated, "
             "  ROUND(100.0*SUM(CASE WHEN best_d20 IS NOT NULL AND lstm_prob>=0.55 THEN 1 ELSE 0 END)/"
             "        NULLIF(SUM(CASE WHEN lstm_prob>=0.55 THEN 1 ELSE 0 END),0),1) as hit_gated "
-            "FROM _wr WHERE strftime('%w',timestamp) BETWEEN '1' AND '5' "
+            "FROM _live_10d WHERE strftime('%w',timestamp) BETWEEN '1' AND '5' "
             "GROUP BY d HAVING d IS NOT NULL "
             "ORDER BY CASE d WHEN 'Mon' THEN 1 WHEN 'Tue' THEN 2 WHEN 'Wed' THEN 3 "
             "                WHEN 'Thu' THEN 4 WHEN 'Fri' THEN 5 END"
@@ -2215,6 +2249,8 @@ def _weekly_analysis():
             "       opened_at, closed_at, close_reason, trade_mode "
             "FROM trades WHERE status='closed' ORDER BY closed_at DESC"
         ).fetchall()
+
+        _live_nd_n = c.execute("SELECT COUNT(*) FROM _live_nd").fetchone()[0]
 
         conn.close()
 
@@ -2673,6 +2709,8 @@ def _weekly_analysis():
             open_trades=open_trades, closed_trades_rows=closed_trades_rows,
             proposals=proposals, autopsy_data=get_trade_signal_autopsy(),
             sig_coverage=_sig_coverage,
+            live_nd_n=_live_nd_n,
+            trade_calls_pending=_trade_calls_pending,
         )
         send_weekly_report_email(
             subject=f"AI Trading Model — Weekly Analysis {date_str}",

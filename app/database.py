@@ -1637,7 +1637,7 @@ def get_trade_signal_autopsy() -> dict:
     cursor.execute("""
         SELECT MIN(days_to_20pct) as best_d20, MAX(signals_json) as signals_json
         FROM scans
-        WHERE mode NOT IN ('fivemin','fivemin_bt','candidate_fivemin','standard','strict')
+        WHERE mode IN ('squeeze', 'autoai')
           AND signals_json IS NOT NULL AND signals_json != '{}'
           AND ai_trade_rec LIKE '%"decision": "TRADE"%'
           AND (days_to_20pct IS NOT NULL
