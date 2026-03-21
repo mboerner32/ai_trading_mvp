@@ -1262,7 +1262,7 @@ def _build_weekly_email_html(
     speed_rows, lstm_baseline, lstm_gate_rows, lstm_score_rows,
     lstm_bias_pct=None, lstm_losers=None, winner_bias_pct=None,
     sl_lines=None, trade_scan_rows=None, open_trades=None, closed_trades_rows=None,
-    proposals=None, autopsy_data=None,
+    proposals=None, autopsy_data=None, sig_coverage=None,
 ) -> str:
     """Build a visually rich HTML email for the weekly analysis report."""
 
@@ -1523,6 +1523,13 @@ def _build_weekly_email_html(
                      "Shows which signals are actually predictive of a +20% move. "
                      "Signals below the baseline line are hurting performance."
             ))
+            if sig_coverage is not None:
+                rows.append(
+                    f"<tr><td colspan='10' style='padding:2px 8px 6px 8px;font-size:11px;color:#7f8c8d'>"
+                    f"Signals populated for {sig_coverage} of {baseline_n} confirmed-outcome rows "
+                    f"({'⚠️ backfill in progress' if sig_coverage < baseline_n * 0.5 else '✓ good coverage'})"
+                    f"</td></tr>"
+                )
             rows.append(
                 "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
                 "<tr style='background:#f0f0f0'>"
@@ -1606,38 +1613,36 @@ def _build_weekly_email_html(
             )
         rows.append("</table></td></tr>")
 
-    # ── Hit Speed ───────────────────────────────────────────────────────────
+    # ── Hit Speed ────────────────────────────────────────────────────────────
     if speed_rows:
-        total_sp = sum(r[1] for r in speed_rows) or 1
-        cum_sp = 0
         rows.append(_section(
             "Hit Speed (days to +20%)",
-            color="#e67e22",
-            note="Of stocks that eventually hit +20%, how quickly did they get there? "
-                 "Day 1 = hit +20% the same day as the scan. Cumulative % shows what fraction hit within that many days."
+            color="#16a085",
+            note="Cumulative % of ALL confirmed outcomes (winners + confirmed misses) that hit +20% by each day. "
+                 "The 'missed' row = never hit +20% within the 5-trading-day window."
         ))
         rows.append(
             "<tr><td colspan='10'><table width='100%' cellspacing='0' style='font-size:12px'>"
             "<tr style='background:#f0f0f0'>"
-            "<th style='padding:4px 8px'>Day</th>"
-            "<th style='padding:4px 8px'>Hits</th>"
-            "<th style='padding:4px 8px;text-align:left' colspan='2'>Progress</th>"
-            "<th style='padding:4px 8px'>Cumulative</th>"
+            "<th style='padding:4px 8px;text-align:left'>Day</th>"
+            "<th style='padding:4px 8px;text-align:left' colspan='3'>Cumulative Hit Rate</th>"
+            "<th style='padding:4px 8px;text-align:right'>Hits</th>"
+            "<th style='padding:4px 8px;text-align:right'>Total</th>"
             "</tr>"
         )
-        for day, n in speed_rows[:10]:
-            cum_sp += n
-            cum_pct = round(100 * cum_sp / total_sp, 1)
-            bar_px = max(2, int(n / total_sp * BAR_W))
+        for day, hits, total, pct in speed_rows:
+            label = f"Day {day}" if isinstance(day, int) else "❌ Missed"
+            bar_color = "#e74c3c" if day == "missed" else "#16a085"
+            bar_w = int(pct or 0)
             rows.append(
                 f"<tr style='border-bottom:1px solid #f5f5f5'>"
-                f"<td style='padding:3px 8px'>Day {day}</td>"
-                f"<td style='padding:3px 8px;text-align:right'>{n}</td>"
-                f"<td colspan='2' style='padding:3px 8px'>"
-                f"<div style='background:#fdebd0;border-radius:3px;height:14px;width:{BAR_W}px'>"
-                f"<div style='background:#e67e22;height:14px;width:{bar_px}px;border-radius:3px'></div>"
-                f"</div></td>"
-                f"<td style='padding:3px 8px;text-align:right;font-weight:bold'>{cum_pct}%</td>"
+                f"<td style='padding:3px 8px;font-weight:bold'>{label}</td>"
+                f"<td style='padding:3px 8px' colspan='2'>"
+                f"<div style='background:#eee;border-radius:3px;overflow:hidden;height:14px'>"
+                f"<div style='background:{bar_color};width:{bar_w}%;height:14px'></div></div></td>"
+                f"<td style='padding:3px 8px;color:#555'>{pct}%</td>"
+                f"<td style='padding:3px 8px;text-align:right;color:#888'>{hits}</td>"
+                f"<td style='padding:3px 8px;text-align:right;color:#aaa'>{total}</td>"
                 f"</tr>"
             )
         rows.append("</table></td></tr>")
@@ -2032,6 +2037,11 @@ def _weekly_analysis():
             "GROUP BY key HAVING n>=5 ORDER BY hit DESC"
         ).fetchall()
 
+        # Signal coverage — how many _wr rows have signals_json populated
+        _sig_coverage = c.execute(
+            "SELECT COUNT(*) FROM _wr WHERE signals_json IS NOT NULL AND signals_json!='{}'"
+        ).fetchone()[0]
+
         # XGBoost eligibility — count live scan rows (not deduped, not historical)
         xgb_n = c.execute(
             "SELECT COUNT(*) FROM scans "
@@ -2119,11 +2129,20 @@ def _weekly_analysis():
             "ORDER BY timestamp DESC LIMIT 100"
         ).fetchall()
 
-        # Hit speed distribution — days until 20%+ hit (deduped, daily modes only)
+        # Hit speed — cumulative hit rate across ALL confirmed outcomes (winners + losers)
+        _wr_total_n = c.execute("SELECT COUNT(*) FROM _wr").fetchone()[0]
         speed_rows = c.execute(
-            "SELECT best_d20, COUNT(*) FROM _wr "
-            "WHERE best_d20 IS NOT NULL GROUP BY best_d20 ORDER BY best_d20"
+            "SELECT d.day, "
+            "COUNT(CASE WHEN w.best_d20 <= d.day THEN 1 END) as hits, "
+            f"{_wr_total_n} as total, "
+            f"ROUND(100.0*COUNT(CASE WHEN w.best_d20 <= d.day THEN 1 END)/{_wr_total_n}, 1) as pct "
+            "FROM _wr w "
+            "CROSS JOIN (SELECT 1 as day UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5) d "
+            "GROUP BY d.day ORDER BY d.day"
         ).fetchall()
+        # Add 'missed' row: stocks that never hit +20% within window
+        _wr_missed = _wr_total_n - (c.execute("SELECT COUNT(*) FROM _wr WHERE best_d20 IS NOT NULL").fetchone()[0])
+        speed_rows = list(speed_rows) + [("missed", _wr_missed, _wr_total_n, round(100.0 * _wr_missed / _wr_total_n, 1) if _wr_total_n else 0)]
 
         # LSTM x score cross-tab (deduped base)
         lstm_score_rows = c.execute(
@@ -2308,17 +2327,14 @@ def _weekly_analysis():
 
         # Hit Speed
         if speed_rows:
-            total_sp = sum(r[1] for r in speed_rows) or 1
-            cum_sp = 0
             sp_tbl = []
-            for day, n in speed_rows:
-                cum_sp += n
-                bar = "█" * int(n / total_sp * 30)
-                sp_tbl.append((f"Day {day}", n, f"{round(100*cum_sp/total_sp,1)}%", bar))
+            for day, hits, total, pct in speed_rows:
+                label = f"Day {day}" if isinstance(day, int) else "Missed"
+                sp_tbl.append((label, hits, total, f"{pct}%"))
             tg_parts.append(("\n<b>HIT SPEED</b>", False))
-            tg_parts.append((_tbl_tg(["Day","Hits","Cumul",""], sp_tbl, [6,6,8,30]), True))
+            tg_parts.append((_tbl_tg(["Day","Hits","Total","%"], sp_tbl, [6,6,8,8]), True))
             html_secs.append("<h3 style='color:#2c3e50;margin-top:20px'>Hit Speed (days to +20%)</h3>"
-                             + _tbl_html(["Day","Hits","Cumulative",""], sp_tbl))
+                             + _tbl_html(["Day","Hits","Total","%"], sp_tbl))
 
         # LSTM Gate
         lb_n, lb_hit = lstm_baseline
@@ -2648,6 +2664,7 @@ def _weekly_analysis():
             sl_lines=sl_lines, trade_scan_rows=trade_scan_rows,
             open_trades=open_trades, closed_trades_rows=closed_trades_rows,
             proposals=proposals, autopsy_data=get_trade_signal_autopsy(),
+            sig_coverage=_sig_coverage,
         )
         send_weekly_report_email(
             subject=f"AI Trading Model — Weekly Analysis {date_str}",
