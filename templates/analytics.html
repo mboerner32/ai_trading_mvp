@@ -1502,82 +1502,59 @@
         </div>
         {% endif %}
 
+        <!-- Primary action -->
         <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
-            <form method="post" action="/backfill-history">
-                <button type="submit"
-                        style="background:#7c3aed; color:white; border:none;
-                               padding:10px 22px; border-radius:8px; cursor:pointer;
-                               font-size:14px; font-weight:600;">
-                    {% if backfill_status.status == 'running' %}
-                        Running… ({{ backfill_status.processed }}/{{ backfill_status.total }})
-                    {% else %}
-                        Generate Historical Training Data
-                    {% endif %}
-                </button>
-            </form>
-
-            <form method="post" action="/backfill-signals">
-                <button type="submit"
-                        {% if signals_backfill_running %}disabled{% endif %}
-                        style="background:{% if signals_backfill_running %}#9ca3af{% else %}#0369a1{% endif %};
-                               color:white; border:none; padding:10px 22px; border-radius:8px;
-                               cursor:{% if signals_backfill_running %}default{% else %}pointer{% endif %};
-                               font-size:14px; font-weight:600;">
-                    {% if signals_backfill_running %}
-                        Backfilling Signals…
-                    {% else %}
-                        Backfill Signal Features
-                    {% endif %}
-                </button>
-            </form>
-
-            <form method="post" action="/backfill-history"
-                  onsubmit="return confirm('Run historical backfill? This downloads years of OHLCV data for all screener symbols and takes several hours.')">
-                <button type="submit"
-                        {% if backfill_status and backfill_status.running %}disabled{% endif %}
-                        style="background:{% if backfill_status and backfill_status.running %}#9ca3af{% else %}#065f46{% endif %};
-                               color:white; border:none; padding:10px 22px; border-radius:8px;
-                               cursor:{% if backfill_status and backfill_status.running %}default{% else %}pointer{% endif %};
-                               font-size:14px; font-weight:600;">
-                    {% if backfill_status and backfill_status.running %}
-                        Historical Backfill Running…
-                    {% else %}
-                        Run Historical Backfill
-                    {% endif %}
-                </button>
-            </form>
-
             <form method="post" action="/apply-default-weights"
-                  onsubmit="return confirm('Save DEFAULT_SQUEEZE_WEIGHTS from code to live scorer and rescore all history? Use after code-level weight changes.')">
+                  onsubmit="return confirm('Save DEFAULT_SQUEEZE_WEIGHTS from code to live scorer and rescore all history?')">
                 <button type="submit"
                         style="background:#b45309; color:white; border:none; padding:10px 22px;
                                border-radius:8px; cursor:pointer; font-size:14px; font-weight:600;">
                     Apply Code Weights + Rescore
                 </button>
             </form>
-
-            <form method="post" action="/rescore-history"
-                  onsubmit="return confirm('Rescore all historical rows with current weights? This keeps per-signal stats version-consistent.')">
-                <button type="submit"
-                        style="background:#7c3aed; color:white; border:none; padding:10px 22px;
-                               border-radius:8px; cursor:pointer; font-size:14px; font-weight:600;">
-                    Rescore History (Current Weights)
-                </button>
-            </form>
-
-            <div id="backfillStatus" style="font-size:13px; color:#6b7280;">
-                {% if backfill_status.status == 'running' %}
-                    Processing {{ backfill_status.processed }}/{{ backfill_status.total }} tickers
-                    &nbsp;·&nbsp; {{ backfill_status.saved }} examples found so far…
-                {% elif backfill_status.status == 'complete' %}
-                    Last run: {{ backfill_status.saved }} examples saved from
-                    {{ backfill_status.total }} tickers.
-                {% endif %}
-                {% if signals_backfill_running %}
-                    &nbsp;·&nbsp; <span style="color:#0369a1;">Re-scoring historical rows for signals_json…</span>
-                {% endif %}
-            </div>
         </div>
+
+        <!-- Admin tools (collapsed by default) -->
+        <details style="margin-top:12px;">
+            <summary style="cursor:pointer; font-size:13px; color:#6b7280; user-select:none;">
+                ▸ Admin / One-time tools
+            </summary>
+            <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:10px;">
+                <form method="post" action="/backfill-history"
+                      onsubmit="return confirm('Generate historical training data? Downloads years of OHLCV for all screener symbols — takes several hours.')">
+                    <button type="submit"
+                            style="background:#7c3aed; color:white; border:none;
+                                   padding:8px 16px; border-radius:6px; cursor:pointer;
+                                   font-size:13px; font-weight:600;">
+                        {% if backfill_status.status == 'running' %}
+                            Running… ({{ backfill_status.processed }}/{{ backfill_status.total }})
+                        {% else %}
+                            Generate Historical Training Data
+                        {% endif %}
+                    </button>
+                </form>
+
+                <form method="post" action="/backfill-signals">
+                    <button type="submit"
+                            {% if signals_backfill_running %}disabled{% endif %}
+                            style="background:{% if signals_backfill_running %}#9ca3af{% else %}#0369a1{% endif %};
+                                   color:white; border:none; padding:8px 16px; border-radius:6px;
+                                   cursor:{% if signals_backfill_running %}default{% else %}pointer{% endif %};
+                                   font-size:13px; font-weight:600;">
+                        {% if signals_backfill_running %}Backfilling Signals…{% else %}Backfill Signal Features{% endif %}
+                    </button>
+                </form>
+
+                <div style="font-size:12px; color:#9ca3af;">
+                    {% if backfill_status.status == 'running' %}
+                        Processing {{ backfill_status.processed }}/{{ backfill_status.total }} tickers · {{ backfill_status.saved }} saved…
+                    {% elif backfill_status.status == 'complete' %}
+                        Last run: {{ backfill_status.saved }} examples from {{ backfill_status.total }} tickers.
+                    {% endif %}
+                    {% if signals_backfill_running %}<span style="color:#0369a1;">Signals backfill running…</span>{% endif %}
+                </div>
+            </div>
+        </details>
     </div>
 
     <!-- EQUITY CURVE -->
