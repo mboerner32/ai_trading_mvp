@@ -1264,7 +1264,7 @@ def _build_weekly_email_html(
     lstm_bias_pct=None, lstm_losers=None, winner_bias_pct=None,
     sl_lines=None, trade_scan_rows=None, open_trades=None, closed_trades_rows=None,
     proposals=None, autopsy_data=None, sig_coverage=None,
-    live_nd_n=0, trade_calls_pending=0,
+    live_nd_n=0, trade_calls_pending=0, weekly_insights="",
 ) -> str:
     """Build a visually rich HTML email for the weekly analysis report."""
 
@@ -1891,6 +1891,27 @@ def _build_weekly_email_html(
     else:
         rows.append("<tr><td colspan='10' style='padding:4px 8px;color:#aaa;font-style:italic'>"
                     "Not enough data yet (need 5+ AI TRADE calls with known outcomes).</td></tr>")
+
+    # ── Key Findings & Recommendations ──────────────────────────────────────
+    if weekly_insights:
+        rows.append(_section("📊 Key Findings & Recommendations", "#2c3e50"))
+        rows.append("<tr><td colspan='10'><div style='background:#f8f9fa;border-radius:6px;padding:14px;font-size:13px;line-height:1.6'>")
+        in_recs = False
+        for ln in weekly_insights.split("\n"):
+            ls = ln.strip()
+            if not ls:
+                continue
+            if "KEY FINDINGS" in ls:
+                rows.append("<p style='margin:0 0 8px 0;font-weight:bold;color:#2c3e50;font-size:14px'>📊 Key Findings</p>")
+            elif "RANKED RECOMMENDATIONS" in ls:
+                rows.append("<p style='margin:14px 0 8px 0;font-weight:bold;color:#e67e22;font-size:14px'>🎯 Ranked Recommendations</p>")
+                in_recs = True
+            elif ls[0].isdigit() and len(ls) > 1 and ls[1] == ".":
+                col = "#e67e22" if in_recs else "#2c3e50"
+                rows.append(f"<p style='margin:4px 0;color:{col}'>{ls}</p>")
+            else:
+                rows.append(f"<p style='margin:2px 0;color:#555'>{ls}</p>")
+        rows.append("</div></td></tr>")
 
     # ── Proposals ───────────────────────────────────────────────────────────
     if proposals:
@@ -2587,9 +2608,10 @@ def _weekly_analysis():
                 tg_parts.append(("\nNo high-confidence weight changes this week (n≥100 + ≥5pp not met).", False))
 
         # AI-generated Key Findings & Recommendations
+        _weekly_insights = ""
         try:
             from app.ai_agent import generate_weekly_insights
-            insights = generate_weekly_insights({
+            _weekly_insights = generate_weekly_insights({
                 "baseline_n":        baseline_n,
                 "baseline_hit":      baseline_hit,
                 "score_rows":        score_rows,
@@ -2604,21 +2626,7 @@ def _weekly_analysis():
                 "ai_hits":           ai_hits,
                 "ai_total":          ai_total,
             })
-            tg_parts.append(("\n" + insights, False))
-            # Render insights in HTML with basic formatting
-            html_insights = insights.replace("📊", "").replace("🎯", "")
-            html_ins_lines = []
-            for ln in html_insights.split("\n"):
-                ls = ln.strip()
-                if ls.startswith("KEY FINDINGS"):
-                    html_ins_lines.append("<h3 style='color:#2c3e50;margin-top:20px'>📊 Key Findings</h3>")
-                elif ls.startswith("RANKED RECOMMENDATIONS"):
-                    html_ins_lines.append("<h3 style='color:#e67e22;margin-top:20px'>🎯 Ranked Recommendations</h3>")
-                elif ls and ls[0].isdigit() and ls[1] == ".":
-                    html_ins_lines.append(f"<p style='margin:4px 0'>{ls}</p>")
-                elif ls:
-                    html_ins_lines.append(f"<p style='margin:2px 0'>{ls}</p>")
-            html_secs.append("".join(html_ins_lines))
+            tg_parts.append(("\n" + _weekly_insights, False))
         except Exception as _ie:
             print(f"WEEKLY: insights generation failed — {_ie}")
 
@@ -2710,6 +2718,7 @@ def _weekly_analysis():
             sig_coverage=_sig_coverage,
             live_nd_n=_live_nd_n,
             trade_calls_pending=_trade_calls_pending,
+            weekly_insights=_weekly_insights,
         )
         send_weekly_report_email(
             subject=f"AI Trading Model — Weekly Analysis {date_str}",
