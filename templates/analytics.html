@@ -1502,8 +1502,16 @@
         </div>
         {% endif %}
 
-        <!-- Primary action -->
+        <!-- Primary actions -->
         <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+            <form method="post" action="/admin/run-weekly-report"
+                  onsubmit="this.querySelector('button').textContent='Sending…'; this.querySelector('button').disabled=true;">
+                <button type="submit"
+                        style="background:#0369a1; color:white; border:none; padding:10px 22px;
+                               border-radius:8px; cursor:pointer; font-size:14px; font-weight:600;">
+                    Send Weekly Report Now
+                </button>
+            </form>
             <form method="post" action="/apply-default-weights"
                   onsubmit="return confirm('Save DEFAULT_SQUEEZE_WEIGHTS from code to live scorer and rescore all history?')">
                 <button type="submit"

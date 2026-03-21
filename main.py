@@ -1975,22 +1975,18 @@ def _weekly_analysis():
             "FROM _wr"
         ).fetchone()
 
-        # ── Data quality gate ─────────────────────────────────────────────────
-        # If the dataset has < 200 confirmed rows OR > 90% are winners (no losers
-        # to compare against), the report metrics are meaningless. Abort early
-        # so a garbage report isn't sent.
+        # ── Data quality warning ───────────────────────────────────────────────
         _wr_losers_count = c.execute(
             "SELECT COUNT(*) FROM _wr WHERE best_d20 IS NULL"
         ).fetchone()[0]
         _wr_winners_count = baseline_n - _wr_losers_count
         _data_bias_pct = round(100.0 * _wr_winners_count / baseline_n, 1) if baseline_n else 100
-        if baseline_n < 200 or _data_bias_pct > 90:
+        _data_warning = None
+        if baseline_n < 50:
+            # Truly too little data — hard suppress
             msg = (
-                f"⚠️ WEEKLY REPORT SUPPRESSED — data quality too low to report.\n"
-                f"  Confirmed rows: {baseline_n} (need ≥200)\n"
-                f"  Winner bias: {_data_bias_pct}% (need ≤90% — too few confirmed losers)\n"
-                f"  Root cause: historical backfill data not present in production DB.\n"
-                f"  Fix: upload local DB to Render or run /backfill on the production instance."
+                f"⚠️ WEEKLY REPORT SUPPRESSED — only {baseline_n} confirmed rows (need ≥50).\n"
+                f"  Run /backfill-history on Render to generate historical data."
             )
             print(msg)
             try:
@@ -2000,6 +1996,13 @@ def _weekly_analysis():
                 pass
             conn.close()
             return
+        elif _data_bias_pct > 90:
+            _data_warning = (
+                f"⚠️ Data quality warning: {_data_bias_pct}% of confirmed rows are winners "
+                f"({_wr_winners_count}/{baseline_n}). "
+                f"Hit rates are inflated — historical backfill data is missing or biased. "
+                f"Results should be interpreted cautiously."
+            )
 
         # Score buckets
         score_rows = c.execute(
