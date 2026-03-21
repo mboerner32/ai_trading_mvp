@@ -242,12 +242,14 @@ def _send_telegram(message: str):
 
 
 def send_scan_alert(results: list, mode: str, min_score: int = 75,
-                    ai_trade_only: bool = False, traded_symbols: set = None):
+                    ai_trade_only: bool = False, traded_symbols: set = None,
+                    scan_time_label: str = None):
     """
     Email + Telegram top-scoring stocks from a scan.
     Only sends if at least one stock scores >= min_score.
     If ai_trade_only=True, only stocks where AI called TRADE are included.
     traded_symbols: set of symbols where _auto_paper_trade actually opened a position.
+    scan_time_label: optional HH:MM string appended to label (e.g. intraday scans).
     Includes AI call, confidence, LSTM prob, and rationale when available.
     """
     top = [r for r in results if r.get("score", 0) >= min_score]
@@ -262,7 +264,16 @@ def send_scan_alert(results: list, mode: str, min_score: int = 75,
         "fivemin":  "5 Min Spike",
         "standard": "Daily Standard",
     }
+    _model_short = {
+        "squeeze":  "Auto AI",
+        "autoai":   "Complex+AI",
+        "fivemin":  "5m Model",
+        "standard": "Standard",
+    }
     model_label = _model_labels.get(mode, mode)
+    model_short = _model_short.get(mode, mode)
+    if scan_time_label:
+        model_label = f"{model_label} · Intraday {scan_time_label}"
 
     email_lines = [f"{len(top)} stock(s) scored {min_score}+ in {model_label} scan\n"]
     tg_lines    = [f"<b>{len(top)} High-Score Alert — {model_label}</b>\n"]
@@ -292,13 +303,13 @@ def send_scan_alert(results: list, mode: str, min_score: int = 75,
         if decision == "TRADE":
             if confidence in ("HIGH", "MEDIUM"):
                 if traded_symbols and symbol in traded_symbols:
-                    ai_badge = f" ✅ <b>{decision}</b> ({confidence} · {model_label} — position opened)"
+                    ai_badge = f" ✅ <b>{decision}</b> ({confidence} · Model: {model_short} — position opened)"
                 else:
-                    ai_badge = f" ✅ <b>{decision}</b> ({confidence} · {model_label})"
+                    ai_badge = f" ✅ <b>{decision}</b> ({confidence} · Model: {model_short})"
             else:
-                ai_badge = f" ⚠️ <b>{decision}</b> ({confidence} · {model_label} — no position, LOW conf)"
+                ai_badge = f" ⚠️ <b>{decision}</b> ({confidence} · Model: {model_short} — no position, LOW conf)"
         elif decision == "NO_TRADE":
-            ai_badge = f" ❌ {decision} ({confidence} · {model_label})"
+            ai_badge = f" ❌ {decision} ({confidence} · Model: {model_short})"
         else:
             ai_badge = ""
         lstm_badge = f" · LSTM: {lstm_prob:.0%}" if lstm_prob is not None else ""

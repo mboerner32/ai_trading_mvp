@@ -1094,8 +1094,9 @@ def _intraday_scan():
         ]
         if new_alerts:
             traded = _auto_paper_trade(new_alerts, today_str)
-            send_scan_alert(new_alerts, f"Intraday {et_now.strftime('%H:%M')}",
-                            min_score=0, ai_trade_only=True, traded_symbols=traded)
+            send_scan_alert(new_alerts, "squeeze",
+                            min_score=0, ai_trade_only=True, traded_symbols=traded,
+                            scan_time_label=et_now.strftime('%H:%M'))
             with _alerted_lock:
                 for r in new_alerts:
                     _alerted_today.add(r.get("symbol"))
