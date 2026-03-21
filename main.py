@@ -1986,8 +1986,7 @@ def _weekly_analysis():
                 MAX(signals_json)        AS signals_json
             FROM scans
             WHERE mode IN ('squeeze', 'autoai')
-              AND (days_to_20pct IS NOT NULL
-                   OR (julianday('now') - julianday(timestamp)) >= 14)
+              AND (julianday('now') - julianday(timestamp)) >= 14
             GROUP BY symbol, DATE(timestamp)
         """)
         conn.commit()
