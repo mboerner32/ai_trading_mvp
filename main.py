@@ -2709,7 +2709,25 @@ def _startup_background_tasks():
         except Exception as _yf_err:
             print(f"STARTUP: yfinance warm-up failed (non-fatal) — {_yf_err}")
 
-        # 2. Auto-rescore if DEFAULT_SQUEEZE_WEIGHTS differ from saved weights.
+        # 2. One-time migration: NULL out days_to_20pct > 5 (window changed from 10 → 5 trading days).
+        # Safe to run on every startup — after first run there are no rows with d20 > 5,
+        # so subsequent runs are no-ops.
+        try:
+            import sqlite3 as _sq3
+            _mig_conn = _sq3.connect(_DB_PATH)
+            _mig_cur  = _mig_conn.cursor()
+            _mig_cur.execute("UPDATE scans SET days_to_20pct = NULL WHERE days_to_20pct > 5")
+            _nulled = _mig_cur.rowcount
+            _mig_conn.commit()
+            _mig_conn.close()
+            if _nulled:
+                print(f"STARTUP: Nulled {_nulled} days_to_20pct rows > 5 (10→5 day window migration) ✓")
+            else:
+                print("STARTUP: days_to_20pct migration — no rows to update ✓")
+        except Exception as _mig_err:
+            print(f"STARTUP: days_to_20pct migration failed (non-fatal) — {_mig_err}")
+
+        # 3. Auto-rescore if DEFAULT_SQUEEZE_WEIGHTS differ from saved weights.
         try:
             _saved_wd = get_squeeze_weights()
             _saved_w  = _saved_wd["weights"] if _saved_wd else None
