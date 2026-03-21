@@ -398,7 +398,7 @@ def recommend_trade(stock: dict, hypothesis: str = None,
         else:
             _lstm_interp = "NEGATIVE signal — below baseline. Require 3+ strong confirming signals to override."
         lstm_section = (
-            f"\nLSTM model: {lstm_prob:.0%} probability this stock hits +20% within 5 trading days. "
+            f"\nLSTM model: {lstm_prob:.0%} probability this stock hits +20% within 10 trading days. "
             f"{_lstm_interp}"
             f"{_lstm_tier_context}"
         )
@@ -446,7 +446,7 @@ def recommend_trade(stock: dict, hypothesis: str = None,
         if "trade" in ai_accuracy:
             t = ai_accuracy["trade"]
             parts.append(
-                f"  TRADE calls: {t['hit_20pct']}% hit +20% within 5 trading days  |  "
+                f"  TRADE calls: {t['hit_20pct']}% hit +20% within 10 trading days  |  "
                 f"{t['missed']}% missed  ({t['count']} calls)"
             )
         if "no_trade" in ai_accuracy:
@@ -522,7 +522,7 @@ def recommend_trade(stock: dict, hypothesis: str = None,
 
     prompt = f"""You are a momentum trading AI making a TRADE or NO_TRADE call. Treat this as if you are trading with your own money — every TRADE call costs real capital, and losses come out of your pocket. Be selective. Be precise.
 
-Strategy: identify low-float microcaps with unusual volume that will hit +20% above alert price within 5 trading days (77% of winners hit Day 1, 97% by Day 5). Target precision: 60%+ of TRADE calls hit +20% (baseline is 49.4% — you need a clear edge above that). Be selective but not paralyzed — 2–5 quality TRADE calls per day is the goal.
+Strategy: identify low-float microcaps with unusual volume that will hit +20% above alert price within 10 trading days (77% of winners hit Day 1, 97% by Day 5). Target precision: 60%+ of TRADE calls hit +20% (baseline is 49.4% — you need a clear edge above that). Be selective but not paralyzed — 2–5 quality TRADE calls per day is the goal.
 {tier_block}
 
 Stock: {stock['symbol']} | Score: {stock['score']}/100 | Price: ${stock['price']}
@@ -536,7 +536,7 @@ Signals:
 - Sector/Industry: {checklist.get('sector') or 'N/A'} / {checklist.get('industry') or 'N/A'}{signal_perf_section}{calibration_section}{hypothesis_section}{history_section}{market_section}{lstm_section}{news_section}{accuracy_section}
 
 BACKTESTED PERFORMANCE (2,438 deduped symbol-days, clean methodology, 2026-03-17):
-Baseline: 49.4% hit +20% within 5 trading days.
+Baseline: 49.4% hit +20% within 10 trading days.
 Relvol tiers:
   ≥500x:    100% (n=18)  — extreme event, very strong signal
   100–499x: 100% (n=39)  — exceptional event, strong signal
@@ -557,7 +557,7 @@ Daily gain tiers:
 
 Key findings:
 - institution_strong (40%+ ownership) is HARMFUL — do NOT treat high institutional ownership as positive.
-- 77% of winners hit within Day 1, 97% by Day 5. Ask: will this stock move +20% within 5 trading days?
+- 77% of winners hit within Day 1, 97% by Day 5. Ask: will this stock move +20% within 10 trading days?
 - 10–30M float is the sweet spot. <10M is not inherently better than larger float.
 - Daily gain 40–100% (+6.8pp) is a meaningful positive. 20–40% is neutral.
 
@@ -1391,7 +1391,7 @@ Day of Week:
     prompt = f"""You are autonomously evolving a self-improving stock trading model for low-float microcap momentum setups.
 
 OPTIMIZATION GOALS (in priority order):
-1. Hit rate: maximize % of TRADE calls where stock touches +20% above alert price within 5 trading days — TARGET 80%+
+1. Hit rate: maximize % of TRADE calls where stock touches +20% above alert price within 10 trading days — TARGET 80%+
 2. Win rate: maximize % of scans with any positive next-day return
 3. Speed: minimize avg days to hit the +20% target (faster = better risk/reward)
 4. Magnitude: maximize avg return (feeds future take-profit ceiling decisions)
@@ -2113,7 +2113,7 @@ def generate_weekly_insights(data: dict) -> str:
         speed_lines.append(f"  Day {day}: {n} hits (cumulative {round(100*cumulative/total_hits)}%)")
     speed_section = "\n".join(speed_lines)
 
-    prompt = f"""You are analyzing weekly performance data for an AI stock scanner that identifies squeeze plays — stocks likely to hit +20% within 5 trading days. The scanner uses a weighted scoring model (0–100 pts) and an LSTM probability gate (currently >=55%).
+    prompt = f"""You are analyzing weekly performance data for an AI stock scanner that identifies squeeze plays — stocks likely to hit +20% within 10 trading days. The scanner uses a weighted scoring model (0–100 pts) and an LSTM probability gate (currently >=55%).
 
 Baseline hit rate: {baseline_hit}% (n={data.get("baseline_n", 0)})
 AI TRADE precision: {data.get("ai_pct", 0)}% ({data.get("ai_hits", 0)}/{data.get("ai_total", 0)} calls)
