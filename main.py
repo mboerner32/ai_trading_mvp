@@ -2651,28 +2651,7 @@ def _weekly_analysis():
         def _tg_escape(s: str) -> str:
             return _re2.sub(r'<(?!/?(?:b|i|a|code|pre|s|u)\b)', '&lt;', s)
 
-        _TG_LIMIT = 3800
-        tg_buffer, tg_buffer_len = [], 0
-
-        def _flush_tg():
-            if tg_buffer:
-                _send_telegram_admin(_tg_escape("\n".join(tg_buffer)))
-                tg_buffer.clear()
-
-        for (text, is_code) in tg_parts:
-            if is_code:
-                wrapped = f"<code>{text}</code>"
-            else:
-                wrapped = text
-            chunk_len = len(wrapped) + 1
-            if tg_buffer_len + chunk_len > _TG_LIMIT and tg_buffer:
-                _flush_tg()
-                tg_buffer_len = 0
-            tg_buffer.append(wrapped)
-            tg_buffer_len += chunk_len
-        _flush_tg()
-        print("WEEKLY ANALYSIS: report sent to Telegram")
-
+        # Weekly report is email-only — Telegram send removed.
         # ── Send HTML email (rich visual version) ─────────────────────────
         html_body = _build_weekly_email_html(
             date_str=date_str,
