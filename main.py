@@ -1782,7 +1782,7 @@ def _build_weekly_email_html(
             "<th style='padding:4px 8px'>Return</th><th style='padding:4px 8px'>Exit Reason</th>"
             "<th style='padding:4px 8px'>Mode</th></tr>"
         )
-        for sym, entry, exit_p, pnl, _, _, reason, mode in closed_trades_rows[:8]:
+        for sym, entry, exit_p, pnl, _, _, reason, mode in closed_trades_rows:
             if entry and exit_p:
                 pct = round((exit_p / entry - 1) * 100, 1)
                 col = "#27ae60" if pct >= 0 else "#e74c3c"
@@ -2561,7 +2561,7 @@ def _weekly_analysis():
                           f"  Exits: {' | '.join(f'{k}={v}' for k,v in reasons.items())}")
             tg_parts.append((ct_summary, False))
             ct_tbl, ct_colors = [], {}
-            for i, r in enumerate(closed_trades_rows[:8]):
+            for i, r in enumerate(closed_trades_rows):
                 sym,entry,exit_p,pnl,_,_,reason,mode = r
                 if entry and exit_p:
                     pct = round((exit_p/entry-1)*100,1)

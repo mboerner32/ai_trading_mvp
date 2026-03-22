@@ -1640,8 +1640,7 @@ def get_trade_signal_autopsy() -> dict:
         WHERE mode IN ('squeeze', 'autoai')
           AND signals_json IS NOT NULL AND signals_json != '{}'
           AND ai_trade_rec LIKE '%"decision": "TRADE"%'
-          AND (days_to_20pct IS NOT NULL
-               OR (julianday('now') - julianday(timestamp)) >= 14)
+          AND (julianday('now') - julianday(timestamp)) >= 14
         GROUP BY symbol, DATE(timestamp)
     """)
     rows = cursor.fetchall()
