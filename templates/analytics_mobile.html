@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Analytics</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f1f5f9; color: #1e293b; font-size: 14px; }
+        .header { background: #1e293b; color: white; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; }
+        .header a { color: #94a3b8; text-decoration: none; font-size: 13px; }
+        .section { background: white; margin: 12px 12px 0; border-radius: 10px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+        .section h2 { font-size: 13px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 12px; }
+        .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 4px; }
+        .metric { background: #f8fafc; border-radius: 8px; padding: 10px 12px; }
+        .metric .label { font-size: 11px; color: #94a3b8; margin-bottom: 3px; }
+        .metric .value { font-size: 20px; font-weight: 700; color: #0f172a; }
+        .metric .sub { font-size: 11px; color: #64748b; margin-top: 2px; }
+        .model-card { border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+        .model-card.autoai { border: 2px solid #7c3aed; background: #faf5ff; }
+        .model-card.complex { border: 2px solid #0d9488; background: #f0fdfa; }
+        .model-card h3 { font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+        .model-card.autoai h3 { color: #7c3aed; }
+        .model-card.complex h3 { color: #0d9488; }
+        .stat-row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid rgba(0,0,0,.05); }
+        .stat-row:last-child { border-bottom: none; }
+        .stat-row .k { color: #64748b; font-size: 12px; }
+        .stat-row .v { font-weight: 600; font-size: 12px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th { text-align: left; padding: 6px 8px; color: #64748b; font-weight: 600; border-bottom: 1px solid #e2e8f0; }
+        td { padding: 7px 8px; border-bottom: 1px solid #f1f5f9; }
+        .win { color: #16a34a; font-weight: 600; }
+        .loss { color: #dc2626; font-weight: 600; }
+        .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+        .badge-open { background: #dbeafe; color: #1d4ed8; }
+        .badge-tp { background: #dcfce7; color: #16a34a; }
+        .badge-sl { background: #fee2e2; color: #dc2626; }
+        .badge-ts { background: #fef9c3; color: #854d0e; }
+        .desktop-link { text-align: center; padding: 16px; color: #94a3b8; font-size: 12px; }
+        .desktop-link a { color: #3b82f6; }
+        .footer { height: 24px; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <span style="font-weight:700;font-size:16px;">Analytics</span>
+    <div style="display:flex;gap:16px;">
+        <a href="/dashboard">Dashboard</a>
+        <a href="/trades">Trades</a>
+    </div>
+</div>
+
+<!-- Model Comparison -->
+<div class="section">
+    <h2>AI TRADE Comparison</h2>
+
+    {% set autoai = model_comparison.get('autoai', {}) if model_comparison else {} %}
+    {% set squeeze = model_comparison.get('squeeze', {}) if model_comparison else {} %}
+
+    <div class="model-card autoai">
+        <h3>Auto AI</h3>
+        <div class="stat-row"><span class="k">TRADE calls</span><span class="v">{{ autoai.get('trade_calls', '—') }}</span></div>
+        <div class="stat-row"><span class="k">Win Rate</span><span class="v {% if autoai.get('win_rate', 0) >= 60 %}win{% else %}loss{% endif %}">{{ autoai.get('win_rate', '—') }}%</span></div>
+        <div class="stat-row"><span class="k">Avg Next-Day</span><span class="v">{{ autoai.get('avg_next_day', '—') }}%</span></div>
+        <div class="stat-row"><span class="k">Hit 20%+ (2wk)</span><span class="v">{{ autoai.get('hit_20pct', '—') }}%</span></div>
+        <div class="stat-row"><span class="k">Outstanding</span><span class="v">{{ autoai.get('outstanding', '—') }}</span></div>
+    </div>
+
+    <div class="model-card complex">
+        <h3>Complex + AI</h3>
+        <div class="stat-row"><span class="k">TRADE calls</span><span class="v">{{ squeeze.get('trade_calls', '—') }}</span></div>
+        <div class="stat-row"><span class="k">Win Rate</span><span class="v {% if squeeze.get('win_rate', 0) >= 60 %}win{% else %}loss{% endif %}">{{ squeeze.get('win_rate', '—') }}%</span></div>
+        <div class="stat-row"><span class="k">Avg Next-Day</span><span class="v">{{ squeeze.get('avg_next_day', '—') }}%</span></div>
+        <div class="stat-row"><span class="k">Hit 20%+ (2wk)</span><span class="v">{{ squeeze.get('hit_20pct', '—') }}%</span></div>
+        <div class="stat-row"><span class="k">Outstanding</span><span class="v">{{ squeeze.get('outstanding', '—') }}</span></div>
+    </div>
+</div>
+
+<!-- Score Buckets -->
+{% if score_buckets %}
+<div class="section">
+    <h2>Score Buckets</h2>
+    <table>
+        <tr><th>Bucket</th><th>n</th><th>Win %</th><th>Hit 20%</th></tr>
+        {% for b in score_buckets %}
+        <tr>
+            <td>{{ b.bucket }}</td>
+            <td>{{ b.trades }}</td>
+            <td class="{% if b.win_rate >= 60 %}win{% elif b.win_rate < 40 %}loss{% endif %}">{{ b.win_rate }}%</td>
+            <td>{{ b.hit_20pct if b.hit_20pct is not none else '—' }}%</td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+
+<!-- Open Positions -->
+{% if open_trades %}
+<div class="section">
+    <h2>Open Positions ({{ open_trades|length }})</h2>
+    <table>
+        <tr><th>Symbol</th><th>Entry</th><th>P&L</th></tr>
+        {% for t in open_trades %}
+        <tr>
+            <td><strong>{{ t.symbol }}</strong></td>
+            <td>${{ '%.2f'|format(t.entry_price) }}</td>
+            <td>
+                {% if t.realized_pnl is not none %}
+                    <span class="{% if t.realized_pnl >= 0 %}win{% else %}loss{% endif %}">
+                        ${{ '%.0f'|format(t.realized_pnl) }}
+                    </span>
+                {% else %}—{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+
+<!-- Closed Trades -->
+{% if closed_trades %}
+<div class="section">
+    <h2>Recent Closed Trades</h2>
+    <table>
+        <tr><th>Symbol</th><th>Return</th><th>Exit</th></tr>
+        {% for t in closed_trades|reverse %}
+        <tr>
+            <td><strong>{{ t.symbol }}</strong></td>
+            <td>
+                {% if t.realized_pnl is not none %}
+                    <span class="{% if t.realized_pnl >= 0 %}win{% else %}loss{% endif %}">
+                        ${{ '%.0f'|format(t.realized_pnl) }}
+                    </span>
+                {% else %}—{% endif %}
+            </td>
+            <td>
+                {% if t.close_reason == 'take_profit' %}<span class="badge badge-tp">TP</span>
+                {% elif t.close_reason == 'stop_loss' %}<span class="badge badge-sl">SL</span>
+                {% elif t.close_reason == 'trailing_stop' %}<span class="badge badge-ts">TS</span>
+                {% else %}<span class="badge">{{ t.close_reason or '—' }}</span>{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+
+<div class="desktop-link">
+    <a href="/analytics?desktop=1">View full analytics (desktop)</a>
+</div>
+<div class="footer"></div>
+
+</body>
+</html>

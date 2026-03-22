@@ -169,6 +169,12 @@ app.add_middleware(
     max_age=3600,         # sessions expire after 1 hour of inactivity
 )
 
+def _is_mobile(request: Request) -> bool:
+    """Return True if the request comes from a mobile browser."""
+    ua = request.headers.get("user-agent", "").lower()
+    return any(tok in ua for tok in ("mobile", "android", "iphone", "ipad", "ipod"))
+
+
 # Security headers on every response
 @app.middleware("http")
 async def add_security_headers(request, call_next):
@@ -3046,6 +3052,23 @@ def analytics(request: Request):
 
     if "user" not in request.session:
         return RedirectResponse("/login")
+
+    if _is_mobile(request) and not request.query_params.get("desktop"):
+        trades      = get_trade_history()
+        open_pos    = [t for t in trades if t.get("status") == "open"]
+        closed_pos  = [t for t in trades if t.get("status") != "open"]
+        return templates.TemplateResponse(
+            "analytics_mobile.html",
+            {
+                "request":          request,
+                "user":             request.session["user"],
+                "model_comparison": get_model_comparison_stats(),
+                "score_buckets":    get_score_buckets(modes=_DAILY_MODES),
+                "open_trades":      open_pos,
+                "closed_trades":    closed_pos[-20:],
+                "risk_metrics":     get_risk_metrics(),
+            }
+        )
 
     active_tab = request.query_params.get("tab", "daily")
 
